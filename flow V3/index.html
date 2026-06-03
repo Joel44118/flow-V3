@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flow AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <canvas id="bg-canvas"></canvas>
+  <canvas id="orb-canvas"></canvas>
+
+  <div id="top-bar">
+    <div id="flow-logo">FLOW <span id="vtag">V3</span></div>
+    <div id="wake-indicator">Say <em>"Hey Flow"</em></div>
+    <div id="status-wrap"><span id="status-dot"></span><span id="status-label">ONLINE</span></div>
+  </div>
+
+  <div id="alarm-panel"><div id="alarm-list"></div></div>
+
+  <div class="msg-col" id="col-left"></div>
+  <div class="msg-col" id="col-right"></div>
+
+  <div id="notepad-box">
+    <div id="notepad-header">
+      <span id="notepad-title">⚡ FLOW NOTEPAD</span>
+      <div id="notepad-btns">
+        <button class="note-btn" id="btn-clear">CLEAR</button>
+        <button class="note-btn" id="btn-export">EXPORT</button>
+        <button class="note-btn" id="btn-close">✕</button>
+      </div>
+    </div>
+    <textarea id="notepad-text" placeholder="Start typing or speak..."></textarea>
+  </div>
+
+  <div id="brain-btn" title="Brain Menu">🧠</div>
+  <div id="brain-menu">
+    <button class="brain-action" id="brain-export">Export Brain</button>
+    <button class="brain-action" id="brain-import">Import Brain</button>
+    <button class="brain-action" id="brain-clear">Clear Memory</button>
+    <input type="file" id="brain-file" accept=".json">
+  </div>
+
+  <div class="input-panel">
+    <button id="mic-btn">🎤</button>
+    <input type="text" id="user-input" placeholder="Talk to Flow, Boss...">
+    <button id="send-btn">➤</button>
+  </div>
+
+  <!-- Single entry point — ES module, controls all load order -->
+  <script type="module" src="app.js"></script>
+
+</body>
+</html>
