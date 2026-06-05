@@ -32,9 +32,8 @@ body{overflow:hidden;background:var(--deep);font-family:var(--fb);color:#fff;wid
 .alarm-item.dim{color:rgba(255,255,255,.18);}
 
 /* CHAT COLUMNS */
-.msg-col{position:fixed;top:58px;bottom:86px;width:25%;display:flex;flex-direction:column;gap:8px;overflow-y:auto;overflow-x:hidden;z-index:10;padding:8px 10px 12px;scrollbar-width:thin;scrollbar-color:rgba(56,189,248,.2) transparent;}
-.msg-col::-webkit-scrollbar{width:3px;}
-.msg-col::-webkit-scrollbar-thumb{background:rgba(56,189,248,.2);border-radius:3px;}
+.msg-col{position:fixed;top:58px;bottom:86px;width:25%;display:flex;flex-direction:column;gap:8px;overflow-y:auto;overflow-x:hidden;z-index:10;padding:8px 10px 12px;scrollbar-width:none;}
+.msg-col::-webkit-scrollbar{display:none;}
 #col-left{left:4px;align-items:flex-start;}
 #col-right{right:4px;align-items:flex-end;}
 
