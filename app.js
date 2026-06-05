@@ -15,6 +15,7 @@ import { Chat }          from "./ui/chat.js";
 import { Orb }           from "./ui/orb.js";
 import { Notepad }       from "./ui/notepad.js";
 import "./ui/particles.js";
+import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { setVision, parseVisionCommand } from "./core/commands.js";
 
