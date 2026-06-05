@@ -2,6 +2,7 @@
 // core/memory.js
 // ═══════════════════════════════════════════
 import { Storage } from "./storage.js";
+import { markDirty } from "./cloud.js";
 import { CONFIG }  from "./config.js";
 
 let history = Storage.get("memory", []);
@@ -13,6 +14,7 @@ export const Memory = {
     history.push({ role, content, ts: Date.now() });
     history = history.slice(-CONFIG.MEMORY_LIMIT);
     Storage.set("memory", history);
+    markDirty();
   },
 
   // Clean array for API — only role + content
