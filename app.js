@@ -15,11 +15,18 @@ import { Chat }          from "./ui/chat.js";
 import { Orb }           from "./ui/orb.js";
 import { Notepad }       from "./ui/notepad.js";
 import "./ui/particles.js";
+import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
+import { setVision, parseVisionCommand } from "./core/commands.js";
 
 // ── Wire cross-module dependencies ───────
 // (avoids circular imports by injecting at boot)
 setUI(Chat, Orb);
 setNotepad(Notepad);
+
+// Wire vision
+const visionObj = { Camera, ScreenVision, YOLO };
+initVision(Chat, Orb, sendMessage);
+setVision(visionObj);
 setSpeakFn((t) => Speech.speak(t));
 initWake(sendMessage, (s) => Orb.setState(s));
 
@@ -28,9 +35,27 @@ const inputEl  = document.getElementById("user-input");
 const sendBtn  = document.getElementById("send-btn");
 const micBtn   = document.getElementById("mic-btn");
 
-inputEl.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
-sendBtn.addEventListener("click",   ()  => sendMessage());
+// Vision-aware send wrapper
+async function flowSend(text) {
+  // Check vision commands first
+  if (text) {
+    const vis = await parseVisionCommand(text);
+    if (vis !== false) {
+      if (vis !== null) { Chat.add(vis,"bot"); Speech.speak(vis); }
+      return;
+    }
+  }
+  sendMessage(text);
+}
+
+inputEl.addEventListener("keydown", e => { if (e.key === "Enter") flowSend(inputEl.value.trim()); });
+sendBtn.addEventListener("click",   ()  => flowSend(inputEl.value.trim()));
 micBtn.addEventListener("click",    ()  => startCommandListen());
+
+// ── Vision buttons ───────────────────────
+document.getElementById("btn-camera").addEventListener("click", () => Camera.start());
+document.getElementById("btn-screen").addEventListener("click", () => ScreenVision.start());
+document.getElementById("btn-yolo").addEventListener("click",   () => YOLO.start());
 
 // ── Notepad buttons ──────────────────────
 document.getElementById("btn-clear").addEventListener("click",  () => Notepad.clear());
@@ -72,6 +97,7 @@ Chat.loadHistory();
 Alarms.init((t) => Speech.speak(t));
 Weather.get(); // warm cache
 
+// Patch wakeword to use flowSend
 startWakeListener();
 
 const hour     = new Date().getHours();
