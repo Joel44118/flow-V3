@@ -1,29 +1,29 @@
 // ═══════════════════════════════════════════
-// api/memory-bulk.js
-// Receives multiple keys at once via sendBeacon
-// (fired on tab close — must be fast)
+// api/memory-bulk.js — batch save on tab close
+// Uses KV REST API directly, no npm package
 // ═══════════════════════════════════════════
 
-let kv = null;
-async function getKV() {
-  if (kv) return kv;
-  try { const m = await import("@vercel/kv"); kv = m.kv; return kv; }
-  catch(_) { return null; }
-}
+const KV_URL   = process.env.KV_REST_API_URL;
+const KV_TOKEN = process.env.KV_REST_API_TOKEN;
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
-  const store = await getKV();
-  if (!store) return res.status(200).end(); // KV not set up yet — silent
+  if (!KV_URL || !KV_TOKEN)  return res.status(200).end();
 
   try {
     const body = req.body || {};
-    // Save all keys in parallel
     await Promise.all(
-      Object.entries(body).map(([key, value]) => store.set(key, value))
+      Object.entries(body).map(([key, value]) =>
+        fetch(`${KV_URL}/set/${encodeURIComponent(key)}`, {
+          method:  "POST",
+          headers: {
+            Authorization: `Bearer ${KV_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(value),
+        })
+      )
     );
     return res.status(200).end();
-  } catch(e) {
-    return res.status(500).json({ error: e.message });
-  }
+  } catch(e) { return res.status(500).json({ error: e.message }); }
 }
