@@ -35,10 +35,6 @@ const SITES = [
   { rx:/open\s+twitch/i,             url:"https://twitch.tv" },
   { rx:/open\s+vercel/i,             url:"https://vercel.com/dashboard" },
   { rx:/open\s+github/i,             url:"https://github.com" },
-  { rx:/open\s+fiverr/i,            url:"https://fiverr.com" },
-  { rx:/open\s+contra/i,            url:"https://contra.com" },
-  { rx:/open\s+comeup/i,            url:"https://comeup.com" },
-  { rx:/open\s+kwork/i,            url:"https://kwork.com" },
   { rx:/search\s+(?:for\s+)?(.+)/i,  fn:m=>`https://google.com/search?q=${encodeURIComponent(m[1])}` },
   { rx:/open\s+(https?:\/\/\S+)/i,   fn:m=>m[1] },
   { rx:/open\s+(\w[\w.-]+\.\w{2,})/i,fn:m=>`https://${m[1]}` },
@@ -106,4 +102,44 @@ export async function parseCommand(text) {
   }
 
   return false; // pass to API
+}
+
+// ── Vision commands (injected at boot) ───
+let _vision = null;
+export function setVision(v) { _vision = v; }
+
+// Call this AFTER the existing parseCommand function
+// by chaining in app.js — see app.js for wiring
+export async function parseVisionCommand(text) {
+  const t = text.toLowerCase().trim();
+
+  // Camera
+  if (/open\s+camera|start\s+camera|turn\s+on\s+camera/i.test(t))  { _vision?.Camera.start();       return null; }
+  if (/close\s+camera|stop\s+camera|turn\s+off\s+camera/i.test(t)) { _vision?.Camera.stop();        return null; }
+
+  // Screen
+  if (/share\s+screen|open\s+screen|see\s+(my\s+)?screen/i.test(t))         { _vision?.ScreenVision.start(); return null; }
+  if (/stop\s+(sharing\s+)?screen|close\s+screen/i.test(t))                  { _vision?.ScreenVision.stop();  return null; }
+
+  // YOLO
+  if (/start\s+yolo|object\s+detect|detect\s+objects|eyes?\s+on/i.test(t))  { _vision?.YOLO.start();         return null; }
+  if (/stop\s+yolo|eyes?\s+off|stop\s+detect/i.test(t))                      { _vision?.YOLO.stop();          return null; }
+
+  // Look / describe
+  if (/what\s+(do\s+you\s+)?(can\s+you\s+)?see|look\s+at\s+(the\s+)?(screen|camera)/i.test(t)) {
+    // Try screen first, then camera
+    if (_vision?.ScreenVision._video) { _vision.ScreenVision.look(text); return null; }
+    if (_vision?.Camera._video)       { _vision.Camera.look(text);       return null; }
+    return "I don't have eyes open yet. Say 'open camera' or 'share screen' first.";
+  }
+
+  // "What's on my screen?" / "Who is that?" etc
+  if (/what('?s|\s+is)\s+(on\s+)?(my\s+)?screen|read\s+(my\s+)?screen/i.test(t)) {
+    _vision?.ScreenVision.look(text); return null;
+  }
+  if (/who\s+is\s+(that|this)|what\s+am\s+i\s+looking\s+at/i.test(t)) {
+    _vision?.Camera.look(text); return null;
+  }
+
+  return false; // not a vision command
 }
