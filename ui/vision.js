@@ -182,39 +182,50 @@ export const ScreenVision = {
 
 // ─────────────────────────────────────────
 //  YOLO — Real-time object detection
-//  Uses YOLOv8n ONNX model via onnxruntime-web
-//  Model loads from CDN — no download needed
+//  Uses Transformers.js + onnx-community/yolov10m
+//  Loads from HuggingFace CDN — no API key needed
+//  No download required, runs in browser via WASM
 // ─────────────────────────────────────────
 export const YOLO = {
-  _session:   null,
+  _pipeline:  null,
   _canvas:    null,
   _video:     null,
   _container: null,
   _animId:    null,
-  _labels:    null,
+  _running:   false,
 
   async start() {
     if (yoloActive) { this.stop(); return; }
 
-    // Load ONNX Runtime from CDN
-    if (!window.ort) {
-      await _loadScript("https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.17.1/ort.min.js");
-    }
-
-    _chat?.add("Loading YOLO model... one moment.", "bot");
+    _chat?.add("Loading object detection model... this takes ~15 seconds the first time.", "bot");
     _orb?.setState("thinking");
 
     try {
-      // YOLOv8n — smallest, fastest, free from HuggingFace
-      // ~6MB download, runs in-browser on CPU
-      this._session = await window.ort.InferenceSession.create(
-        "https://huggingface.co/nickmuchi/yolos-small-onnx/resolve/main/yolos-small.onnx",
-        { executionProviders: ["wasm"] }
+      // Load Transformers.js from CDN
+      if (!window._transformers) {
+        await _loadScript("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2/dist/transformers.min.js");
+        window._transformers = window.transformers || window._transformers;
+      }
+
+      const { pipeline, env } = window.transformers || window._transformers ||
+        await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2/dist/transformers.min.js");
+
+      // Allow remote models
+      env.allowRemoteModels = true;
+
+      _chat?.add("Model downloading... almost there.", "bot");
+
+      // onnx-community/yolov10m — confirmed working, ~16MB quantized
+      this._pipeline = await pipeline(
+        "object-detection",
+        "onnx-community/yolov10m",
+        {
+          dtype: "q4",   // 4-bit quantized — smallest, ~16MB
+          device: "wasm",
+        }
       );
 
-      this._labels = COCO_LABELS;
-
-      // Start camera for YOLO feed
+      // Start camera
       if (!cameraStream) {
         cameraStream = await navigator.mediaDevices.getUserMedia({
           video: { width:640, height:480 }, audio:false
@@ -230,7 +241,8 @@ export const YOLO = {
       await this._video.play();
       document.body.appendChild(this._container);
 
-      yoloActive = true;
+      yoloActive    = true;
+      this._running = true;
       _orb?.setState("idle");
       _chat?.add("YOLO active. I can identify objects in real time.", "bot");
       Speech.speak("Eyes online. Object detection active.");
@@ -238,87 +250,66 @@ export const YOLO = {
 
     } catch(e) {
       console.error("[YOLO]", e);
-      _chat?.addError("YOLO failed to load: " + e.message);
+      _chat?.addError("YOLO failed: " + e.message);
       _orb?.setState("idle");
     }
   },
 
-  _loop() {
-    if (!yoloActive) return;
-    this._detect().finally(() => {
-      this._animId = requestAnimationFrame(() => this._loop());
-    });
-  },
-
-  async _detect() {
-    if (!this._session || !this._video || this._video.readyState < 2) return;
-
-    const W = this._video.videoWidth;
-    const H = this._video.videoHeight;
-    if (!W || !H) return;
-
-    // Resize canvas to match video
-    this._canvas.width  = W;
-    this._canvas.height = H;
-    const ctx = this._canvas.getContext("2d");
-    ctx.clearRect(0, 0, W, H);
+  async _loop() {
+    if (!this._running || !this._pipeline || !this._video) return;
 
     try {
-      // Prep input tensor 640×640
-      const size = 640;
-      const tmp  = document.createElement("canvas");
-      tmp.width = tmp.height = size;
-      tmp.getContext("2d").drawImage(this._video, 0, 0, size, size);
-      const imgData = tmp.getContext("2d").getImageData(0, 0, size, size);
+      const W = this._video.videoWidth;
+      const H = this._video.videoHeight;
+      if (W && H) {
+        this._canvas.width  = W;
+        this._canvas.height = H;
+        const ctx = this._canvas.getContext("2d");
+        ctx.clearRect(0, 0, W, H);
 
-      // Convert to float32 CHW tensor
-      const data = new Float32Array(3 * size * size);
-      for (let i = 0; i < size * size; i++) {
-        data[i]               = imgData.data[i*4]   / 255;
-        data[i + size*size]   = imgData.data[i*4+1] / 255;
-        data[i + size*size*2] = imgData.data[i*4+2] / 255;
+        // Capture frame as blob for transformers.js
+        const tmp = document.createElement("canvas");
+        tmp.width = W; tmp.height = H;
+        tmp.getContext("2d").drawImage(this._video, 0, 0);
+        const dataURL = tmp.toDataURL("image/jpeg", 0.7);
+
+        const results = await this._pipeline(dataURL, { threshold: 0.4 });
+
+        ctx.lineWidth = 2;
+        ctx.font = "bold 13px monospace";
+
+        results.forEach(det => {
+          const { label, score, box } = det;
+          const { xmin, ymin, xmax, ymax } = box;
+
+          // Scale to actual video dimensions
+          const x  = xmin * W / 640;
+          const y  = ymin * H / 640;
+          const w  = (xmax - xmin) * W / 640;
+          const h  = (ymax - ymin) * H / 640;
+
+          ctx.strokeStyle = "#38bdf8";
+          ctx.strokeRect(x, y, w, h);
+
+          const txt = `${label} ${(score*100).toFixed(0)}%`;
+          const tw  = ctx.measureText(txt).width + 8;
+          ctx.fillStyle = "rgba(2,6,23,0.8)";
+          ctx.fillRect(x, y - 18, tw, 18);
+          ctx.fillStyle = "#38bdf8";
+          ctx.fillText(txt, x + 4, y - 4);
+        });
       }
+    } catch(_) {}
 
-      const tensor = new window.ort.Tensor("float32", data, [1, 3, size, size]);
-      const output = await this._session.run({ images: tensor });
-
-      // Parse detections
-      const boxes  = output[Object.keys(output)[0]].data;
-      const scaleX = W / size, scaleY = H / size;
-
-      ctx.strokeStyle = "#38bdf8";
-      ctx.lineWidth   = 2;
-      ctx.font        = "bold 13px monospace";
-      ctx.fillStyle   = "#38bdf8";
-
-      for (let i = 0; i < boxes.length; i += 6) {
-        const conf  = boxes[i+4];
-        if (conf < 0.45) continue;
-        const cls   = Math.round(boxes[i+5]);
-        const label = this._labels[cls] || `class${cls}`;
-        const x1 = boxes[i]   * scaleX;
-        const y1 = boxes[i+1] * scaleY;
-        const x2 = boxes[i+2] * scaleX;
-        const y2 = boxes[i+3] * scaleY;
-
-        // Draw box
-        ctx.strokeRect(x1, y1, x2-x1, y2-y1);
-        // Label background
-        ctx.fillStyle = "rgba(2,6,23,0.75)";
-        ctx.fillRect(x1, y1-18, ctx.measureText(label).width+8, 18);
-        ctx.fillStyle = "#38bdf8";
-        ctx.fillText(`${label} ${(conf*100).toFixed(0)}%`, x1+4, y1-4);
-      }
-
-    } catch(e) {
-      // Silent — detection errors are normal mid-stream
-    }
+    // Run at ~5fps to save CPU — WASM is slower than GPU
+    this._animId = setTimeout(() => this._loop(), 200);
   },
 
   stop() {
-    yoloActive = false;
-    if (this._animId) cancelAnimationFrame(this._animId);
-    this._session = null;
+    this._running = false;
+    yoloActive    = false;
+    clearTimeout(this._animId);
+    this._pipeline = null;
     cameraStream?.getTracks().forEach(t => t.stop());
     cameraStream = null;
     this._container?.remove();
