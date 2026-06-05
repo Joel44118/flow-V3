@@ -1,30 +1,38 @@
 // ═══════════════════════════════════════════
-// api/memory.js — Vercel KV persistent memory
+// api/memory.js — Vercel KV via REST API
+//
+// Uses Vercel KV REST API directly with fetch —
+// no npm package needed, works out of the box.
+//
+// Vercel auto-provides these env vars when you
+// connect a KV database in the dashboard:
+//   KV_REST_API_URL
+//   KV_REST_API_TOKEN
 //
 // GET  /api/memory?key=flow_memory  → load
 // POST /api/memory { key, value }   → save
-//
-// Uses Vercel KV (free Redis).
-// Falls back gracefully if KV not configured.
-//
-// Setup (one time):
-//   1. vercel.com → your project → Storage → Create KV Database
-//   2. Click "Connect to Project" → auto-adds env vars
-//   3. Redeploy — done.
 // ═══════════════════════════════════════════
 
-// Vercel KV client — available automatically when KV is connected
-let kv = null;
-async function getKV() {
-  if (kv) return kv;
-  try {
-    // Dynamic import so it doesn't crash if KV isn't set up yet
-    const mod = await import("@vercel/kv");
-    kv = mod.kv;
-    return kv;
-  } catch(_) {
-    return null;
-  }
+const KV_URL   = process.env.KV_REST_API_URL;
+const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+
+async function kvGet(key) {
+  const res = await fetch(`${KV_URL}/get/${encodeURIComponent(key)}`, {
+    headers: { Authorization: `Bearer ${KV_TOKEN}` },
+  });
+  const data = await res.json();
+  return data.result ?? null;
+}
+
+async function kvSet(key, value) {
+  await fetch(`${KV_URL}/set/${encodeURIComponent(key)}`, {
+    method:  "POST",
+    headers: {
+      Authorization: `Bearer ${KV_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(value),
+  });
 }
 
 export default async function handler(req, res) {
@@ -33,38 +41,29 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  const store = await getKV();
-
-  // ── No KV configured — tell client gracefully ──
-  if (!store) {
+  // KV not connected yet — return graceful fallback
+  if (!KV_URL || !KV_TOKEN) {
     if (req.method === "GET")  return res.status(200).json({ value: null, kv: false });
     if (req.method === "POST") return res.status(200).json({ ok: true, kv: false });
     return res.status(405).end();
   }
 
-  // ── GET: load a value ─────────────────────
   if (req.method === "GET") {
     const { key } = req.query;
     if (!key) return res.status(400).json({ error: "key required" });
     try {
-      const value = await store.get(key);
+      const value = await kvGet(key);
       return res.status(200).json({ value, kv: true });
-    } catch(e) {
-      return res.status(500).json({ error: e.message });
-    }
+    } catch(e) { return res.status(500).json({ error: e.message }); }
   }
 
-  // ── POST: save a value ────────────────────
   if (req.method === "POST") {
     const { key, value } = req.body || {};
     if (!key) return res.status(400).json({ error: "key required" });
     try {
-      // Store with no expiry — permanent memory
-      await store.set(key, value);
+      await kvSet(key, value);
       return res.status(200).json({ ok: true, kv: true });
-    } catch(e) {
-      return res.status(500).json({ error: e.message });
-    }
+    } catch(e) { return res.status(500).json({ error: e.message }); }
   }
 
   return res.status(405).end();
