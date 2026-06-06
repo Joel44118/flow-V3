@@ -28,7 +28,21 @@ let cameraStream  = null;
 let screenStream  = null;
 let yoloActive    = false;
 let yoloInterval  = null;
-let visionOverlay = null;  // canvas drawn over video
+let visionOverlay = null;
+
+// ── Shared camera opener ───────────────────
+// Reuses existing stream if already open —
+// avoids "Permission denied" from double-open
+async function openCamera() {
+  if (cameraStream && cameraStream.active) return cameraStream;
+  // Stop any dead streams first
+  cameraStream?.getTracks().forEach(t => t.stop());
+  cameraStream = await navigator.mediaDevices.getUserMedia({
+    video: { width:640, height:480, facingMode:"user" },
+    audio: false,
+  });
+  return cameraStream;
+}
 
 // ─────────────────────────────────────────
 //  SHARED: grab a frame from a video element
@@ -73,9 +87,7 @@ export const Camera = {
   async start() {
     if (cameraStream) { this.stop(); return; }
     try {
-      cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: { width:640, height:480, facingMode:"user" }, audio:false
-      });
+      cameraStream = await openCamera();
       this._mount(cameraStream, "📷 CAMERA");
       Speech.speak("Camera online. I can see you now, Boss.");
       _chat?.add("Camera on. I can see you.", "bot");
@@ -196,6 +208,8 @@ export const YOLO = {
 
   async start() {
     if (yoloActive) { this.stop(); return; }
+    // Release any existing camera track before re-acquiring
+    if (cameraStream && !cameraStream.active) { cameraStream = null; }
 
     _chat?.add("Loading object detection model... this takes ~15 seconds the first time.", "bot");
     _orb?.setState("thinking");
@@ -215,10 +229,10 @@ export const YOLO = {
 
       _chat?.add("Model downloading... almost there.", "bot");
 
-      // Xenova/yolos-small — higher accuracy, confirmed transformers.js compatible
+      // Xenova/yolos-tiny — highest downloads, confirmed transformers.js compatible
       this._pipeline = await pipeline(
         "object-detection",
-        "Xenova/yolos-small",
+        "Xenova/yolos-tiny",
         {
           dtype: "fp32",
           device: "wasm",
@@ -226,11 +240,8 @@ export const YOLO = {
       );
 
       // Start camera
-      if (!cameraStream) {
-        cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: { width:640, height:480 }, audio:false
-        });
-      }
+      // Always use shared helper — prevents double-open Permission denied
+      cameraStream = await openCamera();
 
       this._container = _createVideoContainer("🔍 YOLO DETECTION", () => this.stop());
       this._video  = this._container.querySelector("video");
