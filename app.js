@@ -17,7 +17,9 @@ import { Notepad }       from "./ui/notepad.js";
 import "./ui/particles.js";
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
-import { handleFiles, initFileUpload } from "./ui/fileupload.js";
+import { handleFiles, initFileUpload }            from "./ui/fileupload.js";
+import { renderWithCode, hasCode }                from "./ui/codeblock.js";
+import { initImagine, generateImage, parseImageRequest } from "./ui/imagine.js";
 import { setVision, parseVisionCommand, setSearchHandlers, parseSearchGoalCommand } from "./core/commands.js";
 import { startGoalDeadlineWatcher, saveGoals, goalsSummary } from "./core/goals.js";
 
@@ -32,6 +34,7 @@ initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
 setSearchHandlers((t) => sendMessage(t), (t, w) => Chat.add(t, w));
 initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
+initImagine(Chat, Orb);
 setSpeakFn((t) => Speech.speak(t));
 initWake(sendMessage, (s) => Orb.setState(s));
 
@@ -58,7 +61,14 @@ async function flowSend(text) {
     return;
   }
 
-  // 3. Goals: detect if user is pasting their daily goals as plain text
+  // 3. Image generation
+  const imgPrompt = parseImageRequest(text);
+  if (imgPrompt) {
+    await generateImage(imgPrompt, text);
+    return;
+  }
+
+  // 4. Goals: detect if user is pasting their daily goals as plain text
   // (lines starting with numbers or dashes = likely a goals list)
   if (/^(\d+[\.\)]\s|[-•]\s)/m.test(text) && text.split("\n").length >= 2) {
     const entry = saveGoals(text);
@@ -92,10 +102,20 @@ document.addEventListener("drop", e => {
   if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
 });
 
-// ── Vision buttons ───────────────────────
-document.getElementById("btn-camera").addEventListener("click", () => Camera.start());
-document.getElementById("btn-screen").addEventListener("click", () => ScreenVision.start());
-document.getElementById("btn-yolo").addEventListener("click",   () => YOLO.start());
+// ── Vision popup ─────────────────────────
+const visionToggle = document.getElementById("vision-toggle-btn");
+const visionPopup  = document.getElementById("vision-popup");
+visionToggle.addEventListener("click", (e) => {
+  e.stopPropagation();
+  visionPopup.classList.toggle("open");
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#vision-popup-wrap")) visionPopup.classList.remove("open");
+});
+document.getElementById("btn-camera").addEventListener("click", () => { Camera.start();        visionPopup.classList.remove("open"); });
+document.getElementById("btn-screen").addEventListener("click", () => { ScreenVision.start();  visionPopup.classList.remove("open"); });
+document.getElementById("btn-yolo").addEventListener("click",   () => { YOLO.start();          visionPopup.classList.remove("open"); });
+document.getElementById("btn-face").addEventListener("click",   () => { Camera.start().then?.(() => Camera.learnMyFace?.()); visionPopup.classList.remove("open"); });
 
 // ── Notepad buttons ──────────────────────
 document.getElementById("btn-clear").addEventListener("click",  () => Notepad.clear());
