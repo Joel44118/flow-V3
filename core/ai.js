@@ -9,6 +9,7 @@ import { Storage }       from "./storage.js";
 import { CONFIG }        from "./config.js";
 import { parseCommand, getTime, getDate } from "./commands.js";
 import { goalsSummary } from "./goals.js";
+import { selfKnowledgeBlock } from "./identity.js";
 import { Speech }        from "./speech.js";
 
 // UI refs injected at init (avoids circular imports)
@@ -19,6 +20,8 @@ export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 function buildPrompt(weather) {
   const p = Memory.getProfile();
   return `${CONFIG.PERSONALITY}
+
+${selfKnowledgeBlock()}
 
 LIVE CONTEXT:
 Time: ${getTime()}
