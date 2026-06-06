@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Flow AI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet"> 
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -44,21 +44,33 @@
     <input type="file" id="brain-file" accept=".json">
   </div>
 
+  <!-- Input bar -->
   <div class="input-panel">
-    <div id="vision-btns">
-      <button class="vision-btn" id="btn-camera" title="Toggle Camera">📷</button>
-      <button class="vision-btn" id="btn-screen" title="Share Screen">🖥️</button>
-      <button class="vision-btn" id="btn-yolo"   title="Object Detection">🔍</button>
+
+    <!-- Vision popup toggle -->
+    <div id="vision-popup-wrap">
+      <button id="vision-toggle-btn" title="Vision tools">👁</button>
+      <div id="vision-popup">
+        <button class="vpop-btn" id="btn-camera" title="Camera">📷<span>Camera</span></button>
+        <button class="vpop-btn" id="btn-screen" title="Share Screen">🖥️<span>Screen</span></button>
+        <button class="vpop-btn" id="btn-yolo"   title="Object Detection">🔍<span>YOLO</span></button>
+        <button class="vpop-btn" id="btn-face"   title="Learn My Face">👤<span>Face</span></button>
+      </div>
     </div>
+
+    <!-- File upload always visible -->
     <button id="file-btn" title="Upload file">📎</button>
-    <input type="file" id="file-input" multiple accept="image/*,.pdf,.txt,.md,.js,.ts,.jsx,.tsx,.py,.html,.css,.json,.csv,.xml,.yaml,.yml,.sh,.log,.sql" style="display:none">
-    <button id="mic-btn">🎤</button>
+    <input type="file" id="file-input" multiple
+      accept="image/*,.pdf,.txt,.md,.js,.ts,.jsx,.tsx,.py,.html,.css,.json,.csv,.xml,.yaml,.yml,.sh,.log,.sql"
+      style="display:none">
+
     <input type="text" id="user-input" placeholder="Talk to Flow, Boss...">
+
+    <button id="mic-btn">🎤</button>
     <button id="send-btn">➤</button>
+
   </div>
 
-  <!-- Single entry point — ES module, controls all load order -->
   <script type="module" src="app.js"></script>
-
 </body>
 </html>
