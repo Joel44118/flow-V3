@@ -3,6 +3,7 @@
   "functions": {
     "api/chat.js":        { "maxDuration": 30 },
     "api/vision.js":      { "maxDuration": 30 },
+    "api/imagine.js":     { "maxDuration": 30 },
     "api/search.js":      { "maxDuration": 15 },
     "api/memory.js":      { "maxDuration": 10 },
     "api/memory-bulk.js": { "maxDuration": 10 }
