@@ -216,12 +216,13 @@ export const ScreenVision = {
 //  No download required, runs in browser via WASM
 // ─────────────────────────────────────────
 export const YOLO = {
-  _pipeline:  null,
-  _canvas:    null,
-  _video:     null,
-  _container: null,
-  _animId:    null,
-  _running:   false,
+  _pipeline:    null,
+  _canvas:      null,
+  _offscreen:   null,   // draw here first, blit to _canvas on rAF
+  _video:       null,
+  _container:   null,
+  _animId:      null,
+  _running:     false,
 
   async start() {
     if (yoloActive) { this.stop(); return; }
@@ -265,6 +266,8 @@ export const YOLO = {
       this._canvas = document.createElement("canvas");
       this._canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;";
       this._container.appendChild(this._canvas);
+      // Offscreen canvas for detection drawing — avoids blocking display
+      this._offscreen = document.createElement("canvas");
       this._video.srcObject = cameraStream;
       document.body.appendChild(this._container);  // mount BEFORE play
       await this._video.play().catch(e => {
