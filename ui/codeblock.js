@@ -1,114 +1,120 @@
 // ═══════════════════════════════════════════
-// ui/codeblock.js — Sci-fi code renderer
-//
-// Detects code in Flow's replies and renders
-// them as styled blocks with:
-//  - Language label
-//  - Copy button
-//  - Syntax highlighting via highlight.js CDN
-//  - Sci-fi dark terminal aesthetic
+// ui/codeblock.js — Code block renderer
+// Supports any language, no downloads needed
+// Uses highlight.js from CDN
 // ═══════════════════════════════════════════
 
-let _hlReady = false;
+const HLJS_CSS = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css";
+const HLJS_JS  = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js";
+let _ready = false;
 
-async function _loadHighlightJS() {
-  if (_hlReady || window.hljs) { _hlReady = true; return; }
-  await Promise.all([
-    _loadScript("https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"),
-    _loadStyle("https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"),
-  ]);
-  _hlReady = true;
+async function ensureHL() {
+  if (_ready) return;
+  if (!document.querySelector(`link[href="${HLJS_CSS}"]`)) {
+    const l = document.createElement("link");
+    l.rel = "stylesheet"; l.href = HLJS_CSS;
+    document.head.appendChild(l);
+  }
+  if (!window.hljs) {
+    await new Promise((res, rej) => {
+      const s = document.createElement("script");
+      s.src = HLJS_JS; s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  _ready = true;
 }
 
-// ── Detect if text contains code blocks ──
+// Detects ``` fenced code blocks
 export function hasCode(text) {
-  return /```[\s\S]*?```/m.test(text);
+  return /```/.test(text);
 }
 
-// ── Render message with code blocks ──────
-export async function renderWithCode(text, bubbleEl) {
-  await _loadHighlightJS();
+// Renders text + code blocks into a container element
+export async function renderWithCode(text, container) {
+  await ensureHL();
+  container.innerHTML = "";
 
-  // Split on ```lang ... ``` blocks
-  const parts = text.split(/(```[\w]*\n[\s\S]*?```)/m);
+  // Split on fenced code blocks: ```lang\ncode```
+  const parts = text.split(/(```[\s\S]*?```)/g);
 
-  bubbleEl.innerHTML = "";
-  bubbleEl.classList.add("has-code");
-
-  parts.forEach(part => {
-    const codeMatch = part.match(/^```([\w]*)\n([\s\S]*?)```$/m);
-    if (codeMatch) {
-      const lang = codeMatch[1] || "plaintext";
-      const code = codeMatch[2];
-      bubbleEl.appendChild(_buildCodeBlock(lang, code));
-    } else if (part.trim()) {
-      const p = document.createElement("p");
+  for (const part of parts) {
+    const fence = part.match(/^```(\w*)\n?([\s\S]*?)```$/);
+    if (fence) {
+      const lang = fence[1]?.trim() || "";
+      const src  = fence[2] || "";
+      container.appendChild(buildBlock(lang, src));
+    } else {
+      // Plain prose
+      const lines = part.trim();
+      if (!lines) continue;
+      const p = document.createElement("div");
       p.className   = "code-prose";
-      p.textContent = part.trim();
-      bubbleEl.appendChild(p);
+      p.textContent = lines;
+      container.appendChild(p);
     }
-  });
+  }
+  container.classList.add("has-code");
 }
 
-function _buildCodeBlock(lang, code) {
+function buildBlock(lang, src) {
   const wrap = document.createElement("div");
   wrap.className = "code-block";
 
-  // Header bar
-  const header = document.createElement("div");
-  header.className = "code-header";
+  // ── Header ──────────────────────────────
+  const hdr  = document.createElement("div");
+  hdr.className = "code-header";
 
   const dots = document.createElement("div");
   dots.className = "code-dots";
-  dots.innerHTML = `<span></span><span></span><span></span>`;
+  dots.innerHTML = "<span></span><span></span><span></span>";
 
-  const label = document.createElement("span");
-  label.className   = "code-lang";
-  label.textContent = lang.toUpperCase() || "CODE";
+  const lbl  = document.createElement("span");
+  lbl.className   = "code-lang";
+  lbl.textContent = lang.toUpperCase() || "CODE";
 
-  const copyBtn = document.createElement("button");
-  copyBtn.className   = "code-copy";
-  copyBtn.textContent = "COPY";
-  copyBtn.onclick = () => {
-    navigator.clipboard.writeText(code).then(() => {
-      copyBtn.textContent = "COPIED ✓";
-      setTimeout(() => { copyBtn.textContent = "COPY"; }, 2000);
+  const copy = document.createElement("button");
+  copy.className   = "code-copy";
+  copy.textContent = "COPY";
+  copy.addEventListener("click", () => {
+    navigator.clipboard.writeText(src).then(() => {
+      copy.textContent = "COPIED ✓";
+      setTimeout(() => { copy.textContent = "COPY"; }, 2000);
+    }).catch(() => {
+      // Fallback for non-HTTPS
+      const ta = document.createElement("textarea");
+      ta.value = src; document.body.appendChild(ta);
+      ta.select(); document.execCommand("copy");
+      document.body.removeChild(ta);
+      copy.textContent = "COPIED ✓";
+      setTimeout(() => { copy.textContent = "COPY"; }, 2000);
     });
-  };
+  });
 
-  header.appendChild(dots);
-  header.appendChild(label);
-  header.appendChild(copyBtn);
+  hdr.appendChild(dots);
+  hdr.appendChild(lbl);
+  hdr.appendChild(copy);
 
-  // Code content
-  const pre  = document.createElement("pre");
+  // ── Code ────────────────────────────────
+  const pre    = document.createElement("pre");
   const codeEl = document.createElement("code");
 
+  // highlight.js supports 190+ languages, all loaded — no downloads
   if (window.hljs && lang && window.hljs.getLanguage(lang)) {
-    codeEl.innerHTML = window.hljs.highlight(code, { language: lang }).value;
+    codeEl.innerHTML = window.hljs.highlight(src, { language: lang, ignoreIllegals: true }).value;
+    codeEl.className = `language-${lang}`;
+  } else if (window.hljs) {
+    // Auto-detect language
+    const result = window.hljs.highlightAuto(src);
+    codeEl.innerHTML  = result.value;
+    codeEl.className  = `language-${result.language || "plaintext"}`;
+    if (!lang) lbl.textContent = (result.language || "CODE").toUpperCase();
   } else {
-    codeEl.textContent = code;
+    codeEl.textContent = src;
   }
 
   pre.appendChild(codeEl);
-  wrap.appendChild(header);
+  wrap.appendChild(hdr);
   wrap.appendChild(pre);
   return wrap;
-}
-
-function _loadScript(src) {
-  return new Promise((res, rej) => {
-    if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
-    const s = document.createElement("script");
-    s.src = src; s.onload = res; s.onerror = rej;
-    document.head.appendChild(s);
-  });
-}
-function _loadStyle(href) {
-  return new Promise((res) => {
-    if (document.querySelector(`link[href="${href}"]`)) { res(); return; }
-    const l = document.createElement("link");
-    l.rel  = "stylesheet"; l.href = href;
-    l.onload = res; document.head.appendChild(l);
-  });
 }
