@@ -10,6 +10,11 @@
 // Flow's reply uses the normal model chain in api/chat.js
 // ═══════════════════════════════════════════
 
+import { pipeline } from '@huggingface/transformers';
+
+// Allocate pipeline
+const pipe = await pipeline('object-detection', 'Xenova/yolos-tiny');
+
 import { Speech } from "../core/speech.js";
 
 // ── DOM elements (injected by app.js) ────
