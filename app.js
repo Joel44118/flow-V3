@@ -17,6 +17,7 @@ import { Notepad }       from "./ui/notepad.js";
 import "./ui/particles.js";
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
+import { handleFiles, initFileUpload } from "./ui/fileupload.js";
 import { setVision, parseVisionCommand } from "./core/commands.js";
 
 // ── Wire cross-module dependencies ───────
@@ -28,6 +29,7 @@ setNotepad(Notepad);
 const visionObj = { Camera, ScreenVision, YOLO };
 initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
+initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
 setSpeakFn((t) => Speech.speak(t));
 initWake(sendMessage, (s) => Orb.setState(s));
 
@@ -52,6 +54,24 @@ async function flowSend(text) {
 inputEl.addEventListener("keydown", e => { if (e.key === "Enter") flowSend(inputEl.value.trim()); });
 sendBtn.addEventListener("click",   ()  => flowSend(inputEl.value.trim()));
 micBtn.addEventListener("click",    ()  => startCommandListen());
+
+// ── File upload ──────────────────────────
+const fileBtn   = document.getElementById("file-btn");
+const fileInput = document.getElementById("file-input");
+fileBtn.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", (e) => {
+  if (e.target.files.length) {
+    handleFiles(e.target.files);
+    e.target.value = "";
+  }
+});
+
+// Drag-and-drop anywhere on screen
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => {
+  e.preventDefault();
+  if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+});
 
 // ── Vision buttons ───────────────────────
 document.getElementById("btn-camera").addEventListener("click", () => Camera.start());
