@@ -10,7 +10,6 @@
 // Flow's reply uses the normal model chain in api/chat.js
 // ═══════════════════════════════════════════
 
-
 import { Speech } from "../core/speech.js";
 
 // ── DOM elements (injected by app.js) ────
@@ -216,10 +215,10 @@ export const YOLO = {
 
       _chat?.add("Model downloading... almost there.", "bot");
 
-      // Xenova/yolos-tiny — highest downloads, confirmed transformers.js compatible
+      // Xenova/yolos-small — higher accuracy, confirmed transformers.js compatible
       this._pipeline = await pipeline(
         "object-detection",
-        "Xenova/yolos-tiny",
+        "Xenova/yolos-small",
         {
           dtype: "fp32",
           device: "wasm",
