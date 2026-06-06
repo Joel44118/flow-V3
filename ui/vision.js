@@ -203,24 +203,25 @@ export const YOLO = {
     try {
       // Load Transformers.js from CDN
       if (!window._transformers) {
-        await _loadScript("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2/dist/transformers.min.js");
+        await _loadScript("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.0/dist/transformers.min.js");
         window._transformers = window.transformers || window._transformers;
       }
 
       const { pipeline, env } = window.transformers || window._transformers ||
-        await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2/dist/transformers.min.js");
+        await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.0/dist/transformers.min.js");
 
       // Allow remote models
       env.allowRemoteModels = true;
 
       _chat?.add("Model downloading... almost there.", "bot");
 
-      // onnx-community/yolov10m — confirmed working, ~16MB quantized
+      // Xenova/yolov9-c — confirmed working with Transformers.js in-browser
+      // YOLOv9 is explicitly supported; yolov10 is NOT yet supported
       this._pipeline = await pipeline(
         "object-detection",
-        "onnx-community/yolov10m",
+        "Xenova/yolov9-c",
         {
-          dtype: "q4",   // 4-bit quantized — smallest, ~16MB
+          dtype: "q8",    // 8-bit quantized — good balance of speed + accuracy
           device: "wasm",
         }
       );
