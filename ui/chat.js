@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════
 // ui/chat.js — Scrollable, invisible until hover
 // ═══════════════════════════════════════════
-import { Memory } from "../core/memory.js";
+import { Memory }                 from "../core/memory.js";
+import { hasCode, renderWithCode } from "./codeblock.js";
 
 const colLeft  = () => document.getElementById("col-left");
 const colRight = () => document.getElementById("col-right");
