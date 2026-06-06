@@ -15,8 +15,24 @@ setInterval(() => {
   _envelope = decay * (0.5 + 0.5 * Math.sin(performance.now() * 0.025));
 }, 16);
 
+// Strip code blocks before speaking — don't read raw code aloud
+function stripCodeForSpeech(text) {
+  return text
+    // Replace code blocks with a short spoken summary
+    .replace(/```[\w]*
+[\s\S]*?```/gm, "[code block]")
+    // Remove inline code
+    .replace(/`[^`]+`/g, "")
+    // Remove markdown
+    .replace(/\*\*/g,"").replace(/^#+\s/gm,"").replace(/^[-•]\s/gm,"")
+    .replace(/\[code block\]/g, "...here is the code...")
+    .trim();
+}
+
 export const Speech = {
   speak(text, onDone) {
+    // Strip code before speaking
+    text = stripCodeForSpeech(text);
     window.speechSynthesis.cancel();
     _isSpeaking = true;
     _onDone = onDone || null;
