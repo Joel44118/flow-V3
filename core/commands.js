@@ -141,6 +141,17 @@ export async function parseVisionCommand(text) {
     _vision?.Camera.look(text); return null;
   }
 
+  // Face recognition
+  if (/learn\s+my\s+face|remember\s+my\s+face|who\s+am\s+i/i.test(t)) {
+    _vision?.Camera.learnMyFace?.();
+    return null;
+  }
+
+  // Self-knowledge — Flow describes himself
+  if (/what\s+(are|can)\s+you|your\s+capabilities|what\s+do\s+you\s+do|who\s+are\s+you|describe\s+yourself/i.test(t)) {
+    return false; // pass to AI — identity is already in system prompt
+  }
+
   return false; // not a vision command
 }
 
