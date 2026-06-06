@@ -18,7 +18,8 @@ import "./ui/particles.js";
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { handleFiles, initFileUpload } from "./ui/fileupload.js";
-import { setVision, parseVisionCommand } from "./core/commands.js";
+import { setVision, parseVisionCommand, setSearchHandlers, parseSearchGoalCommand } from "./core/commands.js";
+import { startGoalDeadlineWatcher, saveGoals, goalsSummary } from "./core/goals.js";
 
 // ── Wire cross-module dependencies ───────
 // (avoids circular imports by injecting at boot)
@@ -29,6 +30,7 @@ setNotepad(Notepad);
 const visionObj = { Camera, ScreenVision, YOLO };
 initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
+setSearchHandlers((t) => sendMessage(t), (t, w) => Chat.add(t, w));
 initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
 setSpeakFn((t) => Speech.speak(t));
 initWake(sendMessage, (s) => Orb.setState(s));
@@ -40,14 +42,31 @@ const micBtn   = document.getElementById("mic-btn");
 
 // Vision-aware send wrapper
 async function flowSend(text) {
-  // Check vision commands first
-  if (text) {
-    const vis = await parseVisionCommand(text);
-    if (vis !== false) {
-      if (vis !== null) { Chat.add(vis,"bot"); Speech.speak(vis); }
-      return;
-    }
+  if (!text) return;
+
+  // 1. Vision commands
+  const vis = await parseVisionCommand(text);
+  if (vis !== false) {
+    if (vis !== null) { Chat.add(vis,"bot"); Speech.speak(vis); }
+    return;
   }
+
+  // 2. Search + Goals commands
+  const sg = await parseSearchGoalCommand(text);
+  if (sg !== false) {
+    if (sg !== null) { Chat.add(sg,"bot"); Speech.speak(sg); }
+    return;
+  }
+
+  // 3. Goals: detect if user is pasting their daily goals as plain text
+  // (lines starting with numbers or dashes = likely a goals list)
+  if (/^(\d+[\.\)]\s|[-•]\s)/m.test(text) && text.split("\n").length >= 2) {
+    const entry = saveGoals(text);
+    const msg   = `Goals saved for today. You've got ${text.split("\n").filter(l=>l.trim()).length} things to get done. Let's go.`;
+    Chat.add(msg,"bot"); Speech.speak(msg);
+    return;
+  }
+
   sendMessage(text);
 }
 
@@ -120,6 +139,12 @@ Weather.get(); // warm cache
 
 // Patch wakeword to use flowSend
 startWakeListener();
+
+// Goals deadline watcher — alerts at 1PM Mon-Fri if no goals uploaded
+startGoalDeadlineWatcher(
+  (msg) => Speech.speak(msg),
+  (msg, who) => Chat.add(msg, who)
+);
 
 const hour     = new Date().getHours();
 const greeting = hour < 12 ? "Morning" : hour < 17 ? "Afternoon" : "Evening";
