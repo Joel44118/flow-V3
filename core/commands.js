@@ -143,3 +143,72 @@ export async function parseVisionCommand(text) {
 
   return false; // not a vision command
 }
+
+// ════════════════════════════════════════════
+// Search + Goals commands (appended at boot)
+// ════════════════════════════════════════════
+import { webSearch, deepResearch, formatResults, businessResearch } from "./websearch.js";
+import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
+
+let _searchSend = null;
+let _chatAdd    = null;
+export function setSearchHandlers(sendFn, chatFn) {
+  _searchSend = sendFn;
+  _chatAdd    = chatFn;
+}
+
+export async function parseSearchGoalCommand(text) {
+  const t = text.toLowerCase().trim();
+
+  // ── Web search ──────────────────────────
+  if (/^(search|look up|google|find|what is|who is|latest|news about)\s+(.+)/i.test(t)) {
+    const query = text.replace(/^(search|look up|google|find)\s+/i,"").trim();
+    _chatAdd?.(`Searching for "${query}"...`, "bot");
+    const results = await webSearch(query, "quick");
+    if (!results?.length) return `Couldn't find anything on "${query}" right now.`;
+    const context = formatResults(results, query);
+    // Pass to AI with search context
+    _searchSend?.(`I searched the web for "${query}". Here are the results:\n\n${context}\n\nBased on this, give me a clear useful answer.`);
+    return null; // AI handles the reply
+  }
+
+  // ── Deep research ────────────────────────
+  if (/research|deep\s+dive|investigate|tell me everything about/i.test(t)) {
+    const query = text.replace(/research|deep\s*dive|investigate|tell me everything about/gi,"").trim();
+    _chatAdd?.(`Researching "${query}"...`, "bot");
+    await deepResearch(query, _searchSend);
+    return null;
+  }
+
+  // ── Business growth research ─────────────
+  if (/grow(th)?\s+(my\s+)?business|joelflowstack|business\s+tips|how\s+to\s+grow/i.test(t)) {
+    _chatAdd?.("Researching growth strategies for Joelflowstack...", "bot");
+    await businessResearch(_searchSend);
+    return null;
+  }
+
+  // ── Goals: show today's ──────────────────
+  if (/my\s+goals|today'?s?\s+goals|show\s+goals|goals\s+today/i.test(t)) {
+    const entry = getTodayGoals();
+    return entry ? formatGoalsForAI(entry) : "You haven't uploaded your goals today yet. Send them to me as a message or upload a file.";
+  }
+
+  // ── Goals: mark complete ─────────────────
+  if (/done\s+(with\s+)?goal\s*#?(\d+)|completed?\s+goal\s*#?(\d+)|mark\s+goal\s*#?(\d+)/i.test(t)) {
+    const match = t.match(/(\d+)/);
+    if (match) {
+      const idx   = parseInt(match[1]) - 1;
+      const entry = completeGoal(idx);
+      if (!entry) return "No goals uploaded yet today.";
+      return formatGoalsForAI(entry);
+    }
+  }
+
+  // ── Goals: stats ─────────────────────────
+  if (/goal\s+stats|my\s+stats|streak|how\s+many\s+goals/i.test(t)) {
+    const s = getStats();
+    return `Goals stats: ${s.currentStreak} day streak, ${s.totalDaysUploaded} days uploaded, ${s.totalGoalsCompleted} goals completed total.`;
+  }
+
+  return false; // not a search/goal command
+}
