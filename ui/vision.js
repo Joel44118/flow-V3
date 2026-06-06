@@ -215,13 +215,12 @@ export const YOLO = {
 
       _chat?.add("Model downloading... almost there.", "bot");
 
-      // Xenova/yolov9-c — confirmed working with Transformers.js in-browser
-      // YOLOv9 is explicitly supported; yolov10 is NOT yet supported
+      // Xenova/yolos-tiny — highest downloads, confirmed transformers.js compatible
       this._pipeline = await pipeline(
         "object-detection",
-        "Xenova/yolov9-c",
+        "Xenova/yolos-tiny",
         {
-          dtype: "q8",    // 8-bit quantized — good balance of speed + accuracy
+          dtype: "fp32",
           device: "wasm",
         }
       );
