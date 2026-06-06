@@ -8,6 +8,7 @@ import { Alarms }        from "./alarms.js";
 import { Storage }       from "./storage.js";
 import { CONFIG }        from "./config.js";
 import { parseCommand, getTime, getDate } from "./commands.js";
+import { goalsSummary } from "./goals.js";
 import { Speech }        from "./speech.js";
 
 // UI refs injected at init (avoids circular imports)
@@ -26,7 +27,8 @@ Location: ${p.city}, ${p.country || "Nigeria"}
 Weather: ${weather}
 Alarms: ${Alarms.list()}
 Facts about Joel: ${Memory.factsString()}
-Note: ${Storage.get("notes","").slice(0,120) || "none"}`;
+Note: ${Storage.get("notes","").slice(0,120) || "none"}
+Goals today: ${goalsSummary()}`;
 }
 
 export async function sendMessage(overrideText) {
