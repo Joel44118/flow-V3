@@ -10,7 +10,8 @@
 // Flow's reply uses the normal model chain in api/chat.js
 // ═══════════════════════════════════════════
 
-import { Speech } from "../core/speech.js";
+import { Speech }       from "../core/speech.js";
+import { initFaceRecog, learnFace, startRecognition, stopRecognition, hasLearnedFace } from "./facerecog.js";
 
 // ── DOM elements (injected by app.js) ────
 let _chat    = null;
@@ -21,6 +22,7 @@ export function initVision(chat, orb, sendMsg) {
   _chat    = chat;
   _orb     = orb;
   _sendMsg = sendMsg;
+  initFaceRecog(chat);  // load saved face descriptor on boot
 }
 
 // ── State ─────────────────────────────────
@@ -91,16 +93,25 @@ export const Camera = {
       this._mount(cameraStream, "📷 CAMERA");
       Speech.speak("Camera online. I can see you now, Boss.");
       _chat?.add("Camera on. I can see you.", "bot");
+      // Start face recognition if Joel's face is saved
+      if (hasLearnedFace()) startRecognition(this._video);
     } catch(e) {
       _chat?.addError("Camera access denied: " + e.message);
     }
   },
 
   stop() {
+    stopRecognition();
     cameraStream?.getTracks().forEach(t => t.stop());
     cameraStream = null;
     this._unmount();
     Speech.speak("Camera off.");
+  },
+
+  async learnMyFace() {
+    if (!this._video) { _chat?.addError("Open camera first, then say 'learn my face'."); return; }
+    await learnFace(this._video);
+    if (hasLearnedFace()) startRecognition(this._video);
   },
 
   async look(question) {
@@ -118,12 +129,15 @@ export const Camera = {
     Speech.speak(desc, () => _orb?.setState("idle"));
   },
 
-  _mount(stream, label) {
+  async _mount(stream, label) {
     this._container = _createVideoContainer(label, () => this.stop());
+    document.body.appendChild(this._container); // in DOM first
     this._video = this._container.querySelector("video");
-    this._video.srcObject = stream;
-    this._video.play();
-    document.body.appendChild(this._container);
+    this._video.srcObject  = stream;
+    this._video.muted      = true;
+    this._video.playsInline = true;
+    await new Promise(r => { this._video.onloadedmetadata = r; setTimeout(r,2000); });
+    await this._video.play().catch(e => console.warn("[Camera] play():", e.message));
   },
 
   _unmount() {
@@ -177,12 +191,15 @@ export const ScreenVision = {
     Speech.speak(desc, () => _orb?.setState("idle"));
   },
 
-  _mount(stream, label) {
+  async _mount(stream, label) {
     this._container = _createVideoContainer(label, () => this.stop());
+    document.body.appendChild(this._container); // in DOM first
     this._video = this._container.querySelector("video");
-    this._video.srcObject = stream;
-    this._video.play();
-    document.body.appendChild(this._container);
+    this._video.srcObject  = stream;
+    this._video.muted      = true;
+    this._video.playsInline = true;
+    await new Promise(r => { this._video.onloadedmetadata = r; setTimeout(r,2000); });
+    await this._video.play().catch(e => console.warn("[Screen] play():", e.message));
   },
 
   _unmount() {
@@ -249,8 +266,11 @@ export const YOLO = {
       this._canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;";
       this._container.appendChild(this._canvas);
       this._video.srcObject = cameraStream;
-      await this._video.play();
-      document.body.appendChild(this._container);
+      document.body.appendChild(this._container);  // mount BEFORE play
+      await this._video.play().catch(e => {
+        // Autoplay blocked — user gesture required
+        console.warn("[YOLO] Autoplay blocked, will play on next interaction:", e.message);
+      });
 
       yoloActive    = true;
       this._running = true;
