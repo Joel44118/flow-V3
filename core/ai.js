@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════
 // core/ai.js — Calls /api/chat (Vercel proxy)
 // Key stays on server. Never in browser.
+// Now includes RAG context injection.
 // ═══════════════════════════════════════════
 import { Memory }        from "./memory.js";
 import { Weather }       from "./weather.js";
@@ -11,18 +12,23 @@ import { parseCommand, getTime, getDate } from "./commands.js";
 import { goalsSummary } from "./goals.js";
 import { selfKnowledgeBlock } from "./identity.js";
 import { Speech }        from "./speech.js";
+import { RAG }           from "./rag.js";
 
 // UI refs injected at init (avoids circular imports)
 let _chat = null;
 let _orb  = null;
 export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 
-function buildPrompt(weather) {
+function buildPrompt(weather, ragContext) {
   const p = Memory.getProfile();
+  const ragBlock = ragContext
+    ? `\nKNOWLEDGE BASE (relevant to this query):\n${ragContext}\n`
+    : "";
+
   return `${CONFIG.PERSONALITY}
 
 ${selfKnowledgeBlock()}
-
+${ragBlock}
 LIVE CONTEXT:
 Time: ${getTime()}
 Date: ${getDate()}
@@ -68,9 +74,14 @@ export async function sendMessage(overrideText) {
   _chat.showTyping();
 
   try {
-    const weather  = await Weather.get();
+    // Run weather + RAG search in parallel
+    const [weather, ragContext] = await Promise.all([
+      Weather.get(),
+      RAG.search(text),
+    ]);
+
     const messages = [
-      { role: "system", content: buildPrompt(weather) },
+      { role: "system", content: buildPrompt(weather, ragContext) },
       ...Memory.forAPI(),
     ];
 
@@ -83,7 +94,7 @@ export async function sendMessage(overrideText) {
     const data = await res.json();
     if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
 
-    console.log("[Flow] ←", data.reply.slice(0,60));
+    console.log("[Flow] ←", data.reply.slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
     _chat.hideTyping();
     _chat.add(data.reply, "bot");
     Memory.add("assistant", data.reply);
