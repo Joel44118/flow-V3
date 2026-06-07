@@ -11,7 +11,13 @@
 // ═══════════════════════════════════════════
 
 import { Speech }       from "../core/speech.js";
-import { initFaceRecog, learnFace, startRecognition, stopRecognition, hasLearnedFace } from "./facerecog.js";
+// facerecog loaded lazily on demand — never at startup
+let _facerecog = null;
+async function getFaceRecog() {
+  if (_facerecog) return _facerecog;
+  _facerecog = await import("./facerecog.js");
+  return _facerecog;
+}
 
 // ── DOM elements (injected by app.js) ────
 let _chat    = null;
@@ -22,7 +28,7 @@ export function initVision(chat, orb, sendMsg) {
   _chat    = chat;
   _orb     = orb;
   _sendMsg = sendMsg;
-  initFaceRecog(chat);  // load saved face descriptor on boot
+  // facerecog loads lazily when camera opens or face command used
 }
 
 // ── State ─────────────────────────────────
@@ -94,14 +100,15 @@ export const Camera = {
       Speech.speak("Camera online. I can see you now, Boss.");
       _chat?.add("Camera on. I can see you.", "bot");
       // Start face recognition if Joel's face is saved
-      if (hasLearnedFace()) startRecognition(this._video);
+      // Start face recognition lazily if face is saved
+      getFaceRecog().then(fr => { if (fr.hasLearnedFace()) fr.startRecognition(this._video); }).catch(()=>{});
     } catch(e) {
       _chat?.addError("Camera access denied: " + e.message);
     }
   },
 
   stop() {
-    stopRecognition();
+    getFaceRecog().then(fr => fr.stopRecognition()).catch(()=>{});
     cameraStream?.getTracks().forEach(t => t.stop());
     cameraStream = null;
     this._unmount();
@@ -110,8 +117,9 @@ export const Camera = {
 
   async learnMyFace() {
     if (!this._video) { _chat?.addError("Open camera first, then say 'learn my face'."); return; }
-    await learnFace(this._video);
-    if (hasLearnedFace()) startRecognition(this._video);
+    const fr = await getFaceRecog();
+    await fr.learnFace(this._video);
+    if (fr.hasLearnedFace()) fr.startRecognition(this._video);
   },
 
   async look(question) {
