@@ -18,12 +18,13 @@ import {
   getTime, getDate
 } from "./core/commands.js";
 
-import { Chat }       from "./ui/chat.js";
-import { Orb }        from "./ui/orb.js";
-import { Notepad }    from "./ui/notepad.js";
+import { Chat }        from "./ui/chat.js";
+import { Orb }         from "./ui/orb.js";
+import { Notepad }     from "./ui/notepad.js";
 import { handleFiles, initFileUpload } from "./ui/fileupload.js";
 import { initImagine, generateImage, parseImageRequest } from "./ui/imagine.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
+import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import "./ui/particles.js";
 
 // ── Wire cross-module dependencies ────────
@@ -39,12 +40,19 @@ setSearchHandlers((t) => sendMessage(t), (t, w) => Chat.add(t, w));
 
 initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
 initImagine(Chat, Orb);
+initKnowledge(Chat);
 
 // ── Master send function ──────────────────
 // Checks every command type before hitting API
 async function flowSend(text) {
   if (!text?.trim()) return;
   text = text.trim();
+
+  // 0. Knowledge base commands
+  if (/open\s+knowledge(\s+base)?|knowledge\s+base|my\s+knowledge/i.test(text)) {
+    Knowledge.open();
+    return;
+  }
 
   // 1. Image generation
   const imgPrompt = parseImageRequest(text);
@@ -71,7 +79,7 @@ async function flowSend(text) {
     return;
   }
 
-  // 6. AI
+  // 6. AI (with RAG context automatically injected in ai.js)
   sendMessage(text);
 }
 
