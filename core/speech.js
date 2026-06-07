@@ -2,42 +2,41 @@
 // core/speech.js — TTS + speech envelope
 // ═══════════════════════════════════════════
 
-let _isSpeaking  = false;
-let _envelope    = 0;
+let _isSpeaking   = false;
+let _envelope     = 0;
 let _lastBoundary = 0;
-let _onDone      = null;
+let _onDone       = null;
 
 // Tick: updates envelope ~60fps, read by orb.js
 setInterval(() => {
   if (!_isSpeaking) { _envelope *= 0.82; return; }
   const age   = performance.now() - _lastBoundary;
   const decay = Math.max(0, 1 - age / 260);
-  _envelope = decay * (0.5 + 0.5 * Math.sin(performance.now() * 0.025));
+  _envelope   = decay * (0.5 + 0.5 * Math.sin(performance.now() * 0.025));
 }, 16);
 
-// Strip code blocks before speaking — don't read raw code aloud
-function stripCodeForSpeech(text) {
+// Strip code blocks before speaking — never read raw code aloud
+function stripForSpeech(text) {
+  if (!text) return "";
   return text
-    // Replace code blocks with a short spoken summary
-    .replace(/```[\w]*
-[\s\S]*?```/gm, "[code block]")
-    // Remove inline code
+    .replace(/```[\s\S]*?```/g, "here is the code")
     .replace(/`[^`]+`/g, "")
-    // Remove markdown
-    .replace(/\*\*/g,"").replace(/^#+\s/gm,"").replace(/^[-•]\s/gm,"")
-    .replace(/\[code block\]/g, "...here is the code...")
+    .replace(/\*\*/g, "")
+    .replace(/^#+\s/gm, "")
+    .replace(/^[-•]\s/gm, "")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
 export const Speech = {
+
   speak(text, onDone) {
-    // Strip code before speaking
-    text = stripCodeForSpeech(text);
+    const clean = stripForSpeech(text);
     window.speechSynthesis.cancel();
     _isSpeaking = true;
-    _onDone = onDone || null;
+    _onDone     = onDone || null;
 
-    const u    = new SpeechSynthesisUtterance(text);
+    const u    = new SpeechSynthesisUtterance(clean);
     u.lang     = "en-US";
     u.rate     = 0.96;
     u.pitch    = 1;
@@ -46,7 +45,7 @@ export const Speech = {
     u.onboundary = (e) => {
       if (e.name === "word") {
         _lastBoundary = performance.now();
-        _envelope = 0.6 + Math.random() * 0.4;
+        _envelope     = 0.6 + Math.random() * 0.4;
       }
     };
 
@@ -65,6 +64,6 @@ export const Speech = {
     _envelope   = 0;
   },
 
-  isSpeaking()   { return _isSpeaking; },
-  getEnvelope()  { return _envelope;   },
+  isSpeaking()  { return _isSpeaking; },
+  getEnvelope() { return _envelope;   },
 };
