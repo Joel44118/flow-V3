@@ -1,5 +1,11 @@
 // ═══════════════════════════════════════════
 // ui/imagine.js — Image generation UI
+//
+// FIXES:
+//   - Handles HF blob response (downloads correctly)
+//   - Handles Pollinations URL fallback (opens in new tab)
+//   - Download button works for both cases
+//   - Image previews inline before downloading
 // ═══════════════════════════════════════════
 import { Speech } from "../core/speech.js";
 
@@ -12,11 +18,8 @@ export function initImagine(chat, orb) {
 }
 
 // ── Parse dimension strings ───────────────
-// "1920x1080", "1024 by 768", "square", "landscape", "portrait", "banner"
 function parseDimensions(text) {
   const t = text.toLowerCase();
-
-  // Presets
   if (/\bsquare\b/.test(t))                         return [1024, 1024];
   if (/\blandscape\b|\bwide\b/.test(t))             return [1280, 720];
   if (/\bportrait\b|\btall\b/.test(t))              return [720, 1280];
@@ -27,56 +30,55 @@ function parseDimensions(text) {
   if (/\bthumbnail\b/.test(t))                      return [1280, 720];
   if (/\bposter\b/.test(t))                         return [794, 1123];
   if (/\bcanva\b/.test(t))                          return [1080, 1080];
-
-  // Explicit dimensions: "1920x1080", "800 by 600", "400 * 300"
   const match = t.match(/(\d{2,4})\s*(?:x|by|\*|×)\s*(\d{2,4})/);
   if (match) return [parseInt(match[1]), parseInt(match[2])];
-
-  return [1024, 1024]; // default square
+  return [1024, 1024];
 }
 
-// ── Extract model preference ──────────────
 function parseModel(text) {
   const t = text.toLowerCase();
-  if (/\brealistic\b|\bphoto\b|\bphotographic\b/.test(t)) return "flux-realism";
+  if (/\brealistic\b|\bphoto\b|\bphotographic\b/.test(t)) return "realistic";
   if (/\bfast\b|\bquick\b|\bturbo\b/.test(t))             return "turbo";
-  return "flux"; // default — best quality
+  return "flux";
 }
 
 // ── Main generate function ────────────────
 export async function generateImage(promptText, dimensionHint = "") {
-  const combined = promptText + " " + dimensionHint;
-  const [w, h]   = parseDimensions(combined);
-  const model    = parseModel(combined);
+  const combined    = promptText + " " + dimensionHint;
+  const [w, h]      = parseDimensions(combined);
+  const model       = parseModel(combined);
 
-  // Clean prompt — remove dimension/style words
   const cleanPrompt = promptText
-    .replace(/\b(square|landscape|portrait|banner|wallpaper|poster|thumbnail|instagram|twitter|realistic|fast|turbo|canva)\b/gi, "")
+    .replace(/\b(square|landscape|portrait|banner|wallpaper|poster|thumbnail|instagram|twitter|realistic|fast|turbo|canva|logo|icon)\b/gi, "")
     .replace(/\d{2,4}\s*(?:x|by|\*|×)\s*\d{2,4}/g, "")
+    .replace(/\s+/g, " ")
     .trim();
 
-  _chat?.add(`Generating ${w}×${h} image: "${cleanPrompt}"...`, "bot");
+  _chat?.add(`Generating ${w}×${h} image — "${cleanPrompt}"...`, "bot");
   _orb?.setState("thinking");
 
   try {
     const url = `/api/imagine?prompt=${encodeURIComponent(cleanPrompt)}&w=${w}&h=${h}&model=${model}`;
     const res  = await fetch(url);
 
-    let imgUrl;
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+
     const contentType = res.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
+
+    if (contentType.startsWith("image/")) {
+      // HuggingFace returned actual image binary — create local blob URL
+      const blob   = await res.blob();
+      const imgUrl = URL.createObjectURL(blob);
+      _renderImageCard(imgUrl, cleanPrompt, w, h, true); // isBlob = true
+    } else {
+      // Pollinations fallback — got a JSON with a URL
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      imgUrl = data.url; // fallback URL
-    } else {
-      // Direct image blob
-      const blob = await res.blob();
-      imgUrl = URL.createObjectURL(blob);
+      const imgUrl = data.url;
+      _renderImageCard(imgUrl, cleanPrompt, w, h, false); // isBlob = false
     }
 
-    // Render image in chat
-    _renderImageMessage(imgUrl, cleanPrompt, w, h);
-    Speech.speak(`Here's your ${w} by ${h} image.`);
+    Speech.speak(`Here's your ${w} by ${h} image, Boss.`);
     _orb?.setState("idle");
 
   } catch(e) {
@@ -85,11 +87,11 @@ export async function generateImage(promptText, dimensionHint = "") {
   }
 }
 
-function _renderImageMessage(imgUrl, prompt, w, h) {
-  const col  = document.getElementById("col-left");
+function _renderImageCard(imgUrl, prompt, w, h, isBlob) {
+  const col = document.getElementById("col-left");
   if (!col) return;
 
-  const wrap  = document.createElement("div");
+  const wrap = document.createElement("div");
   wrap.className = "mwrap mleft fresh";
 
   const label = document.createElement("div");
@@ -99,21 +101,48 @@ function _renderImageMessage(imgUrl, prompt, w, h) {
   const card = document.createElement("div");
   card.className = "img-card";
 
+  // Image element — inline preview
   const img = document.createElement("img");
-  img.src   = imgUrl;
   img.alt   = prompt;
-  img.style.cssText = `max-width:100%;border-radius:10px;display:block;cursor:pointer;`;
+  img.style.cssText = "max-width:100%;border-radius:10px;display:block;cursor:pointer;min-height:60px;background:rgba(56,189,248,.05);";
+
+  // For Pollinations URL fallback — load inline, handle errors
+  if (!isBlob) {
+    img.crossOrigin = "anonymous";
+    img.onerror = () => {
+      // Image failed to load inline (CORS etc) — show open link instead
+      img.style.display = "none";
+      const openLink = document.createElement("a");
+      openLink.href      = imgUrl;
+      openLink.target    = "_blank";
+      openLink.className = "img-open-btn";
+      openLink.textContent = "🖼 Open Image in New Tab";
+      card.insertBefore(openLink, img.nextSibling);
+    };
+  }
+  img.src = imgUrl;
   img.onclick = () => window.open(imgUrl, "_blank");
 
+  // Meta info
   const meta = document.createElement("div");
   meta.className   = "img-meta";
-  meta.textContent = `${w}×${h} • click to open full size`;
+  meta.textContent = `${w}×${h} · click image to open full size`;
 
+  // Download button — works correctly for both blob and URL
   const dlBtn = document.createElement("a");
-  dlBtn.href      = imgUrl;
-  dlBtn.download  = `flow-${Date.now()}.jpg`;
-  dlBtn.className = "img-dl-btn";
+  dlBtn.className   = "img-dl-btn";
   dlBtn.textContent = "⬇ DOWNLOAD";
+
+  if (isBlob) {
+    // Blob URL — direct download works
+    dlBtn.href     = imgUrl;
+    dlBtn.download = `flow-image-${Date.now()}.jpg`;
+  } else {
+    // Pollinations URL — open in new tab (avoids the rate-limit JSON error page)
+    dlBtn.href   = imgUrl;
+    dlBtn.target = "_blank";
+    dlBtn.title  = "Opens in new tab — right-click to save";
+  }
 
   card.appendChild(img);
   card.appendChild(meta);
@@ -123,22 +152,18 @@ function _renderImageMessage(imgUrl, prompt, w, h) {
   col.appendChild(wrap);
   col.scrollTop = col.scrollHeight;
 
-  // Fade after 8s (images stay visible longer)
-  setTimeout(() => wrap.classList.remove("fresh"), 8000);
+  // Keep visible longer — images need more reading time
+  setTimeout(() => wrap.classList.remove("fresh"), 10000);
 }
 
 // ── Parse image request from text ─────────
 export function parseImageRequest(text) {
-  const t = text.toLowerCase();
-
-  // Triggers: "generate", "create", "make", "draw", "imagine", "design"
-  const triggers = /\b(generate|create|make|draw|imagine|design|show me|produce)\b.*\b(image|picture|photo|illustration|artwork|logo|banner|poster|thumbnail|wallpaper)\b/i;
+  const triggers = /\b(generate|create|make|draw|imagine|design|show me|produce)\b.*\b(image|picture|photo|illustration|artwork|logo|banner|poster|thumbnail|wallpaper|icon)\b/i;
   const reverse  = /\b(image|picture|photo|illustration|artwork|logo|banner|poster|thumbnail|wallpaper)\b.*\b(of|for|showing|with)\b/i;
   const canvaStyle = /\bcanva.*(style|like|design)\b/i;
 
   if (!triggers.test(text) && !reverse.test(text) && !canvaStyle.test(text)) return null;
 
-  // Extract the actual subject
   let prompt = text
     .replace(/\b(generate|create|make|draw|imagine|design|show me|produce)\b/gi, "")
     .replace(/\b(an?\s+)?(image|picture|photo|illustration|artwork)\b/gi, "")
