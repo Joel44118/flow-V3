@@ -1,22 +1,61 @@
 // ═══════════════════════════════════════════
 // core/rag.js — RAG Knowledge Base Manager
 //
-// Flow's "training" system. You upload docs,
-// Flow searches them before every AI reply
-// and injects relevant context into the prompt.
+// STORAGE STRATEGY:
+//   Primary:  Vercel KV via /api/rag (cloud, persists everywhere)
+//   Fallback: localStorage (works offline, per-device)
 //
-// Usage:
-//   RAG.save("My business", "Joelflowstack builds bots...")
-//   RAG.search("how do I grow my bot business?")
-//   RAG.list()
+// If KV isn't connected, saves to localStorage automatically.
+// No error shown to user — it just works.
 // ═══════════════════════════════════════════
 
-const CACHE = new Map(); // title → content (session cache)
+const LS_KEY = "flow_rag_docs";
+
+// ── localStorage helpers ──────────────────
+function lsGetAll() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; }
+}
+function lsSet(title, content) {
+  const all = lsGetAll();
+  all[title] = { content, saved: Date.now() };
+  localStorage.setItem(LS_KEY, JSON.stringify(all));
+}
+function lsDel(title) {
+  const all = lsGetAll();
+  delete all[title];
+  localStorage.setItem(LS_KEY, JSON.stringify(all));
+}
+
+// ── Simple keyword scoring ────────────────
+function score(query, chunk) {
+  const q = query.toLowerCase();
+  const c = chunk.toLowerCase();
+  const words = q.split(/\s+/).filter(w => w.length > 3);
+  if (!words.length) return 0;
+  return words.filter(w => c.includes(w)).length / words.length;
+}
+
+function searchLocal(query) {
+  const all    = lsGetAll();
+  const chunks = [];
+  for (const [title, doc] of Object.entries(all)) {
+    if (!doc.content) continue;
+    const words = doc.content.split(/\s+/);
+    for (let i = 0; i < words.length; i += 150) {
+      const chunk = words.slice(i, i + 200).join(" ");
+      chunks.push({ title, text: chunk, s: score(query, chunk) });
+    }
+  }
+  const top = chunks.filter(c => c.s > 0.1).sort((a, b) => b.s - a.s).slice(0, 3);
+  if (!top.length) return null;
+  return top.map(c => `[From "${c.title}"]\n${c.text}`).join("\n\n---\n\n");
+}
 
 export const RAG = {
 
-  // Search knowledge base — returns context string or null
+  // Search — tries KV first, falls back to localStorage
   async search(query) {
+    // Try KV
     try {
       const res  = await fetch("/api/rag", {
         method:  "POST",
@@ -24,17 +63,21 @@ export const RAG = {
         body:    JSON.stringify({ action: "search", query }),
       });
       const data = await res.json();
-      if (!res.ok || !data.context) return null;
-      console.log(`[RAG] Found ${data.found} relevant chunk(s) for: "${query.slice(0,40)}"`);
-      return data.context;
-    } catch(e) {
-      console.warn("[RAG] Search failed:", e.message);
-      return null;
-    }
+      if (res.ok && data.context) {
+        console.log(`[RAG/KV] ${data.found} chunk(s) for: "${query.slice(0,40)}"`);
+        return data.context;
+      }
+    } catch(_) {}
+
+    // Fallback to localStorage
+    const local = searchLocal(query);
+    if (local) console.log("[RAG/local] found context for:", query.slice(0, 40));
+    return local;
   },
 
-  // Save a knowledge document
+  // Save — tries KV first, falls back to localStorage
   async save(title, content) {
+    // Try KV
     try {
       const res  = await fetch("/api/rag", {
         method:  "POST",
@@ -42,47 +85,47 @@ export const RAG = {
         body:    JSON.stringify({ action: "save", title, content }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      CACHE.set(title, content);
-      console.log(`[RAG] Saved: "${title}" (${content.length} chars)`);
-      return true;
-    } catch(e) {
-      console.error("[RAG] Save failed:", e.message);
-      return false;
-    }
+      if (res.ok && data.ok) {
+        lsSet(title, content); // also save locally as backup
+        console.log(`[RAG/KV] Saved: "${title}"`);
+        return true;
+      }
+    } catch(_) {}
+
+    // Fallback to localStorage only
+    lsSet(title, content);
+    console.log(`[RAG/local] Saved: "${title}" (${content.length} chars)`);
+    return true; // always succeeds locally
   },
 
-  // List all knowledge documents
+  // List all docs
   async list() {
     try {
       const res  = await fetch("/api/rag");
       const data = await res.json();
-      return (data.keys || []).map(k => k.replace("rag:", "").replace(/_/g, " "));
-    } catch(e) {
-      console.warn("[RAG] List failed:", e.message);
-      return [];
-    }
+      if (res.ok && data.keys?.length) {
+        return data.keys.map(k => k.replace("rag:", "").replace(/_/g, " "));
+      }
+    } catch(_) {}
+    // Fallback to localStorage
+    return Object.keys(lsGetAll());
   },
 
-  // Delete a knowledge document
+  // Delete
   async delete(title) {
+    lsDel(title);
     try {
       await fetch("/api/rag", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ action: "delete", title }),
       });
-      CACHE.delete(title);
-      return true;
-    } catch(e) {
-      return false;
-    }
+    } catch(_) {}
+    return true;
   },
 
-  // Parse uploaded file content into knowledge
-  // Called by fileupload.js when user uploads .txt/.md files
+  // Parse filename into a clean title
   parseDocument(filename, content) {
-    // Use filename (minus extension) as the title
     const title = filename.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ");
     return { title, content };
   },
