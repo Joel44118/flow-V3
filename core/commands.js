@@ -1,26 +1,12 @@
 // ═══════════════════════════════════════════
-// core/commands.js — ALL imports at top
+// core/commands.js — Local command parser
+// Returns: string (reply) | null (silent) | false (→ API)
 // ═══════════════════════════════════════════
-import { Weather }         from "./weather.js";
+import { Weather }       from "./weather.js";
 import { Alarms, normaliseTime } from "./alarms.js";
-import { Storage }         from "./storage.js";
-import { CONFIG }          from "./config.js";
-import { webSearch, deepResearch, formatResults, businessResearch } from "./websearch.js";
-import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
+import { Storage }       from "./storage.js";
+import { CONFIG }        from "./config.js";
 
-// ── Injected refs (set at boot to avoid circular imports) ──
-let _notepad = null;
-let _speak   = null;
-let _vision  = null;
-let _searchSend = null;
-let _chatAdd    = null;
-
-export function setNotepad(n)          { _notepad    = n; }
-export function setSpeakFn(fn)         { _speak      = fn; }
-export function setVision(v)           { _vision     = v; }
-export function setSearchHandlers(s,c) { _searchSend = s; _chatAdd = c; }
-
-// ── Site open map ──────────────────────────
 const SITES = [
   { rx:/open\s+youtube/i,            url:"https://youtube.com" },
   { rx:/open\s+google(?!\s+maps?)/i, url:"https://google.com" },
@@ -48,121 +34,118 @@ const SITES = [
   { rx:/open\s+linkedin/i,           url:"https://linkedin.com" },
   { rx:/open\s+twitch/i,             url:"https://twitch.tv" },
   { rx:/open\s+vercel/i,             url:"https://vercel.com/dashboard" },
-  { rx:/open\s+stackover/i,          url:"https://stackoverflow.com" },
-  { rx:/open\s+mdn/i,                url:"https://developer.mozilla.org" },
-  { rx:/search\s+(?:for\s+)?(.+)/i,  fn: m => `https://google.com/search?q=${encodeURIComponent(m[1])}` },
-  { rx:/open\s+(https?:\/\/\S+)/i,   fn: m => m[1] },
-  { rx:/open\s+(\w[\w.-]+\.\w{2,})/i,fn: m => `https://${m[1]}` },
+  { rx:/open\s+github/i,             url:"https://github.com" },
+  { rx:/search\s+(?:for\s+)?(.+)/i,  fn:m=>`https://google.com/search?q=${encodeURIComponent(m[1])}` },
+  { rx:/open\s+(https?:\/\/\S+)/i,   fn:m=>m[1] },
+  { rx:/open\s+(\w[\w.-]+\.\w{2,})/i,fn:m=>`https://${m[1]}` },
 ];
 
 export function getTime() {
-  return new Date().toLocaleTimeString("en-NG", { hour:"2-digit", minute:"2-digit", hour12:true });
+  return new Date().toLocaleTimeString("en-NG",{hour:"2-digit",minute:"2-digit",hour12:true});
 }
 export function getDate() {
-  return new Date().toLocaleDateString("en-NG", { weekday:"long", year:"numeric", month:"long", day:"numeric" });
+  return new Date().toLocaleDateString("en-NG",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
 }
 
-// ── Local command parser ───────────────────
-// Returns: string (reply) | null (handled silently) | false (→ API)
+// notepad reference injected at init to avoid circular imports
+let _notepad = null;
+export function setNotepad(n) { _notepad = n; }
+
+// speakFn injected at init
+let _speak = null;
+export function setSpeakFn(fn) { _speak = fn; }
+
 export async function parseCommand(text) {
   const t = text.toLowerCase().trim();
 
-  if (/what.s the time|time now|current time/i.test(t))  return `It's ${getTime()}.`;
-  if (/what.s the date|what day/i.test(t))               return `Today is ${getDate()}.`;
-  if (/weather|forecast|temperature|how hot|rain/i.test(t))
+  if (/what('?s| is) the time|time now|current time/i.test(t))
+    return `It's ${getTime()}.`;
+
+  if (/what('?s| is) (the )?date|what day/i.test(t))
+    return `Today is ${getDate()}.`;
+
+  if (/weather|forecast|temperature|how hot|how cold|rain|humidity/i.test(t))
     return `Weather in ${CONFIG.USER.city}: ${await Weather.get()}`;
 
   // Notepad
-  if (/open\s+(notepad|note)/i.test(t))                         { _notepad?.open(false); return null; }
-  if (/take\s+a?\s*note|write.*down|start\s+note/i.test(t))    { _notepad?.open(true);  return null; }
-  if (/close\s+(notepad|note)/i.test(t))                        { _notepad?.close();     return null; }
-  if (/clear\s+(notepad|note)/i.test(t))                        { _notepad?.clear();     return null; }
+  if (/open\s+(notepad|note|notes)/i.test(t))                              { _notepad?.open(false); return null; }
+  if (/take\s+(a\s+)?note|write\s+(this\s+)?down|start\s+note/i.test(t))  { _notepad?.open(true);  return null; }
+  if (/close\s+(notepad|note)/i.test(t))                                   { _notepad?.close();     return null; }
+  if (/clear\s+(notepad|note|notes)/i.test(t))                             { _notepad?.clear();     return null; }
 
-  // Brain
+  // Brain export
   if (/export\s+(brain|memory|backup)/i.test(t)) return Storage.exportBrain();
 
+  // Image generation - capture "imagine ..." or "generate image ..."
+  const imageMatch = text.match(/(?:imagine|generate|create|draw)\s+(?:an?\s+)?(?:image|picture|photo)?\s*(?:of\s+)?(.+)/i);
+  if (imageMatch) {
+    return false; // Pass to API for better context understanding
+  }
+
   // Alarm set
-  const alarmSet = text.match(/set\s+an?\s*alarm\s+(?:for\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)(.*)?/i);
+  const alarmSet = text.match(/set\s+(an?\s+)?alarm\s+(?:for\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)(.*)?/i);
   if (alarmSet) {
-    const timeStr = normaliseTime(alarmSet[1]);
-    const label   = alarmSet[2]?.replace(/^[^a-z0-9]+/i,"").trim() || alarmSet[1].trim();
+    const timeStr = normaliseTime(alarmSet[2]);
+    const label   = alarmSet[3]?.replace(/^[^a-z0-9]+/i,"").trim() || alarmSet[2].trim();
     return Alarms.set(timeStr, label, _speak);
   }
-  if (/list\s+alarms?|my\s+alarms?|show\s+alarms?/i.test(t)) return Alarms.list();
+
+  // Alarm list
+  if (/list\s+alarms?|my\s+alarms?|show\s+alarms?/i.test(t))
+    return Alarms.list();
+
+  // Alarm delete
   const alarmDel = text.match(/(?:delete|cancel|remove)\s+alarm(?:\s+for)?\s+(.+)/i);
   if (alarmDel) return Alarms.del(alarmDel[1]);
 
-  // Sites
+  // Open sites
   for (const p of SITES) {
     const m = text.match(p.rx);
-    if (m) { window.open(p.fn ? p.fn(m) : p.url, "_blank"); return `Opening ${m[1] || "that"} now.`; }
+    if (m) {
+      window.open(p.fn ? p.fn(m) : p.url, "_blank");
+      return `Pulling up ${m[1] || "that"} now.`;
+    }
   }
 
-  return false;
+  return false; // pass to API
 }
 
-// ── Vision commands ────────────────────────
+// ── Vision commands (injected at boot) ───
+let _vision = null;
+export function setVision(v) { _vision = v; }
+
+// Call this AFTER the existing parseCommand function
+// by chaining in app.js — see app.js for wiring
 export async function parseVisionCommand(text) {
   const t = text.toLowerCase().trim();
 
-  if (/open\s+camera|start\s+camera|turn\s+on\s+camera/i.test(t))         { _vision?.Camera.start();        return null; }
-  if (/close\s+camera|stop\s+camera|turn\s+off\s+camera/i.test(t))        { _vision?.Camera.stop();         return null; }
-  if (/share\s+screen|open\s+screen|see\s+my\s+screen/i.test(t))          { _vision?.ScreenVision.start();  return null; }
-  if (/stop\s+screen|close\s+screen|stop\s+sharing/i.test(t))             { _vision?.ScreenVision.stop();   return null; }
-  if (/start\s+yolo|object\s+detect|detect\s+objects|eyes?\s+on/i.test(t)){ _vision?.YOLO.start();          return null; }
-  if (/stop\s+yolo|eyes?\s+off|stop\s+detect/i.test(t))                   { _vision?.YOLO.stop();           return null; }
-  if (/learn\s+my\s+face|remember\s+my\s+face/i.test(t))                  { _vision?.Camera.learnMyFace?.(); return null; }
+  // Camera
+  if (/open\s+camera|start\s+camera|turn\s+on\s+camera/i.test(t))  { _vision?.Camera.start();       return null; }
+  if (/close\s+camera|stop\s+camera|turn\s+off\s+camera/i.test(t)) { _vision?.Camera.stop();        return null; }
 
-  if (/what\s+(?:do\s+you\s+)?see|look\s+at\s+(?:the\s+)?(?:screen|camera)/i.test(t)) {
+  // Screen
+  if (/share\s+screen|open\s+screen|see\s+(my\s+)?screen/i.test(t))         { _vision?.ScreenVision.start(); return null; }
+  if (/stop\s+(sharing\s+)?screen|close\s+screen/i.test(t))                  { _vision?.ScreenVision.stop();  return null; }
+
+  // YOLO
+  if (/start\s+yolo|object\s+detect|detect\s+objects|eyes?\s+on/i.test(t))  { _vision?.YOLO.start();         return null; }
+  if (/stop\s+yolo|eyes?\s+off|stop\s+detect/i.test(t))                      { _vision?.YOLO.stop();          return null; }
+
+  // Look / describe
+  if (/what\s+(do\s+you\s+)?(can\s+you\s+)?see|look\s+at\s+(the\s+)?(screen|camera)/i.test(t)) {
+    // Try screen first, then camera
     if (_vision?.ScreenVision._video) { _vision.ScreenVision.look(text); return null; }
     if (_vision?.Camera._video)       { _vision.Camera.look(text);       return null; }
-    return "No camera or screen open yet. Say 'open camera' or 'share screen' first.";
-  }
-  if (/what.s on my screen|read.*screen/i.test(t)) { _vision?.ScreenVision.look(text); return null; }
-  if (/who is that|who am i/i.test(t))              { _vision?.Camera.look(text);       return null; }
-
-  return false;
-}
-
-// ── Search + Goals commands ────────────────
-export async function parseSearchGoalCommand(text) {
-  const t = text.toLowerCase().trim();
-
-  // Web search
-  if (/^(search|look up|google|find|latest|news about)\s+(.+)/i.test(t)) {
-    const query = text.replace(/^(search|look up|google|find)\s+/i,"").trim();
-    _chatAdd?.(`Searching for "${query}"...`, "bot");
-    const results = await webSearch(query, "quick");
-    if (!results?.length) return `Nothing found for "${query}" right now.`;
-    const context = formatResults(results, query);
-    _searchSend?.(`I searched the web for "${query}". Results:\n\n${context}\n\nGive me a clear useful answer based on this.`);
-    return null;
-  }
-  if (/research|deep\s*dive|investigate|tell me everything about/i.test(t)) {
-    const query = text.replace(/research|deep\s*dive|investigate|tell me everything about/gi,"").trim();
-    _chatAdd?.(`Researching "${query}"...`, "bot");
-    await deepResearch(query, _searchSend);
-    return null;
-  }
-  if (/grow.*business|joelflowstack|business\s+tips/i.test(t)) {
-    _chatAdd?.("Researching growth strategies...", "bot");
-    await businessResearch(_searchSend);
-    return null;
+    return "I don't have eyes open yet. Say 'open camera' or 'share screen' first.";
   }
 
-  // Goals
-  if (/my\s+goals|today.s\s+goals|show\s+goals/i.test(t)) {
-    const e = getTodayGoals();
-    return e ? formatGoalsForAI(e) : "No goals uploaded today yet.";
+  // "What's on my screen?" / "Who is that?" etc
+  if (/what('?s|\s+is)\s+(on\s+)?(my\s+)?screen|read\s+(my\s+)?screen/i.test(t)) {
+    _vision?.ScreenVision.look(text); return null;
   }
-  if (/done\s+(?:with\s+)?goal\s*#?(\d+)|completed?\s+goal\s*#?(\d+)/i.test(t)) {
-    const m = t.match(/(\d+)/);
-    if (m) { const e = completeGoal(parseInt(m[1])-1); return e ? formatGoalsForAI(e) : "No goals yet."; }
-  }
-  if (/goal\s+stats|my\s+stats|streak/i.test(t)) {
-    const s = getStats();
-    return `${s.currentStreak} day streak, ${s.totalDaysUploaded} days uploaded, ${s.totalGoalsCompleted} goals completed.`;
+  if (/who\s+is\s+(that|this)|what\s+am\s+i\s+looking\s+at/i.test(t)) {
+    _vision?.Camera.look(text); return null;
   }
 
-  return false;
+  return false; // not a vision command
 }
