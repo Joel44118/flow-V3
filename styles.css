@@ -519,3 +519,77 @@ body.drag-over { box-shadow: inset 0 0 0 3px rgba(56,189,248,0.4); }
 .code-block pre code { font-size: 12.5px; line-height: 1.6; font-family: 'Fira Code', 'Consolas', monospace; }
 .code-prose { color: rgba(255,255,255,.85); line-height: 1.6; margin: 4px 0; }
 .has-code { display: flex; flex-direction: column; gap: 6px; }
+/* ── FILE CHIP (non-image uploads) ─────── */
+.file-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(56,189,248,.07);
+  border: 1px solid rgba(56,189,248,.2);
+  border-radius: 12px;
+  max-width: 100%;
+}
+.file-chip-icon { font-size: 18px; flex-shrink: 0; }
+.file-chip-name {
+  font-family: var(--fb);
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,.85);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-chip-size {
+  font-family: var(--fd);
+  font-size: 9px;
+  letter-spacing: .1em;
+  color: rgba(56,189,248,.4);
+  flex-shrink: 0;
+}
+
+/* ── IMAGE CARD ─────────────────────────── */
+.img-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+}
+.img-meta {
+  font-family: var(--fd);
+  font-size: 9px;
+  letter-spacing: .1em;
+  color: rgba(56,189,248,.35);
+}
+.img-dl-btn {
+  display: inline-block;
+  background: rgba(56,189,248,.08);
+  border: 1px solid rgba(56,189,248,.22);
+  color: var(--cyan);
+  font-family: var(--fd);
+  font-size: 9px;
+  letter-spacing: .14em;
+  padding: 6px 14px;
+  border-radius: 20px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background .2s;
+  width: fit-content;
+}
+.img-dl-btn:hover { background: rgba(56,189,248,.2); }
+.img-open-btn {
+  display: inline-block;
+  background: rgba(56,189,248,.08);
+  border: 1px solid rgba(56,189,248,.22);
+  color: var(--cyan);
+  font-family: var(--fb);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 16px;
+  border-radius: 10px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background .2s;
+}
+.img-open-btn:hover { background: rgba(56,189,248,.2); }
