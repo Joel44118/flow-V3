@@ -1,5 +1,9 @@
 // ═══════════════════════════════════════════
 // core/speech.js — TTS + speech envelope
+//
+// FIX: stripForSpeech now uses greedy regex
+// so unclosed ``` blocks (truncated responses)
+// are also silenced — not read aloud.
 // ═══════════════════════════════════════════
 
 let _isSpeaking   = false;
@@ -15,15 +19,25 @@ setInterval(() => {
   _envelope   = decay * (0.5 + 0.5 * Math.sin(performance.now() * 0.025));
 }, 16);
 
-// Strip code blocks before speaking — never read raw code aloud
+// Strip ALL code before speaking
+// Uses greedy [\s\S]* so unclosed blocks at end of string are caught too
 function stripForSpeech(text) {
   if (!text) return "";
   return text
+    // Closed fenced blocks: ```...``` — greedy, catches multiline
     .replace(/```[\s\S]*?```/g, "here is the code")
+    // Unclosed fenced block at end of string (truncated response)
+    .replace(/```[\s\S]*/g, "here is the code")
+    // Inline code: `...`
     .replace(/`[^`]+`/g, "")
+    // Remaining backticks
+    .replace(/`/g, "")
+    // Markdown cleanup
     .replace(/\*\*/g, "")
     .replace(/^#+\s/gm, "")
     .replace(/^[-•]\s/gm, "")
+    // URL cleanup — don't read raw URLs
+    .replace(/https?:\/\/\S+/g, "link")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -32,6 +46,11 @@ export const Speech = {
 
   speak(text, onDone) {
     const clean = stripForSpeech(text);
+    // If nothing left after stripping (pure code response), just call onDone
+    if (!clean || clean === "here is the code") {
+      if (onDone) onDone();
+      return;
+    }
     window.speechSynthesis.cancel();
     _isSpeaking = true;
     _onDone     = onDone || null;
