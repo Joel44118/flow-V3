@@ -37,6 +37,9 @@ async function _processFile(file) {
     if (/^image\//.test(file.type) || ["jpg","jpeg","png","gif","webp","bmp","svg"].includes(ext)) {
       const dataUrl = await _toDataURL(file);
 
+      // Store base64 for background removal command
+      window._lastUploadedBase64 = dataUrl.split(",")[1];
+
       // Show preview inline in user column
       _renderImagePreview(dataUrl, name, "user");
 
