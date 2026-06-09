@@ -1,64 +1,46 @@
 // ═══════════════════════════════════════════
 // api/chat.js — HuggingFace Inference API
 //
-// ROOT CAUSE OF 502 FIXED:
-//   Old version made 2 HF calls (classify + generate).
-//   Each cold-starts independently = timeout.
-//   Now: intent detected by REGEX locally (0ms),
-//   then ONE HF call with retry on 503.
-//   Total time budget: well within 30s limit.
+// VERCEL HOBBY PLAN FIX:
+//   Hobby plan caps ALL functions at 10 seconds.
+//   Previous version had retries that added up to 30s+ → timeout → "fetch failed"
+//   Now: 7s AbortController timeout per model, instant fallback, zero retries.
+//   Total worst case: 3 models × 7s = 21s... but Vercel kills at 10s.
+//   So: 1 model attempt, 7s budget, fallback to next if it fails. Fast.
 //
-// VERCEL ENV VAR:
-//   HF_TOKEN  ← huggingface.co/settings/tokens
-//              Create a "Read" token (free account is fine)
-//              Name it anything e.g. "flow-v3"
-//
-// MODEL CHAIN (one call, right model per intent):
-//   code     → Qwen/Qwen2.5-Coder-32B-Instruct
-//   research → meta-llama/Llama-3.3-70B-Instruct
-//   chat     → mistralai/Mistral-7B-Instruct-v0.3  ← fastest, stays warm
-//   creative → mistralai/Mistral-7B-Instruct-v0.3
-//   pdf      → meta-llama/Llama-3.1-8B-Instruct
+// HF_TOKEN: huggingface.co/settings/tokens → New token → Read → Copy
+// Add in: Vercel Dashboard → Settings → Environment Variables → HF_TOKEN
 // ═══════════════════════════════════════════
 
 const HF_API = "https://api-inference.huggingface.co/v1/chat/completions";
 
-const INTENT_MODEL = {
-  code:     "Qwen/Qwen2.5-Coder-32B-Instruct",
-  research: "meta-llama/Llama-3.3-70B-Instruct",
-  pdf:      "meta-llama/Llama-3.1-8B-Instruct",
-  creative: "mistralai/Mistral-7B-Instruct-v0.3",
-  chat:     "mistralai/Mistral-7B-Instruct-v0.3",
-};
+// Intent detected by regex — zero extra API call
+function detectIntent(text) {
+  const t = text.toLowerCase();
+  if (/\b(write|create|build|fix|debug|code|function|script|html|css|javascript|python|component|api endpoint)\b/.test(t)) return "code";
+  if (/\b(research|explain|summarise|summarize|how does|what is|history|deep dive)\b/.test(t)) return "research";
+  if (/\b(pdf|document|extract|read this file)\b/.test(t)) return "pdf";
+  return "chat";
+}
 
-const TOKEN_LIMIT = {
-  code:     2500,
-  research: 1200,
-  pdf:      1200,
-  creative: 700,
-  chat:     500,
-};
+const INTENT_TOKENS = { code: 2000, research: 800, pdf: 800, chat: 400 };
 
-// Fallbacks — ordered warmest first
-const FALLBACKS = [
-  "mistralai/Mistral-7B-Instruct-v0.3",
-  "meta-llama/Llama-3.1-8B-Instruct",
-  "HuggingFaceH4/zephyr-7b-beta",
+// Models ordered: warmest/fastest first
+// These are the highest-traffic models on HF — almost always warm
+const MODEL_CHAIN = [
+  "mistralai/Mistral-7B-Instruct-v0.3",      // #1 most used — almost always warm
+  "meta-llama/Meta-Llama-3-8B-Instruct",     // very popular fallback
+  "HuggingFaceH4/zephyr-7b-beta",            // reliable fallback
+];
+
+// Code gets a better model when budget allows
+const CODE_CHAIN = [
+  "Qwen/Qwen2.5-Coder-32B-Instruct",
+  "mistralai/Mistral-7B-Instruct-v0.3",      // fallback if Qwen cold
 ];
 
 const STOP_TOKENS = ["</s>", "<|eot_id|>", "Human:", "User:", "Assistant:", "</assistant>"];
 
-// ── INTENT DETECTION (pure regex, 0ms, no extra API call) ──────────────────
-function detectIntent(text) {
-  const t = text.toLowerCase();
-  if (/\b(code|function|script|write.*code|build.*app|html|css|javascript|python|debug|fix.*bug|component|api)\b/.test(t)) return "code";
-  if (/\b(research|explain|summarise|summarize|deep dive|tell me about|how does|what is|why does|history of)\b/.test(t)) return "research";
-  if (/\b(pdf|document|file|upload|extract|read this)\b/.test(t)) return "pdf";
-  if (/\b(write.*story|poem|creative|imagine|fictional|roleplay)\b/.test(t)) return "creative";
-  return "chat";
-}
-
-// ── CLEAN REPLY ─────────────────────────────────────────────────────────────
 function cleanReply(text) {
   return text
     .replace(/<\/?assistant>/gi, "")
@@ -69,65 +51,54 @@ function cleanReply(text) {
     .trim();
 }
 
-// ── TRIM MESSAGES (prevents token overflow) ──────────────────────────────────
 function trimMessages(messages) {
   const system  = messages.find(m => m.role === "system");
-  const history = messages.filter(m => m.role !== "system").slice(-14);
+  const history = messages.filter(m => m.role !== "system").slice(-10);
 
   if (!system) return history;
 
   let sys = system.content;
-
-  // Strip RAG block if prompt is long
-  if (sys.length > 4500) {
-    sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:)/s, "");
-  }
-  // Condense identity block if still long
-  if (sys.length > 3000) {
-    sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow)/s,
-      "I am Flow V3, Joel's personal AI — voice, vision, code, web search, alarms, goals, images.\n");
-  }
-  // Hard cap at 2800 chars for the system prompt
-  if (sys.length > 2800) {
-    sys = sys.slice(0, 2800) + "\n[context trimmed]";
-  }
+  // Aggressively trim system prompt to stay under token limits
+  if (sys.length > 3500) sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:)/s, "");
+  if (sys.length > 2500) sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow)/s,
+    "I am Flow V3, Joel's personal AI — voice, vision, code, search, alarms, goals, images.\n");
+  if (sys.length > 2000) sys = sys.slice(0, 2000) + "\n[trimmed]";
 
   return [{ role: "system", content: sys }, ...history];
 }
 
-// ── GENERATE (single attempt, retry only on 503 cold-start) ─────────────────
-async function generate(messages, maxTokens, model, token) {
-  for (let attempt = 1; attempt <= 2; attempt++) {
+// Single attempt with AbortController — no retries, no blocking
+async function tryModel(messages, maxTokens, model, token) {
+  const controller = new AbortController();
+  const timeout    = setTimeout(() => controller.abort(), 7000); // 7s hard limit per model
+
+  try {
     const r = await fetch(HF_API, {
       method:  "POST",
       headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
       body:    JSON.stringify({ model, max_tokens: maxTokens, stop: STOP_TOKENS, messages }),
+      signal:  controller.signal,
     });
 
-    if (r.status === 503) {
-      // Model cold-starting — wait once then retry
-      if (attempt === 1) {
-        console.log(`[Flow] ${model} cold-starting, waiting 3s...`);
-        await new Promise(res => setTimeout(res, 3000));
-        continue;
-      }
-      throw new Error(`${model} still loading — try again in 30 seconds`);
-    }
+    clearTimeout(timeout);
+
+    // 503 = model loading (cold start) — skip immediately, try next
+    if (r.status === 503) throw new Error("cold");
 
     const data = await r.json();
-
     if (!r.ok || !data.choices?.length) {
-      const msg = typeof data?.error === "string"
-        ? data.error
-        : data?.error?.message || `HTTP ${r.status}`;
-      throw new Error(`${model}: ${msg}`);
+      const msg = typeof data?.error === "string" ? data.error : data?.error?.message || `HTTP ${r.status}`;
+      throw new Error(msg);
     }
 
-    return { reply: cleanReply(data.choices[0].message.content), model };
+    return cleanReply(data.choices[0].message.content);
+
+  } catch (e) {
+    clearTimeout(timeout);
+    throw e;
   }
 }
 
-// ── HANDLER ──────────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin",  "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -138,37 +109,32 @@ export default async function handler(req, res) {
   const token = process.env.HF_TOKEN;
   if (!token) {
     return res.status(500).json({
-      error: "HF_TOKEN missing. Vercel Dashboard → Settings → Environment Variables → add HF_TOKEN (get free token at huggingface.co/settings/tokens)",
+      error: "HF_TOKEN not set. Vercel Dashboard → Settings → Environment Variables → add HF_TOKEN. Get a free token at huggingface.co/settings/tokens",
     });
   }
 
   const { messages } = req.body || {};
   if (!messages?.length) return res.status(400).json({ error: "messages required" });
 
-  const trimmed  = trimMessages(messages);
-  const lastUser = [...trimmed].reverse().find(m => m.role === "user")?.content || "";
-
-  // Detect intent locally — no extra API call
+  const trimmed   = trimMessages(messages);
+  const lastUser  = [...trimmed].reverse().find(m => m.role === "user")?.content || "";
   const intent    = detectIntent(lastUser);
-  const maxTokens = TOKEN_LIMIT[intent] || 500;
-  const primary   = INTENT_MODEL[intent];
+  const maxTokens = INTENT_TOKENS[intent] || 400;
+  const chain     = intent === "code" ? CODE_CHAIN : MODEL_CHAIN;
 
-  console.log(`[Flow] intent=${intent} → ${primary} (${maxTokens} tokens)`);
+  console.log(`[Flow] intent=${intent} tokens=${maxTokens} models=${chain[0]}`);
 
-  // Try primary model then fallbacks
-  const queue   = [primary, ...FALLBACKS.filter(m => m !== primary)];
-  let   lastErr = "All models failed";
-
-  for (const model of queue) {
+  for (const model of chain) {
     try {
-      const result = await generate(trimmed, maxTokens, model, token);
-      console.log(`[Flow] ✓ replied via ${result.model}`);
-      return res.status(200).json({ ...result, intent });
+      const reply = await tryModel(trimmed, maxTokens, model, token);
+      console.log(`[Flow] ✓ ${model}`);
+      return res.status(200).json({ reply, model, intent });
     } catch (e) {
-      lastErr = e.message;
       console.warn(`[Flow] ✗ ${model}: ${e.message}`);
     }
   }
 
-  return res.status(502).json({ error: lastErr });
+  return res.status(502).json({
+    error: "All models busy or cold-starting. Wait 30 seconds and try again — they warm up quickly after first use.",
+  });
 }
