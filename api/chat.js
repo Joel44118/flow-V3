@@ -1,99 +1,147 @@
 // ═══════════════════════════════════════════
-// api/chat.js — Vercel serverless function
+// api/chat.js — HuggingFace Inference API
 //
-// OpenRouter model chain (from their email tip):
-//   Step 1: gpt-4o-mini classifies intent (10 tokens, ~$0.000001)
-//   Step 2: routes to best model per intent
+// WHY HF INSTEAD OF OPENROUTER:
+//   OpenRouter free tier: 8,561 token context limit
+//   Flow's system prompt alone exceeds that → error
+//   HuggingFace free tier: much larger context windows
 //
-// Intent → Model mapping:
-//   code     → anthropic/claude-sonnet-4-5     (best code generation)
-//   pdf      → openai/gpt-4o-mini              (structured extraction)
-//   image    → openai/gpt-4o-mini              (vision capable)
-//   research → meta-llama/llama-3.3-70b:free   (large context, breadth)
-//   creative → meta-llama/llama-3.1-8b:free    (creative, free)
-//   chat     → meta-llama/llama-3.1-8b:free    (fast, free, personal)
+// VERCEL ENV VARS NEEDED (Dashboard → Settings → Environment Variables):
+//   HF_TOKEN  ← your HuggingFace token (read-only is fine)
+//
+// MODEL CHAIN (same intent routing, different provider):
+//   code     → Qwen/Qwen2.5-Coder-32B-Instruct  (best free coder)
+//   research → meta-llama/Llama-3.3-70B-Instruct  (large, smart)
+//   chat     → mistralai/Mistral-7B-Instruct-v0.3  (fast, free)
+//   creative → mistralai/Mistral-7B-Instruct-v0.3
+//   pdf      → meta-llama/Llama-3.1-8B-Instruct   (structured)
+//   image    → meta-llama/Llama-3.1-8B-Instruct
+//
+// YES — Flow still reads his replies (TTS is in speech.js, not here)
+// YES — model chaining still works (classify → route → generate)
 // ═══════════════════════════════════════════
 
+const HF_API = "https://api-inference.huggingface.co/v1/chat/completions";
+
 const INTENT_MODEL = {
-  code:     "anthropic/claude-sonnet-4-5",
-  pdf:      "openai/gpt-4o-mini",
-  image:    "openai/gpt-4o-mini",
-  research: "meta-llama/llama-3.3-70b-instruct:free",
-  creative: "meta-llama/llama-3.1-8b-instruct:free",
-  chat:     "meta-llama/llama-3.1-8b-instruct:free",
+  code:     "Qwen/Qwen2.5-Coder-32B-Instruct",
+  research: "meta-llama/Llama-3.3-70B-Instruct",
+  pdf:      "meta-llama/Llama-3.1-8B-Instruct",
+  image:    "meta-llama/Llama-3.1-8B-Instruct",
+  creative: "mistralai/Mistral-7B-Instruct-v0.3",
+  chat:     "mistralai/Mistral-7B-Instruct-v0.3",
 };
 
-// Token limits per intent — code needs much more room
 const TOKEN_LIMIT = {
-  code:     2500,
+  code:     3000,
+  research: 1500,
   pdf:      1500,
   image:    800,
-  research: 1000,
   creative: 800,
-  chat:     500,
+  chat:     600,
 };
 
+// Fallback chain — all HF free models
 const FALLBACKS = [
-  "google/gemini-flash-1.5",
-  "openai/gpt-4o-mini",
-  "meta-llama/llama-3.1-8b-instruct:free",
+  "mistralai/Mistral-7B-Instruct-v0.3",
+  "meta-llama/Llama-3.1-8B-Instruct",
+  "HuggingFaceH4/zephyr-7b-beta",
 ];
 
-const STOP = ["</assistant>","<|eot_id|>","Human:","User:","Assistant:"];
+const STOP_TOKENS = ["</s>", "<|eot_id|>", "Human:", "User:", "Assistant:", "</assistant>"];
 
-function clean(text) {
+function cleanReply(text) {
   return text
-    .replace(/<\/?assistant>/gi,"")
-    .replace(/<\|eot_id\|>/g,"")
-    .replace(/^(assistant|flow)\s*:/i,"")
-    .replace(/\*\*/g,"")
-    .replace(/^#+\s/gm,"")
+    .replace(/<\/?assistant>/gi, "")
+    .replace(/<\|eot_id\|>/g, "")
+    .replace(/^(assistant|flow)\s*:/i, "")
+    .replace(/\*\*/g, "")
+    .replace(/^#+\s/gm, "")
     .trim();
 }
 
-// Step 1: classify intent — fast, cheap, 10 tokens
-async function classifyIntent(userMsg, key, referer) {
+// Trim conversation history to stay well under token limits
+// HF free models are generous but we keep it sane
+function trimMessages(messages) {
+  const system = messages.find(m => m.role === "system");
+  const history = messages.filter(m => m.role !== "system");
+
+  // Keep system prompt + last 10 exchanges (20 messages)
+  const trimmedHistory = history.slice(-20);
+
+  // Trim system prompt if needed — keep personality + capabilities
+  // but cut the RAG block if the prompt is huge
+  if (system) {
+    let sysContent = system.content;
+    // If system prompt is very long, trim the knowledge base block
+    if (sysContent.length > 6000) {
+      // Remove the RAG/knowledge block (between KNOWLEDGE BASE and the next section)
+      sysContent = sysContent.replace(/KNOWLEDGE BASE.*?(?=\nLIVE CONTEXT:)/s, "");
+    }
+    // If still long, trim identity capabilities to summary
+    if (sysContent.length > 4000) {
+      sysContent = sysContent.replace(/WHAT I \(FLOW\) CAN ACTUALLY DO[\s\S]*?(?=\nMY NAME)/s,
+        "I am Flow, Joel's personal AI. I can do voice, vision, web search, alarms, goals, and more.\n");
+    }
+    return [{ role: "system", content: sysContent }, ...trimmedHistory];
+  }
+
+  return trimmedHistory;
+}
+
+// Classify intent using a fast small model
+async function classifyIntent(userMsg, token) {
   try {
-    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method:  "POST",
+    const r = await fetch(HF_API, {
+      method: "POST",
       headers: {
-        "Authorization": `Bearer ${key}`,
+        "Authorization": `Bearer ${token}`,
         "Content-Type":  "application/json",
-        "HTTP-Referer":  referer,
-        "X-Title":       "Flow AI V3",
       },
       body: JSON.stringify({
-        model:      "openai/gpt-4o-mini",
+        model:      "mistralai/Mistral-7B-Instruct-v0.3",
         max_tokens: 10,
         messages: [{
           role:    "user",
-          content: `Classify this message into one word only: code, pdf, image, research, creative, or chat.\nMessage: "${userMsg.slice(0,300)}"\nRespond with exactly one word.`
-        }]
+          content: `Reply with EXACTLY one word — code, pdf, image, research, creative, or chat.\nMessage: "${userMsg.slice(0, 200)}"`,
+        }],
       }),
     });
     const data   = await r.json();
-    const intent = data.choices?.[0]?.message?.content?.trim().toLowerCase().replace(/[^a-z]/g,"") || "chat";
+    const intent = data.choices?.[0]?.message?.content?.trim().toLowerCase().replace(/[^a-z]/g, "") || "chat";
     return Object.keys(INTENT_MODEL).includes(intent) ? intent : "chat";
-  } catch { return "chat"; }
+  } catch {
+    return "chat";
+  }
 }
 
-// Step 2: generate reply with the right model
-async function generate(messages, max_tokens, model, key, referer) {
-  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method:  "POST",
+// Generate reply using HuggingFace chat completions
+async function generate(messages, maxTokens, model, token) {
+  const r = await fetch(HF_API, {
+    method: "POST",
     headers: {
-      "Authorization": `Bearer ${key}`,
+      "Authorization": `Bearer ${token}`,
       "Content-Type":  "application/json",
-      "HTTP-Referer":  referer,
-      "X-Title":       "Flow AI V3",
     },
-    body: JSON.stringify({ model, max_tokens, stop: STOP, messages }),
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      stop:       STOP_TOKENS,
+      messages,
+    }),
   });
+
   const data = await r.json();
+
   if (!r.ok || !data.choices?.length) {
-    throw new Error(data?.error?.message || `HTTP ${r.status} — ${model}`);
+    const errMsg = data?.error?.message || data?.error || `HTTP ${r.status}`;
+    throw new Error(`${model}: ${errMsg}`);
   }
-  return { reply: clean(data.choices[0].message.content), model, intent: null };
+
+  return {
+    reply: cleanReply(data.choices[0].message.content),
+    model,
+  };
 }
 
 export default async function handler(req, res) {
@@ -103,33 +151,38 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST")    return res.status(405).json({ error: "POST only" });
 
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) return res.status(500).json({ error: "OPENROUTER_API_KEY not set in Vercel env vars." });
+  const token = process.env.HF_TOKEN;
+  if (!token) {
+    return res.status(500).json({
+      error: "HF_TOKEN not set. Add it in Vercel Dashboard → Settings → Environment Variables.",
+    });
+  }
 
-  const { messages, max_tokens = 600 } = req.body || {};
+  const { messages } = req.body || {};
   if (!messages?.length) return res.status(400).json({ error: "messages required" });
 
-  const referer = req.headers.origin || "https://flow-v3-mu.vercel.app";
+  // Trim history to avoid token overflow
+  const trimmedMessages = trimMessages(messages);
 
-  // Pull last user message for classification
-  const lastUser = [...messages].reverse().find(m => m.role === "user")?.content || "";
+  // Pull last user message for intent classification
+  const lastUser = [...trimmedMessages].reverse().find(m => m.role === "user")?.content || "";
 
-  // Step 1: classify
-  const intent = await classifyIntent(lastUser, key, referer);
-  const tokenLimit = TOKEN_LIMIT[intent] || 600;
+  // Step 1: classify intent (fast)
+  const intent     = await classifyIntent(lastUser, token);
+  const maxTokens  = TOKEN_LIMIT[intent] || 600;
   const primary    = INTENT_MODEL[intent];
 
-  console.log(`[Flow] intent=${intent} model=${primary} tokens=${tokenLimit}`);
+  console.log(`[Flow] intent=${intent} model=${primary} tokens=${maxTokens}`);
 
-  // Step 2: try primary model, then fallbacks
-  const queue = [primary, ...FALLBACKS.filter(m => m !== primary)];
-  let lastErr = "All models failed";
+  // Step 2: try primary model then fallbacks
+  const queue   = [primary, ...FALLBACKS.filter(m => m !== primary)];
+  let   lastErr = "All models failed";
 
   for (const model of queue) {
     try {
-      const result = await generate(messages, tokenLimit, model, key, referer);
+      const result = await generate(trimmedMessages, maxTokens, model, token);
       return res.status(200).json({ ...result, intent });
-    } catch(e) {
+    } catch (e) {
       lastErr = e.message;
       console.warn(`[Flow] ${model} failed: ${e.message}`);
     }
