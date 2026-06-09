@@ -1,40 +1,41 @@
 // ═══════════════════════════════════════════
-// yolo-worker.js — Web Worker for YOLO inference
+// yolo-worker.js — Module Worker for YOLO
 //
-// This file runs in a SEPARATE THREAD.
-// The main thread (UI) never freezes because
-// all WASM inference happens here.
+// FIX: importScripts() fails for cross-origin
+// scripts in many browsers/contexts.
+// Using dynamic import() instead, which works
+// correctly in module workers.
 //
-// Messages IN  (from main): { type: "init" } | { type: "detect", imageData }
-// Messages OUT (to main):   { type: "ready" } | { type: "result", boxes } | { type: "error", message }
+// Spawned with: new Worker('/yolo-worker.js', { type: 'module' })
 // ═══════════════════════════════════════════
 
 let pipeline = null;
-
-// Load Transformers.js inside the worker
-importScripts("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.0/dist/transformers.min.js");
 
 self.onmessage = async (event) => {
   const { type, imageData } = event.data;
 
   if (type === "init") {
     try {
-      const { pipeline: createPipeline, env } = self.transformers;
-      env.allowRemoteModels = true;
+      self.postMessage({ type: "progress", message: "Loading YOLO engine..." });
 
-      // Post progress updates
-      self.postMessage({ type: "progress", message: "Downloading YOLO model (~28MB)..." });
+      // Dynamic import works in module workers across origins
+      const { pipeline: createPipeline, env } = await import(
+        "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.0/dist/transformers.min.js"
+      );
+
+      env.allowRemoteModels  = true;
+      env.allowLocalModels   = false;
+
+      self.postMessage({ type: "progress", message: "Downloading YOLO model (~28MB), please wait..." });
 
       pipeline = await createPipeline(
         "object-detection",
         "Xenova/yolos-tiny",
-        {
-          dtype:  "fp32",
-          device: "wasm",
-        }
+        { dtype: "fp32", device: "wasm" }
       );
 
       self.postMessage({ type: "ready" });
+
     } catch (e) {
       self.postMessage({ type: "error", message: e.message });
     }
@@ -43,17 +44,18 @@ self.onmessage = async (event) => {
 
   if (type === "detect") {
     if (!pipeline) {
-      self.postMessage({ type: "error", message: "Pipeline not initialised" });
+      self.postMessage({ type: "error", message: "Pipeline not ready" });
       return;
     }
     try {
-      // Run inference — blocks this worker thread, NOT the UI thread
       const results = await pipeline(imageData, { threshold: 0.45 });
       self.postMessage({ type: "result", boxes: results });
     } catch (e) {
-      // Inference errors are normal (blurry frames etc) — suppress tensor errors
       if (!e.message?.includes("tensor")) {
         self.postMessage({ type: "warn", message: e.message });
+      } else {
+        // Tensor errors on blurry/empty frames are normal — just mark not busy
+        self.postMessage({ type: "result", boxes: [] });
       }
     }
     return;
