@@ -22,7 +22,7 @@ import { Chat }        from "./ui/chat.js";
 import { Orb }         from "./ui/orb.js";
 import { Notepad }     from "./ui/notepad.js";
 import { handleFiles, initFileUpload } from "./ui/fileupload.js";
-import { initImagine, generateImage, parseImageRequest } from "./ui/imagine.js";
+import { initImagine, generateImage, removeBackground, parseImageRequest } from "./ui/imagine.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import "./ui/particles.js";
@@ -54,9 +54,19 @@ async function flowSend(text) {
     return;
   }
 
-  // 1. Image generation
-  const imgPrompt = parseImageRequest(text);
-  if (imgPrompt) { await generateImage(imgPrompt, text); return; }
+
+  // Image generation / background removal
+  const imgReq = parseImageRequest(text);
+  if (imgReq) {
+    if (imgReq.type === "remove-bg") {
+      const lastImg = window._lastUploadedBase64;
+      if (lastImg) { await removeBackground(lastImg); }
+      else { Chat.add("Upload an image first, then say 'remove background'.", "bot"); Speech.speak("Upload an image first."); }
+    } else {
+      await generateImage(imgReq.prompt, text);
+    }
+    return;
+  }
 
   // 2. Vision commands
   const vis = await parseVisionCommand(text);
