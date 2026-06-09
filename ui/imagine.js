@@ -1,56 +1,72 @@
 // ═══════════════════════════════════════════
-// ui/imagine.js — Image generation UI
+// ui/imagine.js — Image Generation UI
 //
-// FIXES:
-//   - Handles HF blob response (downloads correctly)
-//   - Handles Pollinations URL fallback (opens in new tab)
-//   - Download button works for both cases
-//   - Image previews inline before downloading
+// Works entirely with HuggingFace binary responses.
+// No Pollinations, no redirect URLs.
+//
+// FEATURES:
+//   - Text-to-image (FLUX.1-schnell → SDXL fallback)
+//   - Background removal (say "remove background from this image")
+//   - Custom dimensions via natural language
+//   - Real download button (blob URL, no redirects)
+//   - Inline preview with click-to-fullscreen
+//   - "Model warming up" retry message
 // ═══════════════════════════════════════════
 import { Speech } from "../core/speech.js";
 
 let _chat = null;
 let _orb  = null;
+export function initImagine(chat, orb) { _chat = chat; _orb = orb; }
 
-export function initImagine(chat, orb) {
-  _chat = chat;
-  _orb  = orb;
-}
+// ── Dimension presets ────────────────────────────────────────────────────
+const PRESETS = {
+  square:    [1024, 1024],
+  landscape: [1280, 768],
+  wide:      [1280, 768],
+  portrait:  [768,  1280],
+  tall:      [768,  1280],
+  banner:    [1536, 512],
+  header:    [1536, 512],
+  wallpaper: [1920, 1088],  // nearest 64-multiple to 1920x1080
+  instagram: [1024, 1024],
+  twitter:   [1216, 704],
+  thumbnail: [1280, 768],
+  poster:    [768,  1088],
+  logo:      [512,  512],
+  icon:      [512,  512],
+};
 
-// ── Parse dimension strings ───────────────
 function parseDimensions(text) {
   const t = text.toLowerCase();
-  if (/\bsquare\b/.test(t))                         return [1024, 1024];
-  if (/\blandscape\b|\bwide\b/.test(t))             return [1280, 720];
-  if (/\bportrait\b|\btall\b/.test(t))              return [720, 1280];
-  if (/\bbanner\b|\bheader\b/.test(t))              return [1500, 500];
-  if (/\bwallpaper\b/.test(t))                      return [1920, 1080];
-  if (/\binstagram\b/.test(t))                      return [1080, 1080];
-  if (/\btwitter\b|\bx\s+post\b/.test(t))           return [1200, 675];
-  if (/\bthumbnail\b/.test(t))                      return [1280, 720];
-  if (/\bposter\b/.test(t))                         return [794, 1123];
-  if (/\bcanva\b/.test(t))                          return [1080, 1080];
-  const match = t.match(/(\d{2,4})\s*(?:x|by|\*|×)\s*(\d{2,4})/);
-  if (match) return [parseInt(match[1]), parseInt(match[2])];
+  for (const [key, dims] of Object.entries(PRESETS)) {
+    if (t.includes(key)) return dims;
+  }
+  // Custom e.g. "1920x1080" or "1920 by 1080"
+  const m = t.match(/(\d{3,4})\s*(?:x|by|×|\*)\s*(\d{3,4})/);
+  if (m) {
+    const w = Math.round(parseInt(m[1]) / 64) * 64;
+    const h = Math.round(parseInt(m[2]) / 64) * 64;
+    return [Math.min(w, 1440), Math.min(h, 1440)];
+  }
   return [1024, 1024];
 }
 
 function parseModel(text) {
   const t = text.toLowerCase();
-  if (/\brealistic\b|\bphoto\b|\bphotographic\b/.test(t)) return "realistic";
-  if (/\bfast\b|\bquick\b|\bturbo\b/.test(t))             return "turbo";
+  if (/\brealistic\b|\bphoto\b|\bphotograph\b/.test(t)) return "realistic";
   return "flux";
 }
 
-// ── Main generate function ────────────────
+// ── Generate image from text prompt ──────────────────────────────────────
 export async function generateImage(promptText, dimensionHint = "") {
-  const combined    = promptText + " " + dimensionHint;
-  const [w, h]      = parseDimensions(combined);
-  const model       = parseModel(combined);
+  const combined = promptText + " " + dimensionHint;
+  const [w, h]   = parseDimensions(combined);
+  const model    = parseModel(combined);
 
+  // Clean prompt — remove dimension/style keywords
   const cleanPrompt = promptText
-    .replace(/\b(square|landscape|portrait|banner|wallpaper|poster|thumbnail|instagram|twitter|realistic|fast|turbo|canva|logo|icon)\b/gi, "")
-    .replace(/\d{2,4}\s*(?:x|by|\*|×)\s*\d{2,4}/g, "")
+    .replace(/\b(square|landscape|portrait|banner|wallpaper|poster|thumbnail|instagram|twitter|realistic|photo|canva|logo|icon|fast|turbo)\b/gi, "")
+    .replace(/\d{3,4}\s*(?:x|by|×|\*)\s*\d{3,4}/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -60,34 +76,70 @@ export async function generateImage(promptText, dimensionHint = "") {
   try {
     const url = `/api/imagine?prompt=${encodeURIComponent(cleanPrompt)}&w=${w}&h=${h}&model=${model}`;
     const res  = await fetch(url);
+    const ct   = res.headers.get("content-type") || "";
 
-    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    if (!res.ok || !ct.startsWith("image/")) {
+      const data = await res.json().catch(() => ({}));
 
-    const contentType = res.headers.get("content-type") || "";
+      // Model warming up — give user a clear message
+      if (data.loading) {
+        _chat?.add(`${data.error} Say "generate image of ${cleanPrompt}" again when ready.`, "bot");
+        Speech.speak(`The image model is warming up. Try again in about ${data.error.match(/\d+/)?.[0] || 20} seconds.`);
+        _orb?.setState("idle");
+        return;
+      }
 
-    if (contentType.startsWith("image/")) {
-      // HuggingFace returned actual image binary — create local blob URL
-      const blob   = await res.blob();
-      const imgUrl = URL.createObjectURL(blob);
-      _renderImageCard(imgUrl, cleanPrompt, w, h, true); // isBlob = true
-    } else {
-      // Pollinations fallback — got a JSON with a URL
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      const imgUrl = data.url;
-      _renderImageCard(imgUrl, cleanPrompt, w, h, false); // isBlob = false
+      throw new Error(data.error || `Server error ${res.status}`);
     }
 
+    // Got actual image binary back
+    const blob    = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const usedModel = res.headers.get("x-model-used") || "FLUX";
+
+    _renderCard(blobUrl, cleanPrompt, w, h, usedModel);
     Speech.speak(`Here's your ${w} by ${h} image, Boss.`);
     _orb?.setState("idle");
 
-  } catch(e) {
+  } catch (e) {
     _chat?.addError("Image generation failed: " + e.message);
     _orb?.setState("idle");
   }
 }
 
-function _renderImageCard(imgUrl, prompt, w, h, isBlob) {
+// ── Remove background from uploaded image ────────────────────────────────
+export async function removeBackground(base64Image) {
+  _chat?.add("Removing background...", "bot");
+  _orb?.setState("thinking");
+
+  try {
+    const res = await fetch("/api/imagine", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ mode: "remove-bg", imageBase64: base64Image }),
+    });
+
+    const ct = res.headers.get("content-type") || "";
+    if (!res.ok || !ct.startsWith("image/")) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Server error ${res.status}`);
+    }
+
+    const blob    = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+
+    _renderCard(blobUrl, "background-removed", null, null, "BRIA-RMBG");
+    Speech.speak("Background removed. Here's the result.");
+    _orb?.setState("idle");
+
+  } catch (e) {
+    _chat?.addError("Background removal failed: " + e.message);
+    _orb?.setState("idle");
+  }
+}
+
+// ── Render image card in chat ─────────────────────────────────────────────
+function _renderCard(blobUrl, prompt, w, h, modelUsed) {
   const col = document.getElementById("col-left");
   if (!col) return;
 
@@ -101,76 +153,55 @@ function _renderImageCard(imgUrl, prompt, w, h, isBlob) {
   const card = document.createElement("div");
   card.className = "img-card";
 
-  // Image element — inline preview
-  const img = document.createElement("img");
-  img.alt   = prompt;
-  img.style.cssText = "max-width:100%;border-radius:10px;display:block;cursor:pointer;min-height:60px;background:rgba(56,189,248,.05);";
+  // Image
+  const img   = document.createElement("img");
+  img.src      = blobUrl;
+  img.alt      = prompt;
+  img.title    = "Click to open full size";
+  img.style.cssText = "max-width:100%;border-radius:10px;display:block;cursor:pointer;";
+  img.onclick  = () => window.open(blobUrl, "_blank");
 
-  // For Pollinations URL fallback — load inline, handle errors
-  if (!isBlob) {
-    img.crossOrigin = "anonymous";
-    img.onerror = () => {
-      // Image failed to load inline (CORS etc) — show open link instead
-      img.style.display = "none";
-      const openLink = document.createElement("a");
-      openLink.href      = imgUrl;
-      openLink.target    = "_blank";
-      openLink.className = "img-open-btn";
-      openLink.textContent = "🖼 Open Image in New Tab";
-      card.insertBefore(openLink, img.nextSibling);
-    };
-  }
-  img.src = imgUrl;
-  img.onclick = () => window.open(imgUrl, "_blank");
-
-  // Meta info
+  // Meta
   const meta = document.createElement("div");
   meta.className   = "img-meta";
-  meta.textContent = `${w}×${h} · click image to open full size`;
+  meta.textContent = w && h
+    ? `${w}×${h} · ${modelUsed} · click to fullscreen`
+    : `${modelUsed} · click to fullscreen`;
 
-  // Download button — works correctly for both blob and URL
-  const dlBtn = document.createElement("a");
-  dlBtn.className   = "img-dl-btn";
-  dlBtn.textContent = "⬇ DOWNLOAD";
-
-  if (isBlob) {
-    // Blob URL — direct download works
-    dlBtn.href     = imgUrl;
-    dlBtn.download = `flow-image-${Date.now()}.jpg`;
-  } else {
-    // Pollinations URL — open in new tab (avoids the rate-limit JSON error page)
-    dlBtn.href   = imgUrl;
-    dlBtn.target = "_blank";
-    dlBtn.title  = "Opens in new tab — right-click to save";
-  }
+  // Download — blob URL means this is a real direct download
+  const dl = document.createElement("a");
+  dl.className   = "img-dl-btn";
+  dl.textContent = "⬇ DOWNLOAD";
+  dl.href        = blobUrl;
+  dl.download    = `flow-${Date.now()}.png`;
 
   card.appendChild(img);
   card.appendChild(meta);
-  card.appendChild(dlBtn);
+  card.appendChild(dl);
   wrap.appendChild(label);
   wrap.appendChild(card);
   col.appendChild(wrap);
   col.scrollTop = col.scrollHeight;
 
-  // Keep visible longer — images need more reading time
-  setTimeout(() => wrap.classList.remove("fresh"), 10000);
+  // Keep visible for 15s (images need reading time)
+  setTimeout(() => wrap.classList.remove("fresh"), 15000);
 }
 
-// ── Parse image request from text ─────────
+// ── Parse image request trigger from text ─────────────────────────────────
 export function parseImageRequest(text) {
-  const triggers = /\b(generate|create|make|draw|imagine|design|show me|produce)\b.*\b(image|picture|photo|illustration|artwork|logo|banner|poster|thumbnail|wallpaper|icon)\b/i;
-  const reverse  = /\b(image|picture|photo|illustration|artwork|logo|banner|poster|thumbnail|wallpaper)\b.*\b(of|for|showing|with)\b/i;
-  const canvaStyle = /\bcanva.*(style|like|design)\b/i;
+  const genPattern = /\b(generate|create|make|draw|imagine|design|show me|produce)\b.{0,30}\b(image|picture|photo|illustration|artwork|logo|banner|poster|thumbnail|wallpaper|icon)\b/i;
+  const nounFirst  = /\b(image|picture|photo|logo|banner|poster|thumbnail|wallpaper)\b.{0,20}\b(of|for|showing|depicting)\b/i;
+  const bgRemove   = /\b(remove|strip)\b.{0,15}\b(background|bg)\b/i;
 
-  if (!triggers.test(text) && !reverse.test(text) && !canvaStyle.test(text)) return null;
+  if (bgRemove.test(text)) return { type: "remove-bg" };
+  if (!genPattern.test(text) && !nounFirst.test(text)) return null;
 
-  let prompt = text
+  const prompt = text
     .replace(/\b(generate|create|make|draw|imagine|design|show me|produce)\b/gi, "")
-    .replace(/\b(an?\s+)?(image|picture|photo|illustration|artwork)\b/gi, "")
-    .replace(/\b(of|for|showing|with|in|style|like)\b/gi, "")
-    .replace(/\bcanva\b/gi, "")
+    .replace(/\ban?\s+(image|picture|photo|illustration|artwork)\b/gi, "")
+    .replace(/\b(of|for|showing|depicting|in the style of)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
 
-  return prompt || null;
+  return { type: "generate", prompt: prompt || text };
 }
