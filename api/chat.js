@@ -1,97 +1,97 @@
-// ═══════════════════════════════════════════
-// api/chat.js — HuggingFace Inference API
-//
-// VERCEL HOBBY PLAN FIX:
-//   Hobby plan caps ALL functions at 10 seconds.
-//   Previous version had retries that added up to 30s+ → timeout → "fetch failed"
-//   Now: 7s AbortController timeout per model, instant fallback, zero retries.
-//   Total worst case: 3 models × 7s = 21s... but Vercel kills at 10s.
-//   So: 1 model attempt, 7s budget, fallback to next if it fails. Fast.
-//
-// HF_TOKEN: huggingface.co/settings/tokens → New token → Read → Copy
-// Add in: Vercel Dashboard → Settings → Environment Variables → HF_TOKEN
-// ═══════════════════════════════════════════
+export const config = { maxDuration: 45 };
 
-const HF_API = "https://api-inference.huggingface.co/v1/chat/completions";
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
 
-// Intent detected by regex — zero extra API call
-function detectIntent(text) {
-  const t = text.toLowerCase();
-  if (/\b(write|create|build|fix|debug|code|function|script|html|css|javascript|python|component|api endpoint)\b/.test(t)) return "code";
-  if (/\b(research|explain|summarise|summarize|how does|what is|history|deep dive)\b/.test(t)) return "research";
-  if (/\b(pdf|document|extract|read this file)\b/.test(t)) return "pdf";
+// Free models on OpenRouter that are reliably online (updated June 2026)
+const MODELS = [
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "mistralai/mistral-7b-instruct:free",
+  "google/gemma-3-1b-it:free",
+  "microsoft/phi-3-mini-128k-instruct:free",
+];
+
+// Detect intent locally — zero API calls, zero latency
+function detectIntent(msg) {
+  const m = msg.toLowerCase();
+  if (/\b(code|function|script|html|css|js|python|write me|build me|create a|implement)\b/.test(m)) return "code";
+  if (/\b(search|find|look up|latest|news|research|what is|who is|when did)\b/.test(m)) return "research";
+  if (/\b(image|picture|photo|generate|draw|design|logo|banner|wallpaper)\b/.test(m)) return "image";
   return "chat";
 }
 
-const INTENT_TOKENS = { code: 2000, research: 800, pdf: 800, chat: 400 };
+// Trim messages so total tokens stay well under 8000
+// Rough estimate: 1 token ≈ 4 chars
+function trimMessages(systemPrompt, history) {
+  const SYS_LIMIT = 2000;   // chars for system prompt
+  const HIST_LIMIT = 12000; // chars for history
+  const MSG_LIMIT = 500;    // chars per individual message
 
-// Models ordered: warmest/fastest first
-// These are the highest-traffic models on HF — almost always warm
-const MODEL_CHAIN = [
-  "mistralai/Mistral-7B-Instruct-v0.3",      // #1 most used — almost always warm
-  "meta-llama/Meta-Llama-3-8B-Instruct",     // very popular fallback
-  "HuggingFaceH4/zephyr-7b-beta",            // reliable fallback
-];
+  // Trim system prompt if too long
+  let sys = systemPrompt;
+  if (sys.length > SYS_LIMIT) {
+    sys = sys.slice(0, SYS_LIMIT) + "\n[trimmed for context limit]";
+  }
 
-// Code gets a better model when budget allows
-const CODE_CHAIN = [
-  "Qwen/Qwen2.5-Coder-32B-Instruct",
-  "mistralai/Mistral-7B-Instruct-v0.3",      // fallback if Qwen cold
-];
+  // Trim each message content
+  let msgs = history.map(m => ({
+    role: m.role,
+    content: typeof m.content === "string"
+      ? m.content.slice(0, MSG_LIMIT)
+      : m.content
+  }));
 
-const STOP_TOKENS = ["</s>", "<|eot_id|>", "Human:", "User:", "Assistant:", "</assistant>"];
+  // Drop oldest messages until total history fits
+  let totalChars = msgs.reduce((acc, m) => acc + (m.content?.length || 0), 0);
+  while (totalChars > HIST_LIMIT && msgs.length > 2) {
+    const removed = msgs.shift();
+    totalChars -= removed.content?.length || 0;
+  }
 
-function cleanReply(text) {
-  return text
-    .replace(/<\/?assistant>/gi, "")
-    .replace(/<\|eot_id\|>/g, "")
-    .replace(/^(assistant|flow)\s*:/i, "")
-    .replace(/\*\*/g, "")
-    .replace(/^#+\s/gm, "")
-    .trim();
+  return { sys, msgs };
 }
 
-function trimMessages(messages) {
-  const system  = messages.find(m => m.role === "system");
-  const history = messages.filter(m => m.role !== "system").slice(-10);
-
-  if (!system) return history;
-
-  let sys = system.content;
-  // Aggressively trim system prompt to stay under token limits
-  if (sys.length > 3500) sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:)/s, "");
-  if (sys.length > 2500) sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow)/s,
-    "I am Flow V3, Joel's personal AI — voice, vision, code, search, alarms, goals, images.\n");
-  if (sys.length > 2000) sys = sys.slice(0, 2000) + "\n[trimmed]";
-
-  return [{ role: "system", content: sys }, ...history];
-}
-
-// Single attempt with AbortController — no retries, no blocking
-async function tryModel(messages, maxTokens, model, token) {
+async function callOpenRouter(model, systemPrompt, messages, maxTokens) {
   const controller = new AbortController();
-  const timeout    = setTimeout(() => controller.abort(), 7000); // 7s hard limit per model
+  const timeout = setTimeout(() => controller.abort(), 20000); // 20s per model
 
   try {
-    const r = await fetch(HF_API, {
-      method:  "POST",
-      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-      body:    JSON.stringify({ model, max_tokens: maxTokens, stop: STOP_TOKENS, messages }),
-      signal:  controller.signal,
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENROUTER_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://flow-v3-mu.vercel.app",
+        "X-Title": "Flow AI"
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: maxTokens,
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages
+        ]
+      }),
+      signal: controller.signal
     });
 
     clearTimeout(timeout);
 
-    // 503 = model loading (cold start) — skip immediately, try next
-    if (r.status === 503) throw new Error("cold");
-
-    const data = await r.json();
-    if (!r.ok || !data.choices?.length) {
-      const msg = typeof data?.error === "string" ? data.error : data?.error?.message || `HTTP ${r.status}`;
-      throw new Error(msg);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const errMsg = err?.error?.message || `HTTP ${res.status}`;
+      
+      // Token limit error — caller will retry with more trimming
+      if (errMsg.includes("Prompt tokens limit exceeded") || errMsg.includes("context_length_exceeded")) {
+        throw new Error("TOKEN_LIMIT: " + errMsg);
+      }
+      throw new Error(errMsg);
     }
 
-    return cleanReply(data.choices[0].message.content);
+    const data = await res.json();
+    if (!data.choices?.[0]?.message?.content) {
+      throw new Error("Empty response from model");
+    }
+    return data.choices[0].message.content;
 
   } catch (e) {
     clearTimeout(timeout);
@@ -100,41 +100,53 @@ async function tryModel(messages, maxTokens, model, token) {
 }
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin",  "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST")    return res.status(405).json({ error: "POST only" });
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const token = process.env.HF_TOKEN;
-  if (!token) {
-    return res.status(500).json({
-      error: "HF_TOKEN not set. Vercel Dashboard → Settings → Environment Variables → add HF_TOKEN. Get a free token at huggingface.co/settings/tokens",
-    });
+  const { messages = [], systemPrompt = "", intent } = req.body;
+
+  if (!OPENROUTER_KEY) {
+    return res.status(500).json({ error: "OPENROUTER_API_KEY not set in Vercel environment variables." });
   }
 
-  const { messages } = req.body || {};
-  if (!messages?.length) return res.status(400).json({ error: "messages required" });
+  // Pick max tokens based on intent
+  const detectedIntent = intent || detectIntent(messages[messages.length - 1]?.content || "");
+  const maxTokens = detectedIntent === "code" ? 2000 : detectedIntent === "research" ? 1500 : 800;
 
-  const trimmed   = trimMessages(messages);
-  const lastUser  = [...trimmed].reverse().find(m => m.role === "user")?.content || "";
-  const intent    = detectIntent(lastUser);
-  const maxTokens = INTENT_TOKENS[intent] || 400;
-  const chain     = intent === "code" ? CODE_CHAIN : MODEL_CHAIN;
+  // Trim everything to fit within free tier limits
+  const { sys, msgs } = trimMessages(systemPrompt, messages);
 
-  console.log(`[Flow] intent=${intent} tokens=${maxTokens} models=${chain[0]}`);
+  let lastError = "";
 
-  for (const model of chain) {
+  for (const model of MODELS) {
     try {
-      const reply = await tryModel(trimmed, maxTokens, model, token);
-      console.log(`[Flow] ✓ ${model}`);
-      return res.status(200).json({ reply, model, intent });
+      console.log(`[Flow] Trying model: ${model}`);
+      const reply = await callOpenRouter(model, sys, msgs, maxTokens);
+      console.log(`[Flow] Success with: ${model}`);
+      return res.status(200).json({ reply, model });
+
     } catch (e) {
-      console.warn(`[Flow] ✗ ${model}: ${e.message}`);
+      lastError = e.message;
+      console.warn(`[Flow] ${model} failed: ${e.message}`);
+
+      // If token limit, trim harder and retry same model once
+      if (e.message.startsWith("TOKEN_LIMIT")) {
+        try {
+          console.log(`[Flow] Retrying ${model} with aggressive trim`);
+          const aggressiveMsgs = msgs.slice(-3); // only last 3 messages
+          const shortSys = sys.slice(0, 800);
+          const reply = await callOpenRouter(model, shortSys, aggressiveMsgs, 600);
+          return res.status(200).json({ reply, model });
+        } catch (e2) {
+          console.warn(`[Flow] Aggressive retry failed: ${e2.message}`);
+        }
+      }
+      // Otherwise try next model
+      continue;
     }
   }
 
-  return res.status(502).json({
-    error: "All models busy or cold-starting. Wait 30 seconds and try again — they warm up quickly after first use.",
+  // All models failed
+  return res.status(503).json({
+    error: `Flow is having trouble connecting right now. Last error: ${lastError}. Please try again in a moment.`
   });
 }
