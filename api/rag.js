@@ -1,10 +1,9 @@
 // ═══════════════════════════════════════════
 // api/rag.js — RAG knowledge base search
 //
-// FIX: No longer crashes with 500 when KV
-// env vars are missing. Returns empty results
-// gracefully so core/rag.js falls back to
-// localStorage automatically.
+// FIX: Gracefully handles missing KV env vars.
+// Returns empty results (never crashes) so
+// core/rag.js falls back to localStorage.
 // ═══════════════════════════════════════════
 
 function score(query, chunk) {
@@ -24,19 +23,16 @@ export default async function handler(req, res) {
   const KV_URL   = process.env.KV_REST_API_URL;
   const KV_TOKEN = process.env.KV_REST_API_TOKEN;
 
-  // KV not connected → return empty gracefully (client falls back to localStorage)
+  // KV not connected — return empty gracefully, client uses localStorage
   if (!KV_URL || !KV_TOKEN) {
     if (req.method === "GET")  return res.status(200).json({ keys: [] });
-    if (req.method === "POST") return res.status(200).json({ ok: false, context: null, found: 0, reason: "KV not connected" });
-    return res.status(200).end();
+    return res.status(200).json({ ok: false, context: null, found: 0, reason: "KV not connected — using localStorage fallback" });
   }
 
-  // ── GET: list all knowledge keys ──────────
+  // ── GET: list keys ─────────────────────
   if (req.method === "GET") {
     try {
-      const r    = await fetch(`${KV_URL}/keys/rag:*`, {
-        headers: { Authorization: `Bearer ${KV_TOKEN}` },
-      });
+      const r    = await fetch(`${KV_URL}/keys/rag:*`, { headers: { Authorization: `Bearer ${KV_TOKEN}` } });
       const data = await r.json();
       return res.status(200).json({ keys: data.result || [] });
     } catch (e) {
@@ -48,7 +44,7 @@ export default async function handler(req, res) {
 
   const { action, query, title, content } = req.body || {};
 
-  // ── SAVE ──────────────────────────────────
+  // ── SAVE ───────────────────────────────
   if (action === "save") {
     if (!title || !content) return res.status(400).json({ error: "title and content required" });
     const key   = `rag:${title.replace(/\s+/g, "_").toLowerCase()}`;
@@ -65,21 +61,17 @@ export default async function handler(req, res) {
     }
   }
 
-  // ── SEARCH ────────────────────────────────
+  // ── SEARCH ─────────────────────────────
   if (action === "search" && query) {
     try {
-      const keysRes  = await fetch(`${KV_URL}/keys/rag:*`, {
-        headers: { Authorization: `Bearer ${KV_TOKEN}` },
-      });
+      const keysRes  = await fetch(`${KV_URL}/keys/rag:*`, { headers: { Authorization: `Bearer ${KV_TOKEN}` } });
       const keysData = await keysRes.json();
       const keys     = keysData.result || [];
       if (!keys.length) return res.status(200).json({ context: null, found: 0 });
 
       const docs = await Promise.all(keys.map(async k => {
         try {
-          const r    = await fetch(`${KV_URL}/get/${encodeURIComponent(k)}`, {
-            headers: { Authorization: `Bearer ${KV_TOKEN}` },
-          });
+          const r    = await fetch(`${KV_URL}/get/${encodeURIComponent(k)}`, { headers: { Authorization: `Bearer ${KV_TOKEN}` } });
           const data = await r.json();
           return data.result ? JSON.parse(data.result) : null;
         } catch { return null; }
@@ -90,28 +82,28 @@ export default async function handler(req, res) {
         if (!doc?.content) continue;
         const words = doc.content.split(/\s+/);
         for (let i = 0; i < words.length; i += 150) {
-          const chunk = words.slice(i, i + 200).join(" ");
-          chunks.push({ title: doc.title, text: chunk, s: score(query, chunk) });
+          chunks.push({ title: doc.title, text: words.slice(i, i + 200).join(" "), s: score(query, words.slice(i, i + 200).join(" ")) });
         }
       }
 
       const top = chunks.filter(c => c.s > 0.1).sort((a, b) => b.s - a.s).slice(0, 3);
       if (!top.length) return res.status(200).json({ context: null, found: 0 });
 
-      const context = top.map(c => `[From "${c.title}"]\n${c.text}`).join("\n\n---\n\n");
-      return res.status(200).json({ context, found: top.length });
+      return res.status(200).json({
+        context: top.map(c => `[From "${c.title}"]\n${c.text}`).join("\n\n---\n\n"),
+        found:   top.length,
+      });
     } catch (e) {
       return res.status(200).json({ context: null, found: 0, error: e.message });
     }
   }
 
-  // ── DELETE ────────────────────────────────
+  // ── DELETE ─────────────────────────────
   if (action === "delete" && title) {
     const key = `rag:${title.replace(/\s+/g, "_").toLowerCase()}`;
     try {
       await fetch(`${KV_URL}/del/${encodeURIComponent(key)}`, {
-        method:  "POST",
-        headers: { Authorization: `Bearer ${KV_TOKEN}` },
+        method: "POST", headers: { Authorization: `Bearer ${KV_TOKEN}` },
       });
       return res.status(200).json({ ok: true });
     } catch (e) {
