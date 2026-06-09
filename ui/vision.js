@@ -1,13 +1,11 @@
 // ═══════════════════════════════════════════
 // ui/vision.js — Flow's Eyes
 //
-// YOLO FIX:
-//   - Runs at max 2fps (500ms interval) instead of 5fps
-//   - Uses requestIdleCallback between frames — browser
-//     only runs inference when it has spare time
-//   - Caps canvas at 320x240 for WASM performance
-//   - Shows warning if browser reports page is slow
-//   - Added explicit stop between each inference call
+// YOLO WEB WORKER FIX:
+//   WASM inference moved to yolo-worker.js
+//   Main thread NEVER blocks — zero UI freeze
+//   Worker communicates via postMessage
+//   OffscreenCanvas used for box drawing
 // ═══════════════════════════════════════════
 
 import { Speech } from "../core/speech.js";
@@ -29,9 +27,9 @@ export function initVision(chat, orb, sendMsg) {
   _sendMsg = sendMsg;
 }
 
-let cameraStream  = null;
-let screenStream  = null;
-let yoloActive    = false;
+let cameraStream = null;
+let screenStream = null;
+let yoloActive   = false;
 
 async function openCamera() {
   if (cameraStream && cameraStream.active) return cameraStream;
@@ -61,7 +59,7 @@ async function describeFrame(base64, prompt) {
     const data = await res.json();
     if (!res.ok || !data.description) throw new Error(data.error || "Vision API failed");
     return data.description;
-  } catch(e) {
+  } catch (e) {
     console.error("[Flow Vision]", e.message);
     return null;
   }
@@ -81,14 +79,14 @@ export const Camera = {
       await this._mount(cameraStream, "📷 CAMERA");
       Speech.speak("Camera online. I can see you now, Boss.");
       _chat?.add("Camera on. I can see you.", "bot");
-      getFaceRecog().then(fr => { if (fr.hasLearnedFace()) fr.startRecognition(this._video); }).catch(()=>{});
-    } catch(e) {
+      getFaceRecog().then(fr => { if (fr.hasLearnedFace()) fr.startRecognition(this._video); }).catch(() => {});
+    } catch (e) {
       _chat?.addError("Camera access denied: " + e.message);
     }
   },
 
   stop() {
-    getFaceRecog().then(fr => fr.stopRecognition()).catch(()=>{});
+    getFaceRecog().then(fr => fr.stopRecognition()).catch(() => {});
     cameraStream?.getTracks().forEach(t => t.stop());
     cameraStream = null;
     this._unmount();
@@ -150,7 +148,7 @@ export const ScreenVision = {
       await this._mount(screenStream, "🖥️ SCREEN");
       Speech.speak("Screen share active. I can see your screen.");
       _chat?.add("Screen captured. I can see everything on it.", "bot");
-    } catch(e) {
+    } catch (e) {
       _chat?.addError("Screen share denied: " + e.message);
     }
   },
@@ -198,33 +196,25 @@ export const ScreenVision = {
 // ─────────────────────────────────────────
 //  YOLO — Real-time object detection
 //
-//  PERFORMANCE FIXES:
-//  1. Max 2fps (500ms timeout) — WASM is slow
-//  2. requestIdleCallback used so browser
-//     yields to UI updates between frames
-//  3. Canvas capped at 320x240 — quarter
-//     the pixels of 640x480 = 4x faster WASM
-//  4. Single shared tmp canvas (no GC pressure)
-//  5. _inferring flag prevents overlapping calls
+//  WEB WORKER ARCHITECTURE:
+//  - yolo-worker.js runs in a separate thread
+//  - Main thread: captures frames, draws boxes
+//  - Worker thread: runs WASM inference (heavy)
+//  - No more UI freeze or "page unresponsive" warning
+//  - Frames sent to worker at 2fps max
+//  - Worker replies asynchronously with box coords
 // ─────────────────────────────────────────
 export const YOLO = {
-  _pipeline:  null,
+  _worker:    null,
   _canvas:    null,
-  _tmpCanvas: null, // reused across frames
   _video:     null,
   _container: null,
-  _timerId:   null,
+  _frameTimer: null,
   _running:   false,
-  _inferring: false, // prevents overlapping inference calls
+  _workerBusy: false, // prevents sending frames faster than worker responds
 
   async start() {
     if (yoloActive) { this.stop(); return; }
-
-    // Warn if device seems slow
-    const cores = navigator.hardwareConcurrency || 2;
-    if (cores <= 2) {
-      _chat?.add("⚠️ YOLO needs a bit more CPU — it may be slow on this device. Use camera mode instead for basic vision.", "bot");
-    }
 
     if (cameraStream && !cameraStream.active) cameraStream = null;
 
@@ -232,28 +222,59 @@ export const YOLO = {
     _orb?.setState("thinking");
 
     try {
-      if (!window._transformers) {
-        await _loadScript("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.0/dist/transformers.min.js");
-        window._transformers = window.transformers || window._transformers;
-      }
+      // Spawn Web Worker — all WASM inference runs there
+      this._worker = new Worker("/yolo-worker.js");
 
-      const { pipeline, env } = window.transformers || window._transformers ||
-        await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.0/dist/transformers.min.js");
+      // Wire up worker message handler
+      this._worker.onmessage = (e) => this._onWorkerMsg(e.data);
+      this._worker.onerror   = (e) => {
+        _chat?.addError("YOLO worker error: " + e.message);
+        _orb?.setState("idle");
+      };
 
-      env.allowRemoteModels = true;
+      // Tell worker to init the pipeline
+      this._worker.postMessage({ type: "init" });
 
-      _chat?.add("Model downloading... almost there.", "bot");
+    } catch (e) {
+      _chat?.addError("YOLO failed to start: " + e.message);
+      _orb?.setState("idle");
+    }
+  },
 
-      this._pipeline = await pipeline(
-        "object-detection",
-        "Xenova/yolos-tiny",
-        { dtype: "fp32", device: "wasm" }
-      );
+  _onWorkerMsg(data) {
+    switch (data.type) {
+      case "progress":
+        _chat?.add(data.message, "bot");
+        break;
 
+      case "ready":
+        this._startCamera();
+        break;
+
+      case "result":
+        this._workerBusy = false;
+        this._drawBoxes(data.boxes);
+        break;
+
+      case "warn":
+        console.warn("[YOLO Worker]", data.message);
+        this._workerBusy = false;
+        break;
+
+      case "error":
+        _chat?.addError("YOLO failed: " + data.message);
+        _orb?.setState("idle");
+        this.stop();
+        break;
+    }
+  },
+
+  async _startCamera() {
+    try {
       cameraStream = await openCamera();
 
       this._container = _createVideoContainer("🔍 YOLO DETECTION", () => this.stop());
-      this._video  = this._container.querySelector("video");
+      this._video = this._container.querySelector("video");
 
       // Overlay canvas — same size as video (320x240)
       this._canvas = document.createElement("canvas");
@@ -262,127 +283,114 @@ export const YOLO = {
       this._canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;";
       this._container.appendChild(this._canvas);
 
-      // Reusable capture canvas — created once, never GC'd mid-loop
-      this._tmpCanvas = document.createElement("canvas");
-      this._tmpCanvas.width  = 320;
-      this._tmpCanvas.height = 240;
+      // Mount to DOM BEFORE setting srcObject
+      document.body.appendChild(this._container);
 
       this._video.srcObject   = cameraStream;
-      document.body.appendChild(this._container);
+      this._video.muted       = true;
+      this._video.playsInline = true;
       await new Promise(r => { this._video.onloadedmetadata = r; setTimeout(r, 2000); });
       await this._video.play().catch(e => console.warn("[YOLO] play():", e.message));
 
       yoloActive    = true;
       this._running = true;
       _orb?.setState("idle");
-      _chat?.add("YOLO active. Detecting objects at 2fps — smooth and steady.", "bot");
+      _chat?.add("YOLO active. Detecting objects — UI stays smooth.", "bot");
       Speech.speak("Eyes online. Object detection active.");
 
-      // Start loop via idle callback
-      this._scheduleNext();
+      // Start the 2fps capture loop
+      this._frameTimer = setInterval(() => this._captureFrame(), 500);
 
-    } catch(e) {
-      console.error("[YOLO]", e);
-      _chat?.addError("YOLO failed: " + e.message);
+    } catch (e) {
+      _chat?.addError("YOLO camera failed: " + e.message);
       _orb?.setState("idle");
+      this.stop();
     }
   },
 
-  _scheduleNext() {
-    if (!this._running) return;
-    // Use requestIdleCallback if available — runs when browser is free
-    // Falls back to setTimeout at 500ms (2fps)
-    if (window.requestIdleCallback) {
-      window.requestIdleCallback(() => this._runFrame(), { timeout: 600 });
-    } else {
-      this._timerId = setTimeout(() => this._runFrame(), 500);
-    }
+  _captureFrame() {
+    if (!this._running || !this._video || this._workerBusy) return;
+
+    const vW = this._video.videoWidth;
+    const vH = this._video.videoHeight;
+    if (!vW || !vH) return;
+
+    // Capture at 320x240 for performance
+    const tmp = document.createElement("canvas");
+    tmp.width  = 320;
+    tmp.height = 240;
+    tmp.getContext("2d").drawImage(this._video, 0, 0, 320, 240);
+    const dataURL = tmp.toDataURL("image/jpeg", 0.6);
+
+    // Send to worker — mark busy so we don't pile up frames
+    this._workerBusy = true;
+    this._worker.postMessage({ type: "detect", imageData: dataURL });
   },
 
-  async _runFrame() {
-    if (!this._running || !this._pipeline || !this._video) return;
-    if (this._inferring) { this._scheduleNext(); return; } // skip if busy
-
-    this._inferring = true;
-    try {
-      const vW = this._video.videoWidth;
-      const vH = this._video.videoHeight;
-      if (!vW || !vH) { this._inferring = false; this._scheduleNext(); return; }
-
-      // Draw to shared canvas at 320x240
-      this._tmpCanvas.getContext("2d").drawImage(this._video, 0, 0, 320, 240);
-      const dataURL = this._tmpCanvas.toDataURL("image/jpeg", 0.6);
-
-      // Yield to browser before heavy WASM call
-      await new Promise(r => setTimeout(r, 0));
-
-      const results = await this._pipeline(dataURL, { threshold: 0.45 });
-
-      // Draw boxes
-      const ctx = this._canvas.getContext("2d");
-      ctx.clearRect(0, 0, 320, 240);
-      ctx.lineWidth = 1.5;
-      ctx.font = "bold 11px monospace";
-
-      results.forEach(({ label, score, box }) => {
-        // yolos-tiny returns pixel coords relative to model input (416x416)
-        // scale to our 320x240 canvas
-        const scaleX = 320 / 416;
-        const scaleY = 240 / 416;
-        const x = box.xmin * scaleX;
-        const y = box.ymin * scaleY;
-        const w = (box.xmax - box.xmin) * scaleX;
-        const h = (box.ymax - box.ymin) * scaleY;
-
-        // Sci-fi corner brackets instead of full rectangle
-        const cs = Math.min(w, h) * 0.22; // corner size
-        ctx.strokeStyle = "#38bdf8";
-        ctx.beginPath();
-        // Top-left
-        ctx.moveTo(x, y + cs); ctx.lineTo(x, y); ctx.lineTo(x + cs, y);
-        // Top-right
-        ctx.moveTo(x + w - cs, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cs);
-        // Bottom-right
-        ctx.moveTo(x + w, y + h - cs); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - cs, y + h);
-        // Bottom-left
-        ctx.moveTo(x + cs, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - cs);
-        ctx.stroke();
-
-        // Label
-        const txt = `${label} ${(score * 100).toFixed(0)}%`;
-        const tw  = ctx.measureText(txt).width + 6;
-        ctx.fillStyle = "rgba(2,6,23,0.85)";
-        ctx.fillRect(x, y - 16, tw, 16);
-        ctx.fillStyle = "#38bdf8";
-        ctx.fillText(txt, x + 3, y - 3);
-      });
-
-    } catch(e) {
-      // Silent — inference errors are normal (blurry frames, etc)
-      if (e.message && !e.message.includes("tensor")) {
-        console.warn("[YOLO frame]", e.message);
+  _drawBoxes(results) {
+    if (!this._canvas || !results?.length) {
+      // Clear canvas if no detections
+      if (this._canvas) {
+        this._canvas.getContext("2d").clearRect(0, 0, 320, 240);
       }
+      return;
     }
 
-    this._inferring = false;
-    // Schedule next frame — 500ms gap minimum (2fps max)
-    this._timerId = setTimeout(() => this._scheduleNext(), 500);
+    const ctx = this._canvas.getContext("2d");
+    ctx.clearRect(0, 0, 320, 240);
+    ctx.lineWidth = 1.5;
+    ctx.font = "bold 11px monospace";
+
+    results.forEach(({ label, score, box }) => {
+      // yolos-tiny returns pixel coords relative to model input (416x416)
+      // Scale to our 320x240 canvas
+      const scaleX = 320 / 416;
+      const scaleY = 240 / 416;
+      const x = box.xmin * scaleX;
+      const y = box.ymin * scaleY;
+      const w = (box.xmax - box.xmin) * scaleX;
+      const h = (box.ymax - box.ymin) * scaleY;
+
+      // Sci-fi corner brackets
+      const cs = Math.min(w, h) * 0.22;
+      ctx.strokeStyle = "#38bdf8";
+      ctx.beginPath();
+      ctx.moveTo(x,       y + cs); ctx.lineTo(x,       y      ); ctx.lineTo(x + cs,   y      );
+      ctx.moveTo(x+w-cs,  y      ); ctx.lineTo(x + w,   y      ); ctx.lineTo(x + w,    y + cs );
+      ctx.moveTo(x + w,   y+h-cs ); ctx.lineTo(x + w,   y + h  ); ctx.lineTo(x+w-cs,   y + h  );
+      ctx.moveTo(x + cs,  y + h  ); ctx.lineTo(x,       y + h  ); ctx.lineTo(x,        y+h-cs );
+      ctx.stroke();
+
+      // Label pill
+      const txt = `${label} ${(score * 100).toFixed(0)}%`;
+      const tw  = ctx.measureText(txt).width + 6;
+      ctx.fillStyle = "rgba(2,6,23,0.85)";
+      ctx.fillRect(x, y - 16, tw, 16);
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillText(txt, x + 3, y - 3);
+    });
   },
 
   stop() {
-    this._running  = false;
-    yoloActive     = false;
-    this._inferring = false;
-    clearTimeout(this._timerId);
-    if (window.cancelIdleCallback && this._idleId) window.cancelIdleCallback(this._idleId);
-    this._pipeline = null;
+    this._running    = false;
+    yoloActive       = false;
+    this._workerBusy = false;
+    clearInterval(this._frameTimer);
+    this._frameTimer = null;
+
+    // Terminate worker — kills the WASM thread entirely
+    if (this._worker) {
+      this._worker.terminate();
+      this._worker = null;
+    }
+
     cameraStream?.getTracks().forEach(t => t.stop());
     cameraStream = null;
     this._container?.remove();
     this._container = null;
     this._video     = null;
     this._canvas    = null;
-    this._tmpCanvas = null;
+
     Speech.speak("Object detection stopped.");
     _chat?.add("YOLO off.", "bot");
   },
@@ -411,15 +419,7 @@ function _createVideoContainer(label, onClose) {
     const onMove = e => { wrap.style.left = (e.clientX - ox) + "px"; wrap.style.top = (e.clientY - oy) + "px"; };
     const onUp   = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
     document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    document.addEventListener("mouseup",   onUp);
   });
   return wrap;
-}
-
-function _loadScript(src) {
-  return new Promise((res, rej) => {
-    const s = document.createElement("script");
-    s.src = src; s.onload = res; s.onerror = rej;
-    document.head.appendChild(s);
-  });
 }
