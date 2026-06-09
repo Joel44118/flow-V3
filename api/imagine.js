@@ -1,93 +1,228 @@
-// ═══════════════════════════════════════════
-// api/imagine.js — AI image generation
+// ═══════════════════════════════════════════════════════════════
+// api/imagine.js — HuggingFace Image Generation
 //
-// PRIMARY: HuggingFace Inference API (free)
-//   Model: black-forest-labs/FLUX.1-schnell
-//   Requires: HF_TOKEN env var (free account)
-//   Get yours: https://huggingface.co/settings/tokens
+// NO POLLINATIONS — fully HuggingFace powered.
 //
-// FALLBACK: Pollinations.ai redirect URL
-//   (no proxy — direct browser URL, avoids rate limit)
+// MODES:
+//   text-to-image  → generate from prompt (default)
+//   img-to-img     → transform an existing image
+//   remove-bg      → remove image background (BRIA-RMBG)
 //
-// GET /api/imagine?prompt=...&w=1024&h=768&model=flux
-// ═══════════════════════════════════════════
+// MODEL CHAIN (text-to-image):
+//   1. black-forest-labs/FLUX.1-schnell  — best quality, fast
+//   2. stabilityai/stable-diffusion-xl-base-1.0  — reliable fallback
+//
+// ENV VAR: HF_TOKEN (huggingface.co/settings/tokens → Read)
+//
+// GET  /api/imagine?prompt=...&w=1024&h=1024&model=flux&steps=4
+// POST /api/imagine  body: { prompt, w, h, model, mode, imageBase64 }
+// ═══════════════════════════════════════════════════════════════
 
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  if (req.method === "OPTIONS") return res.status(200).end();
+const HF = "https://api-inference.huggingface.co/models";
 
-  const { prompt, w = 1024, h = 1024, model = "flux" } = req.query;
-  if (!prompt) return res.status(400).json({ error: "prompt required" });
+// ── Model chain — tried in order until one works ──────────────────────────
+const IMAGE_MODELS = [
+  {
+    id:    "black-forest-labs/FLUX.1-schnell",
+    steps: 4,     // FLUX only needs 4 steps
+    cfg:   0,     // FLUX uses cfg=0
+  },
+  {
+    id:    "stabilityai/stable-diffusion-xl-base-1.0",
+    steps: 20,
+    cfg:   7.5,
+  },
+];
 
-  const width  = Math.min(parseInt(w)  || 1024, 1440);
-  const height = Math.min(parseInt(h)  || 1024, 1440);
+// ── Call HF image model ───────────────────────────────────────────────────
+async function callHFImage(modelId, body, token) {
+  const ctrl    = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 25000); // images take longer
 
-  // ── Attempt 1: HuggingFace Inference API ─
-  // Free with HF_TOKEN — get one at huggingface.co/settings/tokens
-  const hfToken = process.env.HF_TOKEN;
+  try {
+    const r = await fetch(`${HF}/${modelId}`, {
+      method:  "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type":  "application/json",
+        "x-use-cache":   "false",
+      },
+      body:   JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timeout);
 
-  if (hfToken) {
+    // 503 = model loading cold start
+    if (r.status === 503) {
+      const err = await r.json().catch(() => ({}));
+      const wait = err.estimated_time || 20;
+      throw new Error(`loading:${Math.ceil(wait)}`);
+    }
+
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${r.status}`);
+    }
+
+    const ct = r.headers.get("content-type") || "";
+    if (!ct.startsWith("image/")) {
+      const text = await r.text();
+      throw new Error(`Unexpected response: ${text.slice(0, 100)}`);
+    }
+
+    return { buffer: await r.arrayBuffer(), contentType: ct };
+
+  } catch (e) {
+    clearTimeout(timeout);
+    throw e;
+  }
+}
+
+// ── Text → Image ──────────────────────────────────────────────────────────
+async function textToImage(prompt, width, height, preferModel, token) {
+  const errors = [];
+
+  for (const model of IMAGE_MODELS) {
+    // If user specified a model, try to match it
+    if (preferModel === "realistic" && model.id.includes("FLUX")) {
+      // Skip FLUX for realistic — use SDXL which is more photographic
+      continue;
+    }
+
+    const body = {
+      inputs: prompt,
+      parameters: {
+        width,
+        height,
+        num_inference_steps: model.steps,
+        guidance_scale:      model.cfg,
+      },
+    };
+
     try {
-      // Pick HF model based on requested style
-      // flux-schnell: fastest free model, great quality
-      // stable-diffusion-xl: larger, slower but very detailed
-      const hfModel = model === "realistic"
-        ? "stabilityai/stable-diffusion-xl-base-1.0"
-        : "black-forest-labs/FLUX.1-schnell";
-
-      const hfRes = await fetch(
-        `https://api-inference.huggingface.co/models/${hfModel}`,
-        {
-          method:  "POST",
-          headers: {
-            "Authorization": `Bearer ${hfToken}`,
-            "Content-Type":  "application/json",
-            "x-use-cache":   "false",
-          },
-          body: JSON.stringify({
-            inputs: prompt,
-            parameters: {
-              width,
-              height,
-              num_inference_steps: model === "turbo" ? 4 : 8,
-              guidance_scale: 0,
-            },
-          }),
-        }
-      );
-
-      if (hfRes.ok) {
-        const contentType = hfRes.headers.get("content-type") || "";
-        if (contentType.startsWith("image/")) {
-          const buffer = await hfRes.arrayBuffer();
-          res.setHeader("Content-Type", contentType);
-          res.setHeader("Cache-Control", "public, max-age=3600");
-          return res.status(200).send(Buffer.from(buffer));
-        }
-        // Model loading — HF returns 503 while model warms up
-        const errData = await hfRes.json().catch(() => ({}));
-        if (hfRes.status === 503) {
-          console.warn("[Imagine] HF model loading, falling back...");
-        } else {
-          console.warn("[Imagine] HF error:", errData?.error || hfRes.status);
-        }
-      }
-    } catch(e) {
-      console.warn("[Imagine] HF failed:", e.message);
+      console.log(`[Imagine] Trying ${model.id}...`);
+      const result = await callHFImage(model.id, body, token);
+      console.log(`[Imagine] ✓ ${model.id}`);
+      return { ...result, model: model.id };
+    } catch (e) {
+      console.warn(`[Imagine] ✗ ${model.id}: ${e.message}`);
+      errors.push(`${model.id}: ${e.message}`);
     }
   }
 
-  // ── Attempt 2: Pollinations redirect (no proxy) ─
-  // Return the URL directly — browser loads it without hitting our server
-  // This avoids the "Queue full for IP" error since it's a direct browser request
-  const cleanPrompt = prompt.replace(/[^\w\s,.-]/g, " ").trim();
-  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=${width}&height=${height}&model=flux&nologo=true&seed=${Date.now() % 99999}`;
+  // Last resort: try realistic model even if not requested
+  if (preferModel !== "realistic") {
+    const sdxl = IMAGE_MODELS.find(m => m.id.includes("stable-diffusion"));
+    if (sdxl) {
+      try {
+        const result = await callHFImage(sdxl.id, {
+          inputs: prompt,
+          parameters: { width, height, num_inference_steps: sdxl.steps, guidance_scale: sdxl.cfg },
+        }, token);
+        return { ...result, model: sdxl.id };
+      } catch (e) {
+        errors.push(`fallback: ${e.message}`);
+      }
+    }
+  }
 
-  return res.status(200).json({
-    url:      pollinationsUrl,
-    fallback: true,
-    provider: "pollinations",
-    note:     hfToken ? "HF model was loading, used fallback" : "Set HF_TOKEN in Vercel env for better images",
-  });
+  throw new Error(errors.join(" | "));
+}
+
+// ── Background Removal ────────────────────────────────────────────────────
+async function removeBackground(imageBase64, token) {
+  const ctrl    = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 20000);
+
+  try {
+    // Convert base64 to binary
+    const binary = Buffer.from(imageBase64, "base64");
+
+    const r = await fetch(`${HF}/briaai/RMBG-1.4`, {
+      method:  "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type":  "image/jpeg",
+      },
+      body:   binary,
+      signal: ctrl.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!r.ok) throw new Error(`BG removal failed: HTTP ${r.status}`);
+
+    return { buffer: await r.arrayBuffer(), contentType: "image/png" };
+  } catch (e) {
+    clearTimeout(timeout);
+    throw e;
+  }
+}
+
+// ── Handler ───────────────────────────────────────────────────────────────
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin",  "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.status(200).end();
+
+  const token = process.env.HF_TOKEN;
+  if (!token) {
+    return res.status(500).json({
+      error: "HF_TOKEN not set. Add it in Vercel → Settings → Environment Variables.",
+    });
+  }
+
+  // Support both GET (simple) and POST (full options)
+  const params = req.method === "POST" ? req.body : req.query;
+
+  const {
+    prompt,
+    w           = "1024",
+    h           = "1024",
+    model       = "flux",
+    mode        = "text",   // "text" | "remove-bg"
+    imageBase64 = null,
+  } = params || {};
+
+  // Background removal mode
+  if (mode === "remove-bg") {
+    if (!imageBase64) return res.status(400).json({ error: "imageBase64 required for remove-bg mode" });
+    try {
+      const result = await removeBackground(imageBase64, token);
+      res.setHeader("Content-Type", result.contentType);
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(200).send(Buffer.from(result.buffer));
+    } catch (e) {
+      return res.status(502).json({ error: e.message });
+    }
+  }
+
+  // Text-to-image mode
+  if (!prompt) return res.status(400).json({ error: "prompt required" });
+
+  const width  = Math.max(256, Math.min(parseInt(w)  || 1024, 1440));
+  const height = Math.max(256, Math.min(parseInt(h)  || 1024, 1440));
+
+  // FLUX works best with dimensions divisible by 64
+  const fw = Math.round(width  / 64) * 64;
+  const fh = Math.round(height / 64) * 64;
+
+  try {
+    const result = await textToImage(prompt, fw, fh, model, token);
+    res.setHeader("Content-Type", result.contentType);
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.setHeader("X-Model-Used",  result.model);
+    return res.status(200).send(Buffer.from(result.buffer));
+  } catch (e) {
+    console.error("[Imagine] All models failed:", e.message);
+
+    // Tell the client what happened with enough detail to debug
+    const isLoading = e.message.includes("loading:");
+    return res.status(502).json({
+      error:   isLoading
+        ? `Image model is warming up. Try again in ${e.message.split(":")[1] || 20} seconds.`
+        : `Image generation failed: ${e.message}`,
+      loading: isLoading,
+    });
+  }
 }
