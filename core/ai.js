@@ -1,124 +1,110 @@
-import { CONFIG } from "./config.js";
-import { Memory } from "./memory.js";
-import { FLOW_IDENTITY } from "./identity.js";
-import { Commands } from "./commands.js";
-import { RAG } from "./rag.js";
+// ═══════════════════════════════════════════
+// core/ai.js — Calls /api/chat (Vercel proxy)
+// Key stays on server. Never in browser.
+// Now includes RAG context injection.
+// ═══════════════════════════════════════════
+import { Memory }        from "./memory.js";
+import { Weather }       from "./weather.js";
+import { Alarms }        from "./alarms.js";
+import { Storage }       from "./storage.js";
+import { CONFIG }        from "./config.js";
+import { parseCommand, getTime, getDate } from "./commands.js";
+import { goalsSummary } from "./goals.js";
+import { selfKnowledgeBlock } from "./identity.js";
+import { Speech }        from "./speech.js";
+import { RAG }           from "./rag.js";
 
-let UI = null;
-let Notepad = null;
-let Vision = null;
+// UI refs injected at init (avoids circular imports)
+let _chat = null;
+let _orb  = null;
+export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 
-export const AI = {
-  setUI(ui) { UI = ui; },
-  setNotepad(n) { Notepad = n; },
-  setVision(v) { Vision = v; },
+function buildPrompt(weather, ragContext) {
+  const p = Memory.getProfile();
+  const ragBlock = ragContext
+    ? `\nKNOWLEDGE BASE (relevant to this query):\n${ragContext}\n`
+    : "";
 
-  async send(overrideText) {
-    const inputEl = document.getElementById("user-input");
-    const text = (typeof overrideText === "string" ? overrideText : inputEl?.value || "").trim();
-    if (!text) return;
+  return `${CONFIG.PERSONALITY}
 
-    if (inputEl) inputEl.value = "";
-    if (UI) UI.setOrbState("thinking");
-
-    // Show user message
-    if (UI) UI.addMessage(text, "user");
-    Memory.add("user", text);
-
-    // Try local commands first (time, weather, alarms, open sites, etc.)
-    const localReply = await Commands.handle(text);
-    if (localReply) {
-      if (UI) {
-        UI.addMessage(localReply, "flow");
-        UI.setOrbState("speaking");
-        await UI.speak(localReply);
-        UI.setOrbState("idle");
-      }
-      Memory.add("assistant", localReply);
-      return;
-    }
-
-    // Build system prompt
-    const ragContext = await RAG.search(text).catch(() => null);
-    const systemPrompt = buildSystemPrompt(ragContext);
-
-    // Detect intent locally
-    const intent = detectIntent(text);
-
-    // Build message history (last N turns)
-    const history = Memory.getRecent(CONFIG.HISTORY_LIMIT || 10);
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history, systemPrompt, intent })
-      });
-
-      let data;
-      try {
-        data = await res.json();
-      } catch {
-        throw new Error("Server returned invalid JSON. Check Vercel logs.");
-      }
-
-      if (!res.ok || data.error) {
-        const errMsg = data?.error || `Server error ${res.status}`;
-        console.error("[Flow] API error:", errMsg);
-        if (UI) UI.addError("⚠️ " + errMsg);
-        if (UI) UI.setOrbState("idle");
-        return;
-      }
-
-      const reply = data.reply || "";
-      Memory.add("assistant", reply);
-
-      if (UI) {
-        UI.addMessage(reply, "flow");
-        UI.setOrbState("speaking");
-        await UI.speak(reply);
-        UI.setOrbState("idle");
-      }
-
-    } catch (e) {
-      console.error("[Flow] Error:", e);
-      if (UI) {
-        UI.addError("⚠️ " + (e.message || "Connection failed. Check your internet and try again."));
-        UI.setOrbState("idle");
-      }
-    }
-  }
-};
-
-function detectIntent(msg) {
-  const m = msg.toLowerCase();
-  if (/\b(code|function|script|html|css|js|python|write me|build me|create a|implement)\b/.test(m)) return "code";
-  if (/\b(search|find|look up|latest|news|research|what is|who is|when did)\b/.test(m)) return "research";
-  if (/\b(image|picture|photo|generate|draw|design|logo|banner|wallpaper)\b/.test(m)) return "image";
-  return "chat";
+${selfKnowledgeBlock()}
+${ragBlock}
+LIVE CONTEXT:
+Time: ${getTime()}
+Date: ${getDate()}
+Location: ${p.city}, ${p.country || "Nigeria"}
+Weather: ${weather}
+Alarms: ${Alarms.list()}
+Facts about Joel: ${Memory.factsString()}
+Note: ${Storage.get("notes","").slice(0,120) || "none"}
+Goals today: ${goalsSummary()}`;
 }
 
-function buildSystemPrompt(ragContext) {
-  const goals = Memory.get("goals") || [];
-  const profile = Memory.get("profile") || {};
-  const facts = Memory.get("facts") || [];
+export async function sendMessage(overrideText) {
+  // Always query DOM fresh — never cache
+  const inputEl = document.getElementById("user-input");
+  let text = "";
 
-  let prompt = `${FLOW_IDENTITY.systemPrompt}\n\n`;
-
-  if (profile.name) prompt += `You are talking to: ${profile.name}.\n`;
-  prompt += `Current time: ${new Date().toLocaleString("en-NG", { timeZone: "Africa/Lagos" })}.\n`;
-
-  if (goals.length > 0) {
-    prompt += `\nToday's goals:\n${goals.map((g, i) => `${i + 1}. ${g.text}${g.done ? " ✓" : ""}`).join("\n")}\n`;
+  if (typeof overrideText === "string" && overrideText.trim()) {
+    text = overrideText.trim();
+  } else if (inputEl?.value.trim()) {
+    text = inputEl.value.trim();
   }
 
-  if (facts.length > 0) {
-    prompt += `\nThings I know about you:\n${facts.slice(-10).join("\n")}\n`;
+  if (!text) { console.warn("[Flow] send() — no text"); return; }
+  if (inputEl) inputEl.value = "";
+
+  console.log("[Flow] →", text);
+  _chat.add(text, "user");
+  Memory.add("user", text);
+
+  // Local commands — no API needed
+  const local = await parseCommand(text);
+  if (local !== false) {
+    if (local !== null) {
+      _chat.add(local, "bot");
+      Memory.add("assistant", local);
+      Speech.speak(local);
+    }
+    return;
   }
 
-  if (ragContext) {
-    prompt += `\nRelevant knowledge base:\n${ragContext}\n`;
-  }
+  // API call
+  _orb.setState("thinking");
+  _chat.showTyping();
 
-  return prompt;
+  try {
+    // Run weather + RAG search in parallel
+    const [weather, ragContext] = await Promise.all([
+      Weather.get(),
+      RAG.search(text),
+    ]);
+
+    const messages = [
+      { role: "system", content: buildPrompt(weather, ragContext) },
+      ...Memory.forAPI(),
+    ];
+
+    const res = await fetch("/api/chat", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ messages, max_tokens: CONFIG.MAX_TOKENS }),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
+
+    console.log("[Flow] ←", data.reply.slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
+    _chat.hideTyping();
+    _chat.add(data.reply, "bot");
+    Memory.add("assistant", data.reply);
+    _orb.setState("speaking");
+    Speech.speak(data.reply, () => _orb.setState("idle"));
+
+  } catch(err) {
+    _chat.hideTyping();
+    console.error("[Flow] Error:", err.message);
+    _chat.addError(err.message);
+    _orb.setState("idle");
+  }
 }
