@@ -223,7 +223,7 @@ export const YOLO = {
 
     try {
       // Spawn Web Worker — all WASM inference runs there
-      this._worker = new Worker("/yolo-worker.js");
+      this._worker = new Worker("/yolo-worker.js", { type: "module" });
 
       // Wire up worker message handler
       this._worker.onmessage = (e) => this._onWorkerMsg(e.data);
