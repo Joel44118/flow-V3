@@ -1,45 +1,52 @@
-// ═══════════════════════════════════════════
-// api/chat.js — HuggingFace Inference API
+// ═══════════════════════════════════════════════════════════════
+// api/chat.js — Multi-Provider AI Chain
 //
-// VERCEL HOBBY PLAN FIX:
-//   Hobby plan caps ALL functions at 10 seconds.
-//   Previous version had retries that added up to 30s+ → timeout → "fetch failed"
-//   Now: 7s AbortController timeout per model, instant fallback, zero retries.
-//   Total worst case: 3 models × 7s = 21s... but Vercel kills at 10s.
-//   So: 1 model attempt, 7s budget, fallback to next if it fails. Fast.
+// PROVIDER ORDER (tries each until one works):
 //
-// HF_TOKEN: huggingface.co/settings/tokens → New token → Read → Copy
-// Add in: Vercel Dashboard → Settings → Environment Variables → HF_TOKEN
-// ═══════════════════════════════════════════
+//  1. OPENROUTER  — multiple free models, big context, no cold-start
+//     Env var: OPENROUTER_API_KEY
+//     Free models: llama-3.3-70b, qwen-coder, gemini-flash, etc.
+//     Token limit: up to 128k context depending on model
+//     Get key: openrouter.ai/keys
+//
+//  2. GROQ  — fastest inference on earth, generous free tier
+//     Env var: GROQ_API_KEY
+//     Free models: llama-3.3-70b, mixtral-8x7b, gemma2-9b
+//     Token limit: 131k context, 30 req/min free
+//     Get key: console.groq.com → API Keys → Create key (free)
+//
+//  3. HUGGINGFACE  — fallback, cold-start issues but always free
+//     Env var: HF_TOKEN
+//     Get key: huggingface.co/settings/tokens → New token → Read
+//
+// ADD ALL THREE in Vercel Dashboard → Settings → Environment Variables
+// The chain auto-skips any provider whose key isn't set.
+// ═══════════════════════════════════════════════════════════════
 
-const HF_API = "https://api-inference.huggingface.co/v1/chat/completions";
-
-// Intent detected by regex — zero extra API call
+// ── Intent detection (local regex, zero API calls) ──────────────────────────
 function detectIntent(text) {
   const t = text.toLowerCase();
-  if (/\b(write|create|build|fix|debug|code|function|script|html|css|javascript|python|component|api endpoint)\b/.test(t)) return "code";
-  if (/\b(research|explain|summarise|summarize|how does|what is|history|deep dive)\b/.test(t)) return "research";
-  if (/\b(pdf|document|extract|read this file)\b/.test(t)) return "pdf";
+  if (/\b(write|create|build|fix|debug|code|function|script|html|css|javascript|typescript|python|react|component|api|endpoint)\b/.test(t)) return "code";
+  if (/\b(research|explain|summarise|summarize|how does|what is|history of|deep dive|analyse|analyze)\b/.test(t)) return "research";
+  if (/\b(pdf|document|extract|read this file|summarize this)\b/.test(t)) return "pdf";
   return "chat";
 }
 
-const INTENT_TOKENS = { code: 2000, research: 800, pdf: 800, chat: 400 };
+// ── Message trimming ─────────────────────────────────────────────────────────
+function trimMessages(messages) {
+  const system  = messages.find(m => m.role === "system");
+  const history = messages.filter(m => m.role !== "system").slice(-12);
 
-// Models ordered: warmest/fastest first
-// These are the highest-traffic models on HF — almost always warm
-const MODEL_CHAIN = [
-  "mistralai/Mistral-7B-Instruct-v0.3",      // #1 most used — almost always warm
-  "meta-llama/Meta-Llama-3-8B-Instruct",     // very popular fallback
-  "HuggingFaceH4/zephyr-7b-beta",            // reliable fallback
-];
+  if (!system) return history;
 
-// Code gets a better model when budget allows
-const CODE_CHAIN = [
-  "Qwen/Qwen2.5-Coder-32B-Instruct",
-  "mistralai/Mistral-7B-Instruct-v0.3",      // fallback if Qwen cold
-];
+  let sys = system.content;
+  if (sys.length > 4000) sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:)/s, "");
+  if (sys.length > 3000) sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow)/s,
+    "I am Flow V3, Joel's personal AI — voice, vision, code, search, alarms, goals, images.\n");
+  if (sys.length > 2500) sys = sys.slice(0, 2500) + "\n[trimmed]";
 
-const STOP_TOKENS = ["</s>", "<|eot_id|>", "Human:", "User:", "Assistant:", "</assistant>"];
+  return [{ role: "system", content: sys }, ...history];
+}
 
 function cleanReply(text) {
   return text
@@ -51,54 +58,142 @@ function cleanReply(text) {
     .trim();
 }
 
-function trimMessages(messages) {
-  const system  = messages.find(m => m.role === "system");
-  const history = messages.filter(m => m.role !== "system").slice(-10);
+// ─────────────────────────────────────────────────────────────────────────────
+//  PROVIDER 1: OPENROUTER
+//  - No cold starts (always warm)
+//  - Best free model variety
+//  - Code: Qwen-Coder  |  Research: Llama-70B  |  Chat: Gemma or Llama
+// ─────────────────────────────────────────────────────────────────────────────
+const OR_MODELS = {
+  code:     ["qwen/qwen-2.5-coder-32b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free"],
+  research: ["meta-llama/llama-3.3-70b-instruct:free", "google/gemma-3-27b-it:free"],
+  pdf:      ["meta-llama/llama-3.1-8b-instruct:free",  "mistralai/mistral-7b-instruct:free"],
+  chat:     ["meta-llama/llama-3.1-8b-instruct:free",  "mistralai/mistral-7b-instruct:free"],
+};
+const OR_TOKENS = { code: 2500, research: 1200, pdf: 1000, chat: 500 };
 
-  if (!system) return history;
+async function tryOpenRouter(messages, intent, key) {
+  const models    = OR_MODELS[intent] || OR_MODELS.chat;
+  const maxTokens = OR_TOKENS[intent] || 500;
+  const STOP      = ["</s>", "<|eot_id|>", "Human:", "User:", "Assistant:", "</assistant>"];
 
-  let sys = system.content;
-  // Aggressively trim system prompt to stay under token limits
-  if (sys.length > 3500) sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:)/s, "");
-  if (sys.length > 2500) sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow)/s,
-    "I am Flow V3, Joel's personal AI — voice, vision, code, search, alarms, goals, images.\n");
-  if (sys.length > 2000) sys = sys.slice(0, 2000) + "\n[trimmed]";
+  for (const model of models) {
+    const ctrl    = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method:  "POST",
+        headers: {
+          "Authorization": `Bearer ${key}`,
+          "Content-Type":  "application/json",
+          "HTTP-Referer":  "https://flow-v3.vercel.app",
+          "X-Title":       "Flow V3",
+        },
+        body:   JSON.stringify({ model, max_tokens: maxTokens, stop: STOP, messages }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timeout);
 
-  return [{ role: "system", content: sys }, ...history];
+      const data = await r.json();
+      // Token limit error → trim more aggressively and try next model
+      if (data.error?.code === 429 || data.error?.message?.includes("limit")) throw new Error("limit");
+      if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
+
+      return { reply: cleanReply(data.choices[0].message.content), model: `openrouter/${model}` };
+    } catch (e) {
+      clearTimeout(timeout);
+      console.warn(`[Flow] OpenRouter ${model}: ${e.message}`);
+    }
+  }
+  throw new Error("OpenRouter: all models failed");
 }
 
-// Single attempt with AbortController — no retries, no blocking
-async function tryModel(messages, maxTokens, model, token) {
-  const controller = new AbortController();
-  const timeout    = setTimeout(() => controller.abort(), 7000); // 7s hard limit per model
+// ─────────────────────────────────────────────────────────────────────────────
+//  PROVIDER 2: GROQ
+//  - Sub-second inference (fastest available)
+//  - 131k context window on llama-3.3-70b
+//  - 30 requests/min free, 6000 req/day free
+//  - NEVER cold-starts
+// ─────────────────────────────────────────────────────────────────────────────
+const GROQ_MODELS = {
+  code:     "llama-3.3-70b-versatile",   // big brain for code
+  research: "llama-3.3-70b-versatile",
+  pdf:      "llama-3.1-8b-instant",      // fast for doc extraction
+  chat:     "llama-3.1-8b-instant",      // fastest for conversation
+};
+const GROQ_TOKENS = { code: 3000, research: 1500, pdf: 1200, chat: 600 };
 
+async function tryGroq(messages, intent, key) {
+  const model     = GROQ_MODELS[intent] || "llama-3.1-8b-instant";
+  const maxTokens = GROQ_TOKENS[intent] || 600;
+  const STOP      = ["</s>", "<|eot_id|>", "Human:", "User:", "Assistant:", "</assistant>"];
+
+  const ctrl    = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 8000);
   try {
-    const r = await fetch(HF_API, {
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method:  "POST",
-      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-      body:    JSON.stringify({ model, max_tokens: maxTokens, stop: STOP_TOKENS, messages }),
-      signal:  controller.signal,
+      headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+      body:    JSON.stringify({ model, max_tokens: maxTokens, stop: STOP, messages }),
+      signal:  ctrl.signal,
     });
-
     clearTimeout(timeout);
-
-    // 503 = model loading (cold start) — skip immediately, try next
-    if (r.status === 503) throw new Error("cold");
 
     const data = await r.json();
-    if (!r.ok || !data.choices?.length) {
-      const msg = typeof data?.error === "string" ? data.error : data?.error?.message || `HTTP ${r.status}`;
-      throw new Error(msg);
-    }
+    if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
 
-    return cleanReply(data.choices[0].message.content);
-
+    return { reply: cleanReply(data.choices[0].message.content), model: `groq/${model}` };
   } catch (e) {
     clearTimeout(timeout);
-    throw e;
+    throw new Error(`Groq: ${e.message}`);
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  PROVIDER 3: HUGGINGFACE
+//  - Last resort, has cold-start issues
+//  - But always available, completely free
+//  - One attempt, no retries (Vercel 10s limit)
+// ─────────────────────────────────────────────────────────────────────────────
+const HF_MODELS = [
+  "mistralai/Mistral-7B-Instruct-v0.3",   // most popular, stays warm
+  "meta-llama/Meta-Llama-3-8B-Instruct",
+  "HuggingFaceH4/zephyr-7b-beta",
+];
+
+async function tryHuggingFace(messages, intent, token) {
+  const maxTokens = intent === "code" ? 1500 : 400;
+  const STOP      = ["</s>", "<|eot_id|>", "Human:", "User:", "Assistant:", "</assistant>"];
+
+  for (const model of HF_MODELS) {
+    const ctrl    = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 7000);
+    try {
+      const r = await fetch("https://api-inference.huggingface.co/v1/chat/completions", {
+        method:  "POST",
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+        body:    JSON.stringify({ model, max_tokens: maxTokens, stop: STOP, messages }),
+        signal:  ctrl.signal,
+      });
+      clearTimeout(timeout);
+
+      if (r.status === 503) throw new Error("cold");   // skip immediately
+
+      const data = await r.json();
+      if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
+
+      return { reply: cleanReply(data.choices[0].message.content), model: `hf/${model}` };
+    } catch (e) {
+      clearTimeout(timeout);
+      console.warn(`[Flow] HF ${model}: ${e.message}`);
+    }
+  }
+  throw new Error("HuggingFace: all models cold or failed");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MAIN HANDLER
+// ─────────────────────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin",  "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -106,35 +201,65 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST")    return res.status(405).json({ error: "POST only" });
 
-  const token = process.env.HF_TOKEN;
-  if (!token) {
+  const OR_KEY  = process.env.OPENROUTER_API_KEY;
+  const GR_KEY  = process.env.GROQ_API_KEY;
+  const HF_KEY  = process.env.HF_TOKEN;
+
+  // At least one provider must be configured
+  if (!OR_KEY && !GR_KEY && !HF_KEY) {
     return res.status(500).json({
-      error: "HF_TOKEN not set. Vercel Dashboard → Settings → Environment Variables → add HF_TOKEN. Get a free token at huggingface.co/settings/tokens",
+      error: "No AI provider configured. Add at least one in Vercel → Settings → Environment Variables: OPENROUTER_API_KEY, GROQ_API_KEY, or HF_TOKEN",
     });
   }
 
   const { messages } = req.body || {};
   if (!messages?.length) return res.status(400).json({ error: "messages required" });
 
-  const trimmed   = trimMessages(messages);
-  const lastUser  = [...trimmed].reverse().find(m => m.role === "user")?.content || "";
-  const intent    = detectIntent(lastUser);
-  const maxTokens = INTENT_TOKENS[intent] || 400;
-  const chain     = intent === "code" ? CODE_CHAIN : MODEL_CHAIN;
+  const trimmed  = trimMessages(messages);
+  const lastUser = [...trimmed].reverse().find(m => m.role === "user")?.content || "";
+  const intent   = detectIntent(lastUser);
 
-  console.log(`[Flow] intent=${intent} tokens=${maxTokens} models=${chain[0]}`);
+  console.log(`[Flow] intent=${intent} providers: OR=${!!OR_KEY} GR=${!!GR_KEY} HF=${!!HF_KEY}`);
 
-  for (const model of chain) {
+  const errors = [];
+
+  // 1. Try OpenRouter first (best free option, no cold-start)
+  if (OR_KEY) {
     try {
-      const reply = await tryModel(trimmed, maxTokens, model, token);
-      console.log(`[Flow] ✓ ${model}`);
-      return res.status(200).json({ reply, model, intent });
+      const result = await tryOpenRouter(trimmed, intent, OR_KEY);
+      console.log(`[Flow] ✓ ${result.model}`);
+      return res.status(200).json({ ...result, intent });
     } catch (e) {
-      console.warn(`[Flow] ✗ ${model}: ${e.message}`);
+      errors.push(`OpenRouter: ${e.message}`);
+      console.warn(`[Flow] ✗ ${e.message}`);
+    }
+  }
+
+  // 2. Try Groq (fastest, generous free, no cold-start)
+  if (GR_KEY) {
+    try {
+      const result = await tryGroq(trimmed, intent, GR_KEY);
+      console.log(`[Flow] ✓ ${result.model}`);
+      return res.status(200).json({ ...result, intent });
+    } catch (e) {
+      errors.push(`Groq: ${e.message}`);
+      console.warn(`[Flow] ✗ ${e.message}`);
+    }
+  }
+
+  // 3. HuggingFace last resort
+  if (HF_KEY) {
+    try {
+      const result = await tryHuggingFace(trimmed, intent, HF_KEY);
+      console.log(`[Flow] ✓ ${result.model}`);
+      return res.status(200).json({ ...result, intent });
+    } catch (e) {
+      errors.push(`HF: ${e.message}`);
+      console.warn(`[Flow] ✗ ${e.message}`);
     }
   }
 
   return res.status(502).json({
-    error: "All models busy or cold-starting. Wait 30 seconds and try again — they warm up quickly after first use.",
+    error: `All providers failed: ${errors.join(" | ")}`,
   });
 }
