@@ -108,3 +108,45 @@ export async function sendMessage(overrideText) {
     _orb.setState("idle");
   }
 }
+
+// ── Direct AI call — skips ALL local command parsing ────────────────────
+// Used by search/URL results so website content doesn't trigger
+// weather/alarm/vision commands accidentally
+export async function sendToAI(text) {
+  if (!text?.trim()) return;
+
+  _orb.setState("thinking");
+  _chat.showTyping();
+
+  try {
+    const [weather, ragContext] = await Promise.all([
+      Weather.get(),
+      RAG.search(text),
+    ]);
+
+    const messages = [
+      { role: "system", content: buildPrompt(weather, ragContext) },
+      ...Memory.forAPI(),
+      { role: "user", content: text },
+    ];
+
+    const res  = await fetch("/api/chat", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ messages, max_tokens: CONFIG.MAX_TOKENS }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
+
+    _chat.hideTyping();
+    _chat.add(data.reply, "bot");
+    Memory.add("assistant", data.reply);
+    _orb.setState("speaking");
+    Speech.speak(data.reply, () => _orb.setState("idle"));
+
+  } catch (err) {
+    _chat.hideTyping();
+    _chat.addError(err.message);
+    _orb.setState("idle");
+  }
+}
