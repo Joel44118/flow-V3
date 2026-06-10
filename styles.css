@@ -593,3 +593,18 @@ body.drag-over { box-shadow: inset 0 0 0 3px rgba(56,189,248,0.4); }
   transition: background .2s;
 }
 .img-open-btn:hover { background: rgba(56,189,248,.2); }
+cursor: pointer;
+  transition: background .2s;
+}
+.img-open-btn:hover { background: rgba(56,189,248,.2); }
+
+/* ── Image cards always visible (never fade out) ── */
+.mwrap:has(.img-card) {
+  opacity: 1 !important;
+  pointer-events: all !important;
+}
+/* Fallback for browsers without :has() support */
+.img-card-wrap {
+  opacity: 1 !important;
+  pointer-events: all !important;
+}
