@@ -137,9 +137,11 @@ export async function generateImage(promptText, dimensionHint = "") {
     try {
       console.log(`[Imagine] Trying ${model.id}...`);
       const result  = await callHF(model.id, cleanPrompt, w, h, model.steps, model.cfg, token);
+      console.log(`[Imagine] Got blob: ${result.blob.size} bytes, type: ${result.blob.type}`);
+      if (result.blob.size < 500) throw new Error("Response too small — likely an error");
       const blobUrl = URL.createObjectURL(result.blob);
       _renderCard(blobUrl, cleanPrompt, w, h, model.id.split("/")[1]);
-      Speech.speak(`Here's your ${w} by ${h} image, Boss.`);
+      Speech.speak(`Image ready, Boss.`);
       _orb?.setState("idle");
       return;
     } catch (e) {
@@ -192,7 +194,7 @@ function _renderCard(blobUrl, prompt, w, h, modelName) {
   if (!col) return;
 
   const wrap = document.createElement("div");
-  wrap.className = "mwrap mleft fresh";
+  wrap.className = "mwrap mleft fresh img-card-wrap";
 
   const label = document.createElement("div");
   label.className   = "mlabel";
@@ -226,7 +228,7 @@ function _renderCard(blobUrl, prompt, w, h, modelName) {
   wrap.appendChild(card);
   col.appendChild(wrap);
   col.scrollTop = col.scrollHeight;
-  setTimeout(() => wrap.classList.remove("fresh"), 15000);
+  // Image cards stay visible permanently — don't fade out
 }
 
 // ── Parse image request ───────────────────────────────────────────────────
