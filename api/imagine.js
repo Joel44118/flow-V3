@@ -1,228 +1,348 @@
-// ═══════════════════════════════════════════════════════════════
-// api/imagine.js — HuggingFace Image Generation
+// ═══════════════════════════════════════════
+// ui/imagine.js — Smart Image Generation
 //
-// NO POLLINATIONS — fully HuggingFace powered.
+// TWO MODES (auto-detected from prompt):
 //
-// MODES:
-//   text-to-image  → generate from prompt (default)
-//   img-to-img     → transform an existing image
-//   remove-bg      → remove image background (BRIA-RMBG)
+//  DESIGN MODE — text, banners, promos, social posts
+//    Uses: AI generates HTML/CSS → renders in hidden iframe
+//          → html2canvas captures → blob download
+//    Result: perfect text, custom fonts, exact layout
+//    Triggers: "promotion", "banner", "text on", "quote",
+//              "social post", "poster with text", "logo"
 //
-// MODEL CHAIN (text-to-image):
-//   1. black-forest-labs/FLUX.1-schnell  — best quality, fast
-//   2. stabilityai/stable-diffusion-xl-base-1.0  — reliable fallback
-//
-// ENV VAR: HF_TOKEN (huggingface.co/settings/tokens → Read)
-//
-// GET  /api/imagine?prompt=...&w=1024&h=1024&model=flux&steps=4
-// POST /api/imagine  body: { prompt, w, h, model, mode, imageBase64 }
-// ═══════════════════════════════════════════════════════════════
+//  PHOTO/ART MODE — scenes, people, objects, landscapes
+//    Uses: HuggingFace FLUX.1-schnell via router (no cold-start)
+//    Result: photorealistic or artistic image
+//    Triggers: everything else
+// ═══════════════════════════════════════════
+import { Speech } from "../core/speech.js";
 
-const HF = "https://api-inference.huggingface.co/models";
+let _chat    = null;
+let _orb     = null;
+let _hfToken = null;
 
-// ── Model chain — tried in order until one works ──────────────────────────
-const IMAGE_MODELS = [
-  {
-    id:    "black-forest-labs/FLUX.1-schnell",
-    steps: 4,     // FLUX only needs 4 steps
-    cfg:   0,     // FLUX uses cfg=0
-  },
-  {
-    id:    "stabilityai/stable-diffusion-xl-base-1.0",
-    steps: 20,
-    cfg:   7.5,
-  },
+export function initImagine(chat, orb) { _chat = chat; _orb = orb; }
+
+// ── Token fetch (cached) ─────────────────────────────────────────────────
+async function getToken() {
+  if (_hfToken) return _hfToken;
+  const r    = await fetch("/api/token");
+  const data = await r.json();
+  if (!data.token) throw new Error("HF_TOKEN not set in Vercel environment variables.");
+  _hfToken = data.token;
+  return _hfToken;
+}
+
+// ── Dimension presets (multiples of 64 for FLUX) ────────────────────────
+const PRESETS = {
+  square:    [1024, 1024], logo:      [512,  512],
+  icon:      [512,  512],  portrait:  [768,  1280],
+  tall:      [768,  1280], landscape: [1280, 768],
+  wide:      [1280, 768],  wallpaper: [1920, 1088],
+  banner:    [1536, 512],  header:    [1536, 512],
+  instagram: [1024, 1024], twitter:   [1216, 704],
+  thumbnail: [1280, 768],  poster:    [768,  1088],
+};
+
+function parseDimensions(text) {
+  const t = text.toLowerCase();
+  for (const [key, dims] of Object.entries(PRESETS)) {
+    if (t.includes(key)) return dims;
+  }
+  const m = t.match(/(\d{3,4})\s*(?:x|by|×|\*)\s*(\d{3,4})/);
+  if (m) {
+    const w = Math.round(parseInt(m[1]) / 64) * 64;
+    const h = Math.round(parseInt(m[2]) / 64) * 64;
+    return [Math.min(w, 1440), Math.min(h, 1440)];
+  }
+  return [1024, 1024];
+}
+
+// ── Detect if this is a DESIGN request (needs text/layout) or PHOTO ──────
+function isDesignRequest(text) {
+  const t = text.toLowerCase();
+  return /\b(promotion|promo|promotional|banner|social\s+post|twitter\s+post|instagram\s+post|facebook\s+post|poster\s+with|text\s+on|quote|slogan|headline|typography|graphic\s+design|flyer|ad\s+|advertisement|branding|minimalist\s+design|centered\s+(text|design)|put.{0,20}text|write.{0,20}on|add.{0,20}text)\b/.test(t);
+}
+
+// ── HuggingFace FLUX (photo/art mode) ───────────────────────────────────
+const FLUX_MODELS = [
+  { id: "black-forest-labs/FLUX.1-schnell",         steps: 4,  cfg: 0   },
+  { id: "stabilityai/stable-diffusion-xl-base-1.0", steps: 20, cfg: 7.5 },
+  { id: "runwayml/stable-diffusion-v1-5",           steps: 20, cfg: 7   },
 ];
 
-// ── Call HF image model ───────────────────────────────────────────────────
-async function callHFImage(modelId, body, token) {
-  const ctrl    = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 25000); // images take longer
-
-  try {
-    const r = await fetch(`${HF}/${modelId}`, {
-      method:  "POST",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type":  "application/json",
-        "x-use-cache":   "false",
-      },
-      body:   JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-    clearTimeout(timeout);
-
-    // 503 = model loading cold start
-    if (r.status === 503) {
-      const err = await r.json().catch(() => ({}));
-      const wait = err.estimated_time || 20;
-      throw new Error(`loading:${Math.ceil(wait)}`);
-    }
-
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      throw new Error(err.error || `HTTP ${r.status}`);
-    }
-
-    const ct = r.headers.get("content-type") || "";
-    if (!ct.startsWith("image/")) {
-      const text = await r.text();
-      throw new Error(`Unexpected response: ${text.slice(0, 100)}`);
-    }
-
-    return { buffer: await r.arrayBuffer(), contentType: ct };
-
-  } catch (e) {
-    clearTimeout(timeout);
-    throw e;
-  }
-}
-
-// ── Text → Image ──────────────────────────────────────────────────────────
-async function textToImage(prompt, width, height, preferModel, token) {
-  const errors = [];
-
-  for (const model of IMAGE_MODELS) {
-    // If user specified a model, try to match it
-    if (preferModel === "realistic" && model.id.includes("FLUX")) {
-      // Skip FLUX for realistic — use SDXL which is more photographic
-      continue;
-    }
-
-    const body = {
+async function callFlux(modelId, prompt, width, height, steps, cfg, token) {
+  const r = await fetch(`https://router.huggingface.co/hf-inference/models/${modelId}`, {
+    method:  "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type":  "application/json",
+      "x-use-cache":   "false",
+    },
+    body: JSON.stringify({
       inputs: prompt,
-      parameters: {
-        width,
-        height,
-        num_inference_steps: model.steps,
-        guidance_scale:      model.cfg,
-      },
-    };
+      parameters: { width, height, num_inference_steps: steps, guidance_scale: cfg },
+    }),
+  });
 
-    try {
-      console.log(`[Imagine] Trying ${model.id}...`);
-      const result = await callHFImage(model.id, body, token);
-      console.log(`[Imagine] ✓ ${model.id}`);
-      return { ...result, model: model.id };
-    } catch (e) {
-      console.warn(`[Imagine] ✗ ${model.id}: ${e.message}`);
-      errors.push(`${model.id}: ${e.message}`);
-    }
+  const ct = r.headers.get("content-type") || "";
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${r.status}`);
   }
-
-  // Last resort: try realistic model even if not requested
-  if (preferModel !== "realistic") {
-    const sdxl = IMAGE_MODELS.find(m => m.id.includes("stable-diffusion"));
-    if (sdxl) {
-      try {
-        const result = await callHFImage(sdxl.id, {
-          inputs: prompt,
-          parameters: { width, height, num_inference_steps: sdxl.steps, guidance_scale: sdxl.cfg },
-        }, token);
-        return { ...result, model: sdxl.id };
-      } catch (e) {
-        errors.push(`fallback: ${e.message}`);
-      }
-    }
+  if (!ct.startsWith("image/")) {
+    const txt = await r.text();
+    throw new Error(`Unexpected response: ${txt.slice(0, 80)}`);
   }
-
-  throw new Error(errors.join(" | "));
+  return { blob: await r.blob(), contentType: ct };
 }
 
-// ── Background Removal ────────────────────────────────────────────────────
-async function removeBackground(imageBase64, token) {
-  const ctrl    = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 20000);
+// ── HTML Design Generator (design mode) ──────────────────────────────────
+// Asks the AI to write a self-contained HTML design,
+// renders it in a hidden iframe, captures with html2canvas
+async function generateDesign(promptText, width, height) {
+  _chat?.add(`Designing ${width}×${height} graphic...`, "bot");
+  _orb?.setState("thinking");
+
+  // Ask the AI (via /api/chat) to write the HTML design
+  const systemPrompt = `You are a graphic designer who writes self-contained HTML/CSS.
+Write ONLY the complete HTML code for a ${width}×${height}px graphic.
+Rules:
+- Single HTML file, no external dependencies except Google Fonts
+- Use inline CSS only, body margin:0, overflow:hidden
+- The root div must be exactly ${width}px wide and ${height}px tall
+- Use web-safe or Google Fonts for text
+- Make it visually stunning — gradients, shadows, modern typography
+- NO JavaScript needed
+- Reply with ONLY the HTML code, nothing else, no markdown fences`;
+
+  const userPrompt = `Design a ${width}×${height}px graphic: ${promptText}`;
 
   try {
-    // Convert base64 to binary
-    const binary = Buffer.from(imageBase64, "base64");
-
-    const r = await fetch(`${HF}/briaai/RMBG-1.4`, {
+    const res = await fetch("/api/chat", {
       method:  "POST",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type":  "image/jpeg",
-      },
-      body:   binary,
-      signal: ctrl.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user",   content: userPrompt },
+        ],
+      }),
     });
-    clearTimeout(timeout);
 
-    if (!r.ok) throw new Error(`BG removal failed: HTTP ${r.status}`);
+    const data = await res.json();
+    if (!res.ok || !data.reply) throw new Error(data.error || "Design generation failed");
 
-    return { buffer: await r.arrayBuffer(), contentType: "image/png" };
+    // Clean the HTML (strip any markdown fences the model adds)
+    let html = data.reply
+      .replace(/^```html?\s*/i, "")
+      .replace(/```\s*$/, "")
+      .trim();
+
+    if (!html.includes("<html") && !html.includes("<div")) {
+      throw new Error("Model didn't return valid HTML");
+    }
+
+    // Render in hidden iframe → capture with html2canvas → blob
+    const blobUrl = await renderHtmlToImage(html, width, height);
+    _renderCard(blobUrl, promptText, width, height, "AI Design");
+    Speech.speak("Design ready, Boss.");
+    _orb?.setState("idle");
+
   } catch (e) {
-    clearTimeout(timeout);
-    throw e;
+    console.error("[Design]", e.message);
+    _chat?.addError("Design failed: " + e.message);
+    _orb?.setState("idle");
   }
 }
 
-// ── Handler ───────────────────────────────────────────────────────────────
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin",  "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.status(200).end();
+// ── Render HTML to image using hidden iframe + html2canvas ───────────────
+function renderHtmlToImage(html, width, height) {
+  return new Promise(async (resolve, reject) => {
+    // Load html2canvas from CDN if not already loaded
+    if (!window.html2canvas) {
+      await new Promise((res, rej) => {
+        const s   = document.createElement("script");
+        s.src     = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+        s.onload  = res;
+        s.onerror = () => rej(new Error("html2canvas CDN failed to load"));
+        document.head.appendChild(s);
+      });
+    }
 
-  const token = process.env.HF_TOKEN;
-  if (!token) {
-    return res.status(500).json({
-      error: "HF_TOKEN not set. Add it in Vercel → Settings → Environment Variables.",
-    });
+    // Create hidden iframe
+    const iframe = document.createElement("iframe");
+    iframe.style.cssText = `position:fixed;left:-9999px;top:-9999px;width:${width}px;height:${height}px;border:none;visibility:hidden;`;
+    document.body.appendChild(iframe);
+
+    // Write HTML into iframe
+    iframe.contentDocument.open();
+    iframe.contentDocument.write(html);
+    iframe.contentDocument.close();
+
+    // Wait for fonts/images to load
+    setTimeout(async () => {
+      try {
+        const canvas = await window.html2canvas(iframe.contentDocument.body, {
+          width,
+          height,
+          scale:           1,
+          useCORS:         true,
+          allowTaint:      true,
+          backgroundColor: null,
+          windowWidth:     width,
+          windowHeight:    height,
+        });
+
+        canvas.toBlob(blob => {
+          document.body.removeChild(iframe);
+          if (!blob) { reject(new Error("Canvas capture failed")); return; }
+          resolve(URL.createObjectURL(blob));
+        }, "image/png");
+
+      } catch (e) {
+        document.body.removeChild(iframe);
+        reject(e);
+      }
+    }, 1200); // wait for Google Fonts etc
+  });
+}
+
+// ── Main entry point ─────────────────────────────────────────────────────
+export async function generateImage(promptText, dimensionHint = "") {
+  const combined = promptText + " " + dimensionHint;
+  const [w, h]   = parseDimensions(combined);
+
+  // Clean prompt
+  const cleanPrompt = promptText
+    .replace(/\b(square|landscape|portrait|banner|wallpaper|poster|thumbnail|instagram|twitter|realistic|photo|canva|logo|icon|fast|turbo)\b/gi, "")
+    .replace(/\d{3,4}\s*(?:x|by|×|\*)\s*\d{3,4}/g, "")
+    .replace(/\s+/g, " ").trim();
+
+  // Route to design mode or photo mode
+  if (isDesignRequest(combined)) {
+    await generateDesign(cleanPrompt || promptText, w, h);
+    return;
   }
 
-  // Support both GET (simple) and POST (full options)
-  const params = req.method === "POST" ? req.body : req.query;
+  // Photo/art mode — use FLUX
+  _chat?.add(`Generating ${w}×${h} image — "${cleanPrompt}"...`, "bot");
+  _orb?.setState("thinking");
 
-  const {
-    prompt,
-    w           = "1024",
-    h           = "1024",
-    model       = "flux",
-    mode        = "text",   // "text" | "remove-bg"
-    imageBase64 = null,
-  } = params || {};
+  let token;
+  try {
+    token = await getToken();
+  } catch (e) {
+    _chat?.addError(e.message);
+    _orb?.setState("idle");
+    return;
+  }
 
-  // Background removal mode
-  if (mode === "remove-bg") {
-    if (!imageBase64) return res.status(400).json({ error: "imageBase64 required for remove-bg mode" });
+  const modelPref = /\brealistic\b|\bphoto\b/.test(combined.toLowerCase()) ? "realistic" : "flux";
+  const models    = modelPref === "realistic"
+    ? [FLUX_MODELS[1], FLUX_MODELS[2], FLUX_MODELS[0]]
+    : FLUX_MODELS;
+
+  for (const model of models) {
     try {
-      const result = await removeBackground(imageBase64, token);
-      res.setHeader("Content-Type", result.contentType);
-      res.setHeader("Cache-Control", "no-store");
-      return res.status(200).send(Buffer.from(result.buffer));
+      const result  = await callFlux(model.id, cleanPrompt, w, h, model.steps, model.cfg, token);
+      console.log(`[Imagine] ✓ ${model.id} — ${result.blob.size} bytes`);
+      if (result.blob.size < 500) throw new Error("Response too small");
+      _renderCard(URL.createObjectURL(result.blob), cleanPrompt, w, h, model.id.split("/")[1]);
+      Speech.speak("Image ready, Boss.");
+      _orb?.setState("idle");
+      return;
     } catch (e) {
-      return res.status(502).json({ error: e.message });
+      console.warn(`[Imagine] ${model.id}: ${e.message}`);
     }
   }
 
-  // Text-to-image mode
-  if (!prompt) return res.status(400).json({ error: "prompt required" });
+  _chat?.addError("Image generation failed. Check HF_TOKEN is set in Vercel → Settings → Environment Variables.");
+  _orb?.setState("idle");
+}
 
-  const width  = Math.max(256, Math.min(parseInt(w)  || 1024, 1440));
-  const height = Math.max(256, Math.min(parseInt(h)  || 1024, 1440));
-
-  // FLUX works best with dimensions divisible by 64
-  const fw = Math.round(width  / 64) * 64;
-  const fh = Math.round(height / 64) * 64;
+// ── Background removal ────────────────────────────────────────────────────
+export async function removeBackground(base64Image) {
+  _chat?.add("Removing background...", "bot");
+  _orb?.setState("thinking");
+  let token;
+  try { token = await getToken(); }
+  catch (e) { _chat?.addError(e.message); _orb?.setState("idle"); return; }
 
   try {
-    const result = await textToImage(prompt, fw, fh, model, token);
-    res.setHeader("Content-Type", result.contentType);
-    res.setHeader("Cache-Control", "public, max-age=3600");
-    res.setHeader("X-Model-Used",  result.model);
-    return res.status(200).send(Buffer.from(result.buffer));
-  } catch (e) {
-    console.error("[Imagine] All models failed:", e.message);
-
-    // Tell the client what happened with enough detail to debug
-    const isLoading = e.message.includes("loading:");
-    return res.status(502).json({
-      error:   isLoading
-        ? `Image model is warming up. Try again in ${e.message.split(":")[1] || 20} seconds.`
-        : `Image generation failed: ${e.message}`,
-      loading: isLoading,
+    const binary = Uint8Array.from(atob(base64Image), c => c.charCodeAt(0));
+    const r      = await fetch("https://api-inference.huggingface.co/models/briaai/RMBG-1.4", {
+      method:  "POST",
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "image/jpeg" },
+      body:    binary,
     });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blobUrl = URL.createObjectURL(await r.blob());
+    _renderCard(blobUrl, "background-removed", null, null, "RMBG");
+    Speech.speak("Background removed, Boss.");
+    _orb?.setState("idle");
+  } catch (e) {
+    _chat?.addError("Background removal failed: " + e.message);
+    _orb?.setState("idle");
   }
+}
+
+// ── Render card in chat ───────────────────────────────────────────────────
+function _renderCard(blobUrl, prompt, w, h, modelName) {
+  const col = document.getElementById("col-left");
+  if (!col) return;
+
+  const wrap  = document.createElement("div");
+  wrap.className = "mwrap mleft fresh img-card-wrap";
+
+  const label = document.createElement("div");
+  label.className   = "mlabel";
+  label.textContent = "FLOW";
+
+  const card  = document.createElement("div");
+  card.className = "img-card";
+
+  const img   = document.createElement("img");
+  img.src     = blobUrl;
+  img.alt     = prompt;
+  img.title   = "Click to fullscreen";
+  img.style.cssText = "max-width:100%;border-radius:10px;display:block;cursor:pointer;";
+  img.onclick = () => window.open(blobUrl, "_blank");
+
+  const meta  = document.createElement("div");
+  meta.className   = "img-meta";
+  meta.textContent = w && h ? `${w}×${h} · ${modelName}` : modelName;
+
+  const dl    = document.createElement("a");
+  dl.className   = "img-dl-btn";
+  dl.textContent = "⬇ DOWNLOAD";
+  dl.href        = blobUrl;
+  dl.download    = `flow-${Date.now()}.png`;
+
+  card.appendChild(img);
+  card.appendChild(meta);
+  card.appendChild(dl);
+  wrap.appendChild(label);
+  wrap.appendChild(card);
+  col.appendChild(wrap);
+  col.scrollTop = col.scrollHeight;
+  // Image cards never fade out
+}
+
+// ── Parse image request from text ─────────────────────────────────────────
+export function parseImageRequest(text) {
+  const gen  = /\b(generate|create|make|draw|imagine|design|show me|produce)\b.{0,30}\b(image|picture|photo|illustration|artwork|logo|banner|poster|thumbnail|wallpaper|icon|graphic|flyer|ad)\b/i;
+  const noun = /\b(image|picture|photo|logo|banner|poster|thumbnail|wallpaper|graphic|flyer)\b.{0,20}\b(of|for|showing|depicting|with|that)\b/i;
+  const bgRm = /\b(remove|strip)\b.{0,15}\b(background|bg)\b/i;
+
+  if (bgRm.test(text)) return { type: "remove-bg" };
+  if (!gen.test(text) && !noun.test(text)) return null;
+
+  const prompt = text
+    .replace(/\b(generate|create|make|draw|imagine|design|show me|produce)\b/gi, "")
+    .replace(/\ban?\s+(image|picture|photo|illustration|artwork|graphic)\b/gi, "")
+    .replace(/\b(of|for|showing|depicting)\b/gi, " ")
+    .replace(/\s+/g, " ").trim();
+
+  return { type: "generate", prompt: prompt || text };
 }
