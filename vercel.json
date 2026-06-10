@@ -8,6 +8,7 @@
     "api/rag.js":         { "maxDuration": 10 },
     "api/memory.js":      { "maxDuration": 10 },
     "api/memory-bulk.js": { "maxDuration": 10 },
+    "api/token.js":       { "maxDuration": 5  },
     "api/debug.js":       { "maxDuration": 5  }
   }
 }
