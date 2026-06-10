@@ -66,3 +66,32 @@ export async function businessResearch(sendToAI) {
   const prompt = `Here are some web results about growing a bot development and web development business like Joelflowstack:\n\n${context}\n\nGive Joel 3-5 specific, actionable tips he can apply right now to grow his business. Keep it real and direct.`;
   sendToAI(prompt);
 }
+
+// ── URL inspection ────────────────────────────────────────────────────────
+export async function inspectUrl(url, deep = false) {
+  try {
+    const mode = deep ? "deep-url" : "url";
+    const res  = await fetch(`/api/search?q=${encodeURIComponent(url)}&mode=${mode}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data;
+  } catch (e) {
+    console.error("[Flow URL]", e.message);
+    return null;
+  }
+}
+
+// ── Format URL inspection result for AI ──────────────────────────────────
+export function formatUrlResult(data, deep = false) {
+  if (!data?.content) return `Could not fetch ${data?.url || "that URL"}.`;
+
+  const meta = [
+    `URL: ${data.url}`,
+    data.wordCount  ? `Words: ~${data.wordCount}` : null,
+    data.links      ? `Links: ${data.links}` : null,
+    data.hasLogin   ? "Has login/auth form" : null,
+    data.hasPricing ? "Has pricing/payment section" : null,
+  ].filter(Boolean).join(" | ");
+
+  return `${meta}\n\n${data.content}`;
+}
