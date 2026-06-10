@@ -9,6 +9,7 @@ import { Weather }       from "./core/weather.js";
 import { Alarms }        from "./core/alarms.js";
 import { Speech }        from "./core/speech.js";
 import { sendMessage, sendToAI, setUI } from "./core/ai.js";
+import { initSlash, parseSlashCommand } from "./ui/slash.js";
 import { startWakeListener, startCommandListen, init as initWake } from "./core/wakeword.js";
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
@@ -27,6 +28,73 @@ import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import "./ui/particles.js";
 
+
+// ── Handle slash commands ────────────────────────────────────────────────
+async function handleSlashCmd(cmd, prompt) {
+  const p = prompt.trim();
+  switch (cmd) {
+    // Images
+    case "/image-flux":
+      if (!p) { Chat.add("Tell me what to generate: /image-flux a sunset over Lagos", "bot"); return; }
+      await generateImage(p, p); // force FLUX (non-design)
+      break;
+    case "/image-design":
+      if (!p) { Chat.add("Describe your design: /image-design 'Your text' Twitter banner dark theme", "bot"); return; }
+      await generateImage(p, "promotion banner design"); // force design mode
+      break;
+
+    // Search
+    case "/search":
+      if (!p) { Chat.add("What should I search for?", "bot"); return; }
+      await sendToAI("Search the web and answer this: " + p);
+      break;
+    case "/research":
+      if (!p) { Chat.add("What topic should I research deeply?", "bot"); return; }
+      await sendToAI("Do deep research and give a thorough answer about: " + p);
+      break;
+    case "/url":
+      if (!p) { Chat.add("Paste a URL after /url", "bot"); return; }
+      sendMessage(p.startsWith("http") ? p : "https://" + p);
+      break;
+
+    // Code
+    case "/code":
+      if (!p) { Chat.add("Describe what code you need.", "bot"); return; }
+      await sendToAI("Write code for this: " + p);
+      break;
+
+    // Productivity
+    case "/alarm":
+      if (!p) { Chat.add("When's the alarm? E.g. /alarm 3pm meeting", "bot"); return; }
+      sendMessage("set alarm " + p);
+      break;
+    case "/goal":
+      if (!p) { Chat.add("What's your goal?", "bot"); return; }
+      sendMessage("add goal: " + p);
+      break;
+    case "/note":
+      sendMessage("open notepad");
+      break;
+    case "/weather":
+      sendMessage("weather");
+      break;
+
+    // Vision
+    case "/camera":
+      sendMessage("open camera");
+      break;
+    case "/screen":
+      sendMessage("share screen");
+      break;
+    case "/yolo":
+      sendMessage("start yolo");
+      break;
+
+    default:
+      sendMessage(cmd + " " + p);
+  }
+}
+
 // ── Wire cross-module dependencies ────────
 setUI(Chat, Orb);
 setNotepad(Notepad);
@@ -37,6 +105,13 @@ const visionObj = { Camera, ScreenVision, YOLO };
 initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
 setSearchHandlers((t) => sendToAI(t), (t, w) => Chat.add(t, w));
+
+// Init slash command palette
+const _inputEl = document.getElementById("user-input");
+initSlash(_inputEl, (cmd, prompt) => {
+  // No-arg slash commands fire immediately
+  handleSlashCmd(cmd, "");
+});
 
 initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
 initImagine(Chat, Orb);
@@ -54,6 +129,16 @@ async function flowSend(text) {
     return;
   }
 
+
+  // ── Slash command intercept ────────────────────────────────────────
+  const slash = parseSlashCommand(text);
+  if (slash) {
+    // Clear the input's slash placeholder
+    const inp = document.getElementById("user-input");
+    if (inp) { inp.value = ""; inp.placeholder = "Talk to Flow, Boss..."; }
+    await handleSlashCmd(slash.cmd, slash.prompt);
+    return;
+  }
 
   // Image generation / background removal
   const imgReq = parseImageRequest(text);
