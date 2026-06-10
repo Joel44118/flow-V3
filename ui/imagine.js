@@ -70,14 +70,15 @@ function parseModel(text) {
 
 // ── Models to try ────────────────────────────────────────────────────────
 const IMAGE_MODELS = [
-  { id: "black-forest-labs/FLUX.1-schnell",            steps: 4,  cfg: 0   },
-  { id: "stabilityai/stable-diffusion-xl-base-1.0",    steps: 20, cfg: 7.5 },
-  { id: "runwayml/stable-diffusion-v1-5",              steps: 20, cfg: 7.5 },
+  // HF router endpoints — always warm, no cold-start via router.huggingface.co
+  { id: "black-forest-labs/FLUX.1-schnell",         steps: 4,  cfg: 0   },
+  { id: "stabilityai/stable-diffusion-xl-base-1.0", steps: 20, cfg: 7.5 },
+  { id: "runwayml/stable-diffusion-v1-5",           steps: 20, cfg: 7   },
 ];
 
 // ── Call HF image API directly from browser ──────────────────────────────
 async function callHF(modelId, prompt, width, height, steps, cfg, token) {
-  const r = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
+  const r = await fetch(`https://router.huggingface.co/hf-inference/models/${modelId}`, {
     method:  "POST",
     headers: {
       "Authorization": `Bearer ${token}`,
@@ -90,16 +91,14 @@ async function callHF(modelId, prompt, width, height, steps, cfg, token) {
     }),
   });
 
-  if (r.status === 503) {
-    const err  = await r.json().catch(() => ({}));
-    const wait = Math.ceil(err.estimated_time || 25);
-    throw new Error(`loading:${wait}`);
-  }
-
   const ct = r.headers.get("content-type") || "";
-  if (!r.ok || !ct.startsWith("image/")) {
-    const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
     throw new Error(err.error || `HTTP ${r.status}`);
+  }
+  if (!ct.startsWith("image/")) {
+    const txt = await r.text();
+    throw new Error(`Expected image, got: ${txt.slice(0, 80)}`);
   }
 
   return { blob: await r.blob(), contentType: ct };
@@ -145,17 +144,13 @@ export async function generateImage(promptText, dimensionHint = "") {
       _orb?.setState("idle");
       return;
     } catch (e) {
-      if (e.message.startsWith("loading:")) {
-        const secs = e.message.split(":")[1];
-        _chat?.add(`${model.id.split("/")[1]} is warming up (~${secs}s). Trying next model...`, "bot");
-        console.warn(`[Imagine] ${model.id} cold`);
-        continue;
-      }
+      // No cold-start with HF router — all errors just try next model
+      console.warn(`[Imagine] ${model.id}: ${e.message}`);
       console.warn(`[Imagine] ${model.id}: ${e.message}`);
     }
   }
 
-  _chat?.addError("All image models are cold right now. Wait 30 seconds and try again — they warm up fast after first use.");
+  _chat?.addError("Image generation failed. Check that HF_TOKEN is set in Vercel → Settings → Environment Variables.");
   _orb?.setState("idle");
 }
 
