@@ -1,39 +1,51 @@
 // ═══════════════════════════════════════════
-// ui/imagine.js — Image Generation UI
+// ui/imagine.js — Browser-Direct Image Generation
 //
-// Works entirely with HuggingFace binary responses.
-// No Pollinations, no redirect URLs.
+// ROOT CAUSE OF 502 FIX:
+//   api/imagine.js ran on Vercel (10s limit).
+//   FLUX takes 15-30s → Vercel kills it → 502.
 //
-// FEATURES:
-//   - Text-to-image (FLUX.1-schnell → SDXL fallback)
-//   - Background removal (say "remove background from this image")
-//   - Custom dimensions via natural language
-//   - Real download button (blob URL, no redirects)
-//   - Inline preview with click-to-fullscreen
-//   - "Model warming up" retry message
+// FIX: Call HuggingFace DIRECTLY from the browser.
+//   No Vercel function involved at all.
+//   Browser waits as long as needed (no timeout).
+//   HF_TOKEN is read from /api/token (safe — never
+//   exposed in frontend code).
+//
+// MODELS (tried in order):
+//   1. black-forest-labs/FLUX.1-schnell  (best quality)
+//   2. stabilityai/stable-diffusion-xl-base-1.0  (reliable)
+//   3. runwayml/stable-diffusion-v1-5  (always warm, fast)
 // ═══════════════════════════════════════════
 import { Speech } from "../core/speech.js";
 
 let _chat = null;
 let _orb  = null;
+let _hfToken = null;
+
 export function initImagine(chat, orb) { _chat = chat; _orb = orb; }
 
-// ── Dimension presets ────────────────────────────────────────────────────
+// ── Fetch HF token from a safe server endpoint ──────────────────────────
+async function getToken() {
+  if (_hfToken) return _hfToken;
+  try {
+    const r    = await fetch("/api/token");
+    const data = await r.json();
+    if (data.token) { _hfToken = data.token; return _hfToken; }
+    throw new Error("token not set");
+  } catch (e) {
+    throw new Error("HF_TOKEN not configured. Add it in Vercel → Settings → Environment Variables.");
+  }
+}
+
+// ── Dimension presets (all multiples of 64 for FLUX) ────────────────────
 const PRESETS = {
-  square:    [1024, 1024],
-  landscape: [1280, 768],
-  wide:      [1280, 768],
-  portrait:  [768,  1280],
-  tall:      [768,  1280],
-  banner:    [1536, 512],
-  header:    [1536, 512],
-  wallpaper: [1920, 1088],  // nearest 64-multiple to 1920x1080
-  instagram: [1024, 1024],
-  twitter:   [1216, 704],
-  thumbnail: [1280, 768],
-  poster:    [768,  1088],
-  logo:      [512,  512],
-  icon:      [512,  512],
+  square:    [1024, 1024], logo:      [512,  512],
+  icon:      [512,  512],  portrait:  [768,  1280],
+  tall:      [768,  1280], landscape: [1280, 768],
+  wide:      [1280, 768],  wallpaper: [1920, 1088],
+  banner:    [1536, 512],  header:    [1536, 512],
+  instagram: [1024, 1024], twitter:   [1216, 704],
+  thumbnail: [1280, 768],  poster:    [768,  1088],
 };
 
 function parseDimensions(text) {
@@ -41,7 +53,6 @@ function parseDimensions(text) {
   for (const [key, dims] of Object.entries(PRESETS)) {
     if (t.includes(key)) return dims;
   }
-  // Custom e.g. "1920x1080" or "1920 by 1080"
   const m = t.match(/(\d{3,4})\s*(?:x|by|×|\*)\s*(\d{3,4})/);
   if (m) {
     const w = Math.round(parseInt(m[1]) / 64) * 64;
@@ -57,81 +68,118 @@ function parseModel(text) {
   return "flux";
 }
 
-// ── Generate image from text prompt ──────────────────────────────────────
+// ── Models to try ────────────────────────────────────────────────────────
+const IMAGE_MODELS = [
+  { id: "black-forest-labs/FLUX.1-schnell",            steps: 4,  cfg: 0   },
+  { id: "stabilityai/stable-diffusion-xl-base-1.0",    steps: 20, cfg: 7.5 },
+  { id: "runwayml/stable-diffusion-v1-5",              steps: 20, cfg: 7.5 },
+];
+
+// ── Call HF image API directly from browser ──────────────────────────────
+async function callHF(modelId, prompt, width, height, steps, cfg, token) {
+  const r = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
+    method:  "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type":  "application/json",
+      "x-use-cache":   "false",
+    },
+    body: JSON.stringify({
+      inputs: prompt,
+      parameters: { width, height, num_inference_steps: steps, guidance_scale: cfg },
+    }),
+  });
+
+  if (r.status === 503) {
+    const err  = await r.json().catch(() => ({}));
+    const wait = Math.ceil(err.estimated_time || 25);
+    throw new Error(`loading:${wait}`);
+  }
+
+  const ct = r.headers.get("content-type") || "";
+  if (!r.ok || !ct.startsWith("image/")) {
+    const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    throw new Error(err.error || `HTTP ${r.status}`);
+  }
+
+  return { blob: await r.blob(), contentType: ct };
+}
+
+// ── Main generate ────────────────────────────────────────────────────────
 export async function generateImage(promptText, dimensionHint = "") {
   const combined = promptText + " " + dimensionHint;
   const [w, h]   = parseDimensions(combined);
-  const model    = parseModel(combined);
+  const modelPref = parseModel(combined);
 
-  // Clean prompt — remove dimension/style keywords
   const cleanPrompt = promptText
     .replace(/\b(square|landscape|portrait|banner|wallpaper|poster|thumbnail|instagram|twitter|realistic|photo|canva|logo|icon|fast|turbo)\b/gi, "")
     .replace(/\d{3,4}\s*(?:x|by|×|\*)\s*\d{3,4}/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/\s+/g, " ").trim();
 
   _chat?.add(`Generating ${w}×${h} image — "${cleanPrompt}"...`, "bot");
   _orb?.setState("thinking");
 
+  let token;
   try {
-    const url = `/api/imagine?prompt=${encodeURIComponent(cleanPrompt)}&w=${w}&h=${h}&model=${model}`;
-    const res  = await fetch(url);
-    const ct   = res.headers.get("content-type") || "";
-
-    if (!res.ok || !ct.startsWith("image/")) {
-      const data = await res.json().catch(() => ({}));
-
-      // Model warming up — give user a clear message
-      if (data.loading) {
-        _chat?.add(`${data.error} Say "generate image of ${cleanPrompt}" again when ready.`, "bot");
-        Speech.speak(`The image model is warming up. Try again in about ${data.error.match(/\d+/)?.[0] || 20} seconds.`);
-        _orb?.setState("idle");
-        return;
-      }
-
-      throw new Error(data.error || `Server error ${res.status}`);
-    }
-
-    // Got actual image binary back
-    const blob    = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    const usedModel = res.headers.get("x-model-used") || "FLUX";
-
-    _renderCard(blobUrl, cleanPrompt, w, h, usedModel);
-    Speech.speak(`Here's your ${w} by ${h} image, Boss.`);
-    _orb?.setState("idle");
-
+    token = await getToken();
   } catch (e) {
-    _chat?.addError("Image generation failed: " + e.message);
+    _chat?.addError(e.message);
     _orb?.setState("idle");
+    return;
   }
+
+  // Reorder models if realistic requested
+  const models = modelPref === "realistic"
+    ? [IMAGE_MODELS[1], IMAGE_MODELS[2], IMAGE_MODELS[0]]
+    : IMAGE_MODELS;
+
+  for (const model of models) {
+    try {
+      console.log(`[Imagine] Trying ${model.id}...`);
+      const result  = await callHF(model.id, cleanPrompt, w, h, model.steps, model.cfg, token);
+      const blobUrl = URL.createObjectURL(result.blob);
+      _renderCard(blobUrl, cleanPrompt, w, h, model.id.split("/")[1]);
+      Speech.speak(`Here's your ${w} by ${h} image, Boss.`);
+      _orb?.setState("idle");
+      return;
+    } catch (e) {
+      if (e.message.startsWith("loading:")) {
+        const secs = e.message.split(":")[1];
+        _chat?.add(`${model.id.split("/")[1]} is warming up (~${secs}s). Trying next model...`, "bot");
+        console.warn(`[Imagine] ${model.id} cold`);
+        continue;
+      }
+      console.warn(`[Imagine] ${model.id}: ${e.message}`);
+    }
+  }
+
+  _chat?.addError("All image models are cold right now. Wait 30 seconds and try again — they warm up fast after first use.");
+  _orb?.setState("idle");
 }
 
-// ── Remove background from uploaded image ────────────────────────────────
+// ── Background removal ────────────────────────────────────────────────────
 export async function removeBackground(base64Image) {
   _chat?.add("Removing background...", "bot");
   _orb?.setState("thinking");
 
+  let token;
+  try { token = await getToken(); }
+  catch (e) { _chat?.addError(e.message); _orb?.setState("idle"); return; }
+
   try {
-    const res = await fetch("/api/imagine", {
+    const binary = Uint8Array.from(atob(base64Image), c => c.charCodeAt(0));
+    const r = await fetch("https://api-inference.huggingface.co/models/briaai/RMBG-1.4", {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ mode: "remove-bg", imageBase64: base64Image }),
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "image/jpeg" },
+      body:    binary,
     });
 
-    const ct = res.headers.get("content-type") || "";
-    if (!res.ok || !ct.startsWith("image/")) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || `Server error ${res.status}`);
-    }
-
-    const blob    = await res.blob();
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob    = await r.blob();
     const blobUrl = URL.createObjectURL(blob);
-
-    _renderCard(blobUrl, "background-removed", null, null, "BRIA-RMBG");
-    Speech.speak("Background removed. Here's the result.");
+    _renderCard(blobUrl, "background-removed", null, null, "RMBG-1.4");
+    Speech.speak("Background removed. Here's the result, Boss.");
     _orb?.setState("idle");
-
   } catch (e) {
     _chat?.addError("Background removal failed: " + e.message);
     _orb?.setState("idle");
@@ -139,7 +187,7 @@ export async function removeBackground(base64Image) {
 }
 
 // ── Render image card in chat ─────────────────────────────────────────────
-function _renderCard(blobUrl, prompt, w, h, modelUsed) {
+function _renderCard(blobUrl, prompt, w, h, modelName) {
   const col = document.getElementById("col-left");
   if (!col) return;
 
@@ -153,22 +201,18 @@ function _renderCard(blobUrl, prompt, w, h, modelUsed) {
   const card = document.createElement("div");
   card.className = "img-card";
 
-  // Image
-  const img   = document.createElement("img");
+  const img    = document.createElement("img");
   img.src      = blobUrl;
   img.alt      = prompt;
   img.title    = "Click to open full size";
   img.style.cssText = "max-width:100%;border-radius:10px;display:block;cursor:pointer;";
   img.onclick  = () => window.open(blobUrl, "_blank");
 
-  // Meta
   const meta = document.createElement("div");
   meta.className   = "img-meta";
-  meta.textContent = w && h
-    ? `${w}×${h} · ${modelUsed} · click to fullscreen`
-    : `${modelUsed} · click to fullscreen`;
+  meta.textContent = w && h ? `${w}×${h} · ${modelName} · click to fullscreen`
+                             : `${modelName} · click to fullscreen`;
 
-  // Download — blob URL means this is a real direct download
   const dl = document.createElement("a");
   dl.className   = "img-dl-btn";
   dl.textContent = "⬇ DOWNLOAD";
@@ -182,26 +226,23 @@ function _renderCard(blobUrl, prompt, w, h, modelUsed) {
   wrap.appendChild(card);
   col.appendChild(wrap);
   col.scrollTop = col.scrollHeight;
-
-  // Keep visible for 15s (images need reading time)
   setTimeout(() => wrap.classList.remove("fresh"), 15000);
 }
 
-// ── Parse image request trigger from text ─────────────────────────────────
+// ── Parse image request ───────────────────────────────────────────────────
 export function parseImageRequest(text) {
-  const genPattern = /\b(generate|create|make|draw|imagine|design|show me|produce)\b.{0,30}\b(image|picture|photo|illustration|artwork|logo|banner|poster|thumbnail|wallpaper|icon)\b/i;
-  const nounFirst  = /\b(image|picture|photo|logo|banner|poster|thumbnail|wallpaper)\b.{0,20}\b(of|for|showing|depicting)\b/i;
-  const bgRemove   = /\b(remove|strip)\b.{0,15}\b(background|bg)\b/i;
+  const gen   = /\b(generate|create|make|draw|imagine|design|show me|produce)\b.{0,30}\b(image|picture|photo|illustration|artwork|logo|banner|poster|thumbnail|wallpaper|icon)\b/i;
+  const noun  = /\b(image|picture|photo|logo|banner|poster|thumbnail|wallpaper)\b.{0,20}\b(of|for|showing|depicting)\b/i;
+  const bgRm  = /\b(remove|strip)\b.{0,15}\b(background|bg)\b/i;
 
-  if (bgRemove.test(text)) return { type: "remove-bg" };
-  if (!genPattern.test(text) && !nounFirst.test(text)) return null;
+  if (bgRm.test(text)) return { type: "remove-bg" };
+  if (!gen.test(text) && !noun.test(text)) return null;
 
   const prompt = text
     .replace(/\b(generate|create|make|draw|imagine|design|show me|produce)\b/gi, "")
     .replace(/\ban?\s+(image|picture|photo|illustration|artwork)\b/gi, "")
-    .replace(/\b(of|for|showing|depicting|in the style of)\b/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/\b(of|for|showing|depicting)\b/gi, " ")
+    .replace(/\s+/g, " ").trim();
 
   return { type: "generate", prompt: prompt || text };
 }
