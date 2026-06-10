@@ -131,11 +131,11 @@ export async function parseSearchGoalCommand(text) {
   // Web search
 
   // ── URL inspection ─────────────────────────────────────────────────────
-  const urlMatch = t.match(/https?:\/\/[^\s]+/);
+  const urlMatch = text.match(/https?:\/\/[^\s]+/i);
   if (urlMatch) {
     const url  = urlMatch[0];
     const deep = /deep research|full analysis|audit|everything about/i.test(t);
-    _chatAddFn?.(`Fetching ${url}...`, "bot");
+    _chatAdd?.(`Fetching ${url}...`, "bot");
     const data = await inspectUrl(url, deep);
     if (!data) return "I couldn\'t reach that URL. It might be offline or blocking bots.";
     const formatted = formatUrlResult(data, deep);
