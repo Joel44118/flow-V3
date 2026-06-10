@@ -5,7 +5,7 @@ import { Weather }         from "./weather.js";
 import { Alarms, normaliseTime } from "./alarms.js";
 import { Storage }         from "./storage.js";
 import { CONFIG }          from "./config.js";
-import { webSearch, deepResearch, formatResults, businessResearch } from "./websearch.js";
+import { webSearch, deepResearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
 
 // ── Injected refs (set at boot to avoid circular imports) ──
@@ -129,6 +129,23 @@ export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
   // Web search
+
+  // ── URL inspection ─────────────────────────────────────────────────────
+  const urlMatch = t.match(/https?:\/\/[^\s]+/);
+  if (urlMatch) {
+    const url  = urlMatch[0];
+    const deep = /deep research|full analysis|audit|everything about/i.test(t);
+    _chatAddFn?.(`Fetching ${url}...`, "bot");
+    const data = await inspectUrl(url, deep);
+    if (!data) return "I couldn\'t reach that URL. It might be offline or blocking bots.";
+    const formatted = formatUrlResult(data, deep);
+    const intent    = deep
+      ? `Do a thorough analysis of this website. Cover: purpose, features, tech stack clues, content quality, target audience, pricing if any, and anything notable.\n\n${formatted}`
+      : `Summarise this website briefly. What does it do, who is it for, and what are the main features?\n\n${formatted}`;
+    _searchSend?.(intent);
+    return null;
+  }
+
   if (/^(search|look up|google|find|latest|news about)\s+(.+)/i.test(t)) {
     const query = text.replace(/^(search|look up|google|find)\s+/i,"").trim();
     _chatAdd?.(`Searching for "${query}"...`, "bot");
