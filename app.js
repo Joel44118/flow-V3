@@ -8,7 +8,7 @@ import { Memory }        from "./core/memory.js";
 import { Weather }       from "./core/weather.js";
 import { Alarms }        from "./core/alarms.js";
 import { Speech }        from "./core/speech.js";
-import { sendMessage, setUI } from "./core/ai.js";
+import { sendMessage, sendToAI, setUI } from "./core/ai.js";
 import { startWakeListener, startCommandListen, init as initWake } from "./core/wakeword.js";
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
@@ -36,7 +36,7 @@ initWake(sendMessage, (s) => Orb.setState(s));
 const visionObj = { Camera, ScreenVision, YOLO };
 initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
-setSearchHandlers((t) => sendMessage(t), (t, w) => Chat.add(t, w));
+setSearchHandlers((t) => sendToAI(t), (t, w) => Chat.add(t, w));
 
 initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
 initImagine(Chat, Orb);
