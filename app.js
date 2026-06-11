@@ -123,6 +123,11 @@ async function flowSend(text) {
   if (!text?.trim()) return;
   text = text.trim();
 
+  // Guard: if slash skill was just selected (mousedown filled the input),
+  // the send-btn click fires ~50ms later. Ignore it.
+  const inp = document.getElementById("user-input");
+  if (inp?.dataset.slashJustSelected) return;
+
   // 0. Knowledge base commands
   if (/open\s+knowledge(\s+base)?|knowledge\s+base|my\s+knowledge/i.test(text)) {
     Knowledge.open();
