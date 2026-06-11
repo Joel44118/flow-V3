@@ -714,3 +714,136 @@ cursor: pointer;
   opacity: 1 !important;
   pointer-events: all !important;
 }
+/* ═══════════════════════════════════════════
+   SLASH COMMAND PALETTE
+   ═══════════════════════════════════════════ */
+
+#slash-palette {
+  display: none;
+  position: fixed;
+  bottom: 88px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 480px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: rgba(3, 7, 28, 0.97);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 18px;
+  padding: 8px 6px;
+  z-index: 50;
+  box-shadow: 0 0 60px rgba(56, 189, 248, 0.12), 0 20px 60px rgba(0,0,0,0.6);
+  backdrop-filter: blur(24px);
+  scrollbar-width: none;
+}
+#slash-palette::-webkit-scrollbar { display: none; }
+#slash-palette.open { display: block; }
+
+.slash-group-label {
+  font-family: var(--fb);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: rgba(56, 189, 248, 0.5);
+  text-transform: uppercase;
+  padding: 10px 14px 4px;
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.slash-item:hover,
+.slash-item.active {
+  background: rgba(56, 189, 248, 0.1);
+}
+.slash-item.active {
+  border-left: 2px solid rgba(56, 189, 248, 0.6);
+  padding-left: 12px;
+}
+
+.slash-icon {
+  font-size: 20px;
+  width: 30px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.slash-info {
+  flex: 1;
+  min-width: 0;
+}
+.slash-label {
+  font-family: var(--fb);
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.03em;
+}
+.slash-desc {
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-cmd {
+  font-family: monospace;
+  font-size: 11px;
+  color: rgba(56, 189, 248, 0.5);
+  flex-shrink: 0;
+}
+
+.slash-empty {
+  padding: 20px;
+  text-align: center;
+  color: rgba(255,255,255,0.3);
+  font-size: 13px;
+}
+
+/* Active slash command badge in input */
+.input-panel.slash-active {
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow: 0 0 30px rgba(56, 189, 248, 0.12);
+}
+
+/* Image cards always visible */
+.mwrap:has(.img-card),
+.img-card-wrap {
+  opacity: 1 !important;
+  pointer-events: all !important;
+}
+/* ── Slash hint label (shows above input when a skill is selected) ── */
+#slash-hint {
+  display: none;
+  position: fixed;
+  bottom: 78px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(3,7,28,0.92);
+  border: 1px solid rgba(56,189,248,0.2);
+  border-radius: 10px;
+  padding: 7px 14px;
+  font-family: var(--fb);
+  font-size: 12px;
+  color: rgba(56,189,248,0.7);
+  max-width: 480px;
+  width: max-content;
+  text-align: center;
+  white-space: normal;
+  word-wrap: break-word;
+  line-height: 1.5;
+  z-index: 40;
+  pointer-events: none;
+}
+#slash-hint.visible { display: block; }
+
+/* Palette bottom matches hint height */
+#slash-palette { bottom: 98px; }
