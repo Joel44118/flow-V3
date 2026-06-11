@@ -154,11 +154,17 @@ export function initSlash(inputEl, onSelect) {
 }
 
 // ── Build palette DOM ─────────────────────────────────────────────────────
+let _hint = null;
+
 function _buildPalette() {
   _palette = document.createElement("div");
   _palette.id = "slash-palette";
   _palette.setAttribute("aria-label", "Slash commands");
   document.body.appendChild(_palette);
+
+  _hint = document.createElement("div");
+  _hint.id = "slash-hint";
+  document.body.appendChild(_hint);
 }
 
 // ── Bind input events ─────────────────────────────────────────────────────
@@ -167,6 +173,10 @@ function _bindInput() {
   _input.addEventListener("keydown", _onKeydown);
   document.addEventListener("click", e => {
     if (!_palette.contains(e.target) && e.target !== _input) _close();
+  });
+  // Hide hint when input is fully cleared
+  _input.addEventListener("input", () => {
+    if (!_input.value && _hint) _hint.classList.remove("visible");
   });
 }
 
@@ -191,17 +201,21 @@ function _onKeydown(e) {
   if (!_palette.classList.contains("open")) return;
   if (e.key === "ArrowDown") {
     e.preventDefault();
+    e.stopPropagation();
     _activeIdx = (_activeIdx + 1) % _filtered.length;
     _render();
   } else if (e.key === "ArrowUp") {
     e.preventDefault();
+    e.stopPropagation();
     _activeIdx = (_activeIdx - 1 + _filtered.length) % _filtered.length;
     _render();
-  } else if (e.key === "Enter" && _activeIdx >= 0) {
+  } else if (e.key === "Enter") {
+    // Always intercept Enter when palette is open
     e.preventDefault();
     e.stopPropagation();
-    _selectSkill(_filtered[_activeIdx]);
+    if (_activeIdx >= 0) _selectSkill(_filtered[_activeIdx]);
   } else if (e.key === "Escape") {
+    e.preventDefault();
     _close();
   }
 }
@@ -255,19 +269,30 @@ function _selectSkill(skill) {
   _close();
 
   if (skill.placeholder) {
-    // Fill input with cmd prefix, cursor after it so user types their prompt
+    // Fill input with cmd prefix
     _input.value = skill.cmd + " ";
-    _input.focus();
-
-    // Show ghost placeholder text
-    _input.placeholder = skill.placeholder + "...";
+    // Set placeholder as hint text (not overflow — shown when field appears empty after cmd)
+    _input.placeholder = "Talk to Flow, Boss...";
     _input.dataset.slashCmd = skill.cmd;
+    // Highlight the input panel
+    _input.closest(".input-panel")?.classList.add("slash-active");
+    // Show hint label above input (wraps properly unlike placeholder)
+    if (_hint) {
+      _hint.textContent = "💡 e.g. " + skill.placeholder;
+      _hint.classList.add("visible");
+    }
+    // Focus and move cursor to end
+    _input.focus();
+    const len = _input.value.length;
+    _input.setSelectionRange(len, len);
 
-    // Restore placeholder when they clear the input
+    // Hide hint and restore when user clears or sends
     const restore = () => {
-      if (!_input.value.startsWith(skill.cmd)) {
+      if (!_input.value.startsWith("/")) {
         _input.placeholder = "Talk to Flow, Boss...";
         delete _input.dataset.slashCmd;
+        _input.closest(".input-panel")?.classList.remove("slash-active");
+        if (_hint) _hint.classList.remove("visible");
         _input.removeEventListener("input", restore);
       }
     };
@@ -288,6 +313,7 @@ function _show() {
 function _close() {
   _palette.classList.remove("open");
   _activeIdx = -1;
+  // Don't hide hint here — keep it visible while user is typing their prompt
 }
 
 // ── Parse slash prefix from input text ───────────────────────────────────
