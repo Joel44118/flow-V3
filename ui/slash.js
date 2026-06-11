@@ -1,338 +1,239 @@
 // ═══════════════════════════════════════════
 // ui/slash.js — Slash Command Palette
 //
-// Type "/" in the input to open the menu.
-// Click or arrow-key select a skill.
-// Skill fills the input with a prefix + placeholder.
-// User types their prompt and sends normally.
+// HOW IT WORKS (final approach):
+//   1. Type "/" → palette opens above input
+//   2. Click or Enter → palette closes,
+//      a chip appears ABOVE the input bar
+//      (like Claude/ChatGPT's mention chips)
+//   3. User types their prompt in the input normally
+//   4. Send button reads: chip cmd + input text
+//   5. Chip has ✕ to dismiss
 //
-// SKILLS:
-//   /image-flux    → FLUX photorealistic image
-//   /image-design  → AI HTML graphic (text/banners/promos)
-//   /search        → Web search
-//   /research      → Deep research
-//   /url           → Inspect a website URL
-//   /code          → Write code
-//   /alarm         → Set an alarm
-//   /goal          → Add a daily goal
-//   /note          → Open notepad
-//   /weather       → Current weather
-//   /camera        → Open camera
-//   /screen        → Share screen
-//   /yolo          → Object detection
+// The chip is a separate DOM element — never
+// touches input.value — so no accidental sends.
 // ═══════════════════════════════════════════
 
 const SKILLS = [
-  // ── Images ──────────────────────────────
-  {
-    cmd:         "/image-flux",
-    icon:        "🌄",
-    label:       "Photo / Art Image",
-    description: "Realistic photo or artistic image via FLUX AI",
-    placeholder: "a futuristic cityscape at night, neon lights reflecting on rain",
-    group:       "Images",
-  },
-  {
-    cmd:         "/image-design",
-    icon:        "🎨",
-    label:       "Graphic Design",
-    description: "Banner, poster, social post, text overlay — AI-designed HTML graphic",
-    placeholder: '"Your text here" Twitter promotion, minimalist dark theme 1216x704',
-    group:       "Images",
-  },
-
-  // ── Search & Research ────────────────────
-  {
-    cmd:         "/search",
-    icon:        "🔍",
-    label:       "Quick Search",
-    description: "Search the web for current info",
-    placeholder: "latest news about AI in Nigeria",
-    group:       "Search",
-  },
-  {
-    cmd:         "/research",
-    icon:        "📖",
-    label:       "Deep Research",
-    description: "Multi-source deep dive on any topic",
-    placeholder: "how to grow a bot development business in 2025",
-    group:       "Search",
-  },
-  {
-    cmd:         "/url",
-    icon:        "🌐",
-    label:       "Inspect Website",
-    description: "Analyse any website — features, purpose, tech stack",
-    placeholder: "https://example.com",
-    group:       "Search",
-  },
-
-  // ── Code ────────────────────────────────
-  {
-    cmd:         "/code",
-    icon:        "💻",
-    label:       "Write Code",
-    description: "Write or fix code in any language",
-    placeholder: "a JavaScript function that debounces API calls",
-    group:       "Code",
-  },
-
-  // ── Productivity ─────────────────────────
-  {
-    cmd:         "/alarm",
-    icon:        "⏰",
-    label:       "Set Alarm",
-    description: "Set a timed reminder",
-    placeholder: "meeting at 3pm",
-    group:       "Productivity",
-  },
-  {
-    cmd:         "/goal",
-    icon:        "🎯",
-    label:       "Add Goal",
-    description: "Add a daily goal to track",
-    placeholder: "finish the Joelflowstack landing page",
-    group:       "Productivity",
-  },
-  {
-    cmd:         "/note",
-    icon:        "📝",
-    label:       "Open Notepad",
-    description: "Open Flow's notepad to jot something down",
-    placeholder: "", // no prompt needed
-    group:       "Productivity",
-  },
-  {
-    cmd:         "/weather",
-    icon:        "🌤️",
-    label:       "Weather",
-    description: "Current weather and 3-day forecast for Ibadan",
-    placeholder: "", // no prompt needed
-    group:       "Productivity",
-  },
-
-  // ── Vision ───────────────────────────────
-  {
-    cmd:         "/camera",
-    icon:        "📷",
-    label:       "Camera",
-    description: "Open camera — Flow sees you",
-    placeholder: "",
-    group:       "Vision",
-  },
-  {
-    cmd:         "/screen",
-    icon:        "🖥️",
-    label:       "Share Screen",
-    description: "Share your screen — Flow reads it",
-    placeholder: "",
-    group:       "Vision",
-  },
-  {
-    cmd:         "/yolo",
-    icon:        "🔎",
-    label:       "Object Detection",
-    description: "Live camera with real-time object labels",
-    placeholder: "",
-    group:       "Vision",
-  },
+  { cmd:"/image-flux",   icon:"🌄", label:"Photo / Art",      desc:"Realistic or artistic image via FLUX",                     ph:"a futuristic Lagos skyline at night, cinematic",   group:"Images"       },
+  { cmd:"/image-design", icon:"🎨", label:"Graphic Design",   desc:"Banner, poster, social post with text",                    ph:'"Joelflowstack" Twitter promo, dark minimal style', group:"Images"       },
+  { cmd:"/search",       icon:"🔍", label:"Quick Search",     desc:"Search the web for current info",                          ph:"latest AI news in Nigeria 2025",                    group:"Search"       },
+  { cmd:"/research",     icon:"📖", label:"Deep Research",    desc:"Multi-source deep dive on any topic",                      ph:"how to grow a bot development business",            group:"Search"       },
+  { cmd:"/url",          icon:"🌐", label:"Inspect Website",  desc:"Analyse a website — features, tech stack, purpose",        ph:"https://example.com",                               group:"Search"       },
+  { cmd:"/code",         icon:"💻", label:"Write Code",       desc:"Write or fix code in any language",                        ph:"a JavaScript debounce function",                    group:"Code"         },
+  { cmd:"/alarm",        icon:"⏰", label:"Set Alarm",        desc:"Set a timed reminder",                                     ph:"meeting at 3pm",                                    group:"Productivity"  },
+  { cmd:"/goal",         icon:"🎯", label:"Add Goal",         desc:"Add a task to today's goal list",                          ph:"finish the Joelflowstack landing page",             group:"Productivity"  },
+  { cmd:"/note",         icon:"📝", label:"Notepad",          desc:"Open Flow's notepad",                                      ph:"",                                                  group:"Productivity"  },
+  { cmd:"/weather",      icon:"🌤️", label:"Weather",          desc:"Current weather + 3-day Ibadan forecast",                  ph:"",                                                  group:"Productivity"  },
+  { cmd:"/camera",       icon:"📷", label:"Camera",           desc:"Open camera — Flow sees you",                              ph:"",                                                  group:"Vision"        },
+  { cmd:"/screen",       icon:"🖥️", label:"Share Screen",     desc:"Share screen — Flow reads it",                             ph:"",                                                  group:"Vision"        },
+  { cmd:"/yolo",         icon:"🔎", label:"Object Detection", desc:"Live camera with real-time object labels",                  ph:"",                                                  group:"Vision"        },
 ];
 
-// ── State ────────────────────────────────────────────────────────────────
-let _input      = null;
-let _palette    = null;
-let _activeIdx  = -1;
-let _filtered   = [];
-let _onSelect   = null;   // callback(cmd, placeholder)
+// ── DOM refs ──────────────────────────────────────────────────────────────
+let _input     = null;   // the <input type="text">
+let _palette   = null;   // dropdown
+let _chip      = null;   // the active chip element (or null)
+let _hint      = null;   // hint label
+let _wrap      = null;   // .input-panel wrapper
+let _onNoArg   = null;   // callback for no-arg skills
 
-// ── Init ─────────────────────────────────────────────────────────────────
-export function initSlash(inputEl, onSelect) {
-  _input    = inputEl;
-  _onSelect = onSelect;
-  _buildPalette();
-  _bindInput();
+// ── Active command ────────────────────────────────────────────────────────
+let _activeCmd  = null;  // e.g. "/image-flux"
+let _filtered   = [];
+let _activeIdx  = -1;
+
+// ── Init ──────────────────────────────────────────────────────────────────
+export function initSlash(inputEl, onNoArg) {
+  _input   = inputEl;
+  _wrap    = inputEl.closest(".input-panel");
+  _onNoArg = onNoArg;
+  _buildDOM();
+  _bindEvents();
 }
 
-// ── Build palette DOM ─────────────────────────────────────────────────────
-let _hint = null;
+// ── Read current slash state (called by app.js on send) ──────────────────
+export function getSlashState() {
+  if (!_activeCmd) return null;
+  return { cmd: _activeCmd, prompt: _input.value.trim() };
+}
 
-function _buildPalette() {
+// ── Clear after send ──────────────────────────────────────────────────────
+export function clearSlash() {
+  _removeChip();
+  _input.value = "";
+}
+
+// ── Build DOM ─────────────────────────────────────────────────────────────
+function _buildDOM() {
+  // Palette
   _palette = document.createElement("div");
   _palette.id = "slash-palette";
-  _palette.setAttribute("aria-label", "Slash commands");
   document.body.appendChild(_palette);
 
+  // Hint label (example prompt shown when chip is active)
   _hint = document.createElement("div");
   _hint.id = "slash-hint";
   document.body.appendChild(_hint);
 }
 
-// ── Bind input events ─────────────────────────────────────────────────────
-function _bindInput() {
+// ── Events ────────────────────────────────────────────────────────────────
+function _bindEvents() {
   _input.addEventListener("input", _onInput);
-  _input.addEventListener("keydown", _onKeydown);
-  document.addEventListener("click", e => {
-    if (!_palette.contains(e.target) && e.target !== _input) _close();
-  });
-  // Hide hint when input is fully cleared
-  _input.addEventListener("input", () => {
-    if (!_input.value && _hint) _hint.classList.remove("visible");
+  _input.addEventListener("keydown", _onKeydown, true); // capture — fires before send
+
+  // Close palette on outside click
+  document.addEventListener("mousedown", e => {
+    if (!_palette.contains(e.target) && e.target !== _input) {
+      _closePalette();
+    }
   });
 }
 
 function _onInput() {
   const val = _input.value;
-  if (val === "/" || val.startsWith("/")) {
-    const query = val.slice(1).toLowerCase();
-    _filtered = SKILLS.filter(s =>
-      s.cmd.slice(1).includes(query) ||
-      s.label.toLowerCase().includes(query) ||
-      s.group.toLowerCase().includes(query)
-    );
+
+  // Only show palette if no chip is active and input starts with "/"
+  if (!_activeCmd && val.startsWith("/") && !val.includes(" ")) {
+    const q = val.slice(1).toLowerCase();
+    _filtered  = q
+      ? SKILLS.filter(s => s.cmd.slice(1).includes(q) || s.label.toLowerCase().includes(q) || s.group.toLowerCase().includes(q))
+      : SKILLS;
     _activeIdx = _filtered.length ? 0 : -1;
-    _render();
-    _show();
+    _renderPalette();
+    _palette.classList.add("open");
   } else {
-    _close();
+    _closePalette();
   }
 }
 
 function _onKeydown(e) {
-  if (!_palette.classList.contains("open")) return;
-  if (e.key === "ArrowDown") {
-    e.preventDefault();
-    e.stopPropagation();
-    _activeIdx = (_activeIdx + 1) % _filtered.length;
-    _render();
-  } else if (e.key === "ArrowUp") {
-    e.preventDefault();
-    e.stopPropagation();
-    _activeIdx = (_activeIdx - 1 + _filtered.length) % _filtered.length;
-    _render();
-  } else if (e.key === "Enter") {
-    e.preventDefault();
-    e.stopPropagation();
-    if (_activeIdx >= 0) {
-      _selectSkill(_filtered[_activeIdx]);
-    } else {
-      _close();
+  // If palette is open — intercept arrow keys and Enter
+  if (_palette.classList.contains("open")) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault(); e.stopImmediatePropagation();
+      _activeIdx = (_activeIdx + 1) % _filtered.length;
+      _renderPalette();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault(); e.stopImmediatePropagation();
+      _activeIdx = (_activeIdx - 1 + _filtered.length) % _filtered.length;
+      _renderPalette();
+    } else if (e.key === "Enter") {
+      e.preventDefault(); e.stopImmediatePropagation(); // NEVER let this reach sendBtn
+      if (_activeIdx >= 0) _selectSkill(_filtered[_activeIdx]);
+      else _closePalette();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      _closePalette();
     }
-  } else if (e.key === "Escape") {
-    e.preventDefault();
-    _close();
-  }
-}
-
-// ── Render items ──────────────────────────────────────────────────────────
-function _render() {
-  if (!_filtered.length) {
-    _palette.innerHTML = `<div class="slash-empty">No matching commands</div>`;
     return;
   }
 
-  // Group by category
-  const groups = {};
-  _filtered.forEach((s, i) => {
-    if (!groups[s.group]) groups[s.group] = [];
-    groups[s.group].push({ skill: s, idx: i });
-  });
-
-  let html = "";
-  for (const [groupName, items] of Object.entries(groups)) {
-    html += `<div class="slash-group-label">${groupName}</div>`;
-    for (const { skill, idx } of items) {
-      const active = idx === _activeIdx ? "active" : "";
-      html += `
-        <div class="slash-item ${active}" data-idx="${idx}">
-          <span class="slash-icon">${skill.icon}</span>
-          <div class="slash-info">
-            <div class="slash-label">${skill.label}</div>
-            <div class="slash-desc">${skill.description}</div>
-          </div>
-          <span class="slash-cmd">${skill.cmd}</span>
-        </div>`;
-    }
+  // If chip is active and user presses Backspace on empty input → remove chip
+  if (_activeCmd && e.key === "Backspace" && _input.value === "") {
+    e.preventDefault();
+    _removeChip();
   }
-  _palette.innerHTML = html;
-
-  // Click handlers
-  _palette.querySelectorAll(".slash-item").forEach(el => {
-    el.addEventListener("mouseenter", () => {
-      _activeIdx = parseInt(el.dataset.idx);
-      _render();
-    });
-    el.addEventListener("mousedown", (e) => {
-      e.preventDefault();   // prevent input blur
-      e.stopPropagation();  // prevent send-btn click bubbling
-      _selectSkill(_filtered[parseInt(el.dataset.idx)]);
-    });
-  });
 }
 
 // ── Select a skill ────────────────────────────────────────────────────────
 function _selectSkill(skill) {
-  _close();
+  _closePalette();
+  _input.value = ""; // clear the "/" they typed
 
-  if (skill.placeholder) {
-    // Fill input with cmd prefix
-    _input.value = skill.cmd + " ";
-    // Set placeholder as hint text (not overflow — shown when field appears empty after cmd)
-    _input.placeholder = "Talk to Flow, Boss...";
-    _input.dataset.slashCmd = skill.cmd;
-    // Highlight the input panel
-    _input.closest(".input-panel")?.classList.add("slash-active");
-    // Show hint label above input (wraps properly unlike placeholder)
-    if (_hint) {
-      _hint.textContent = "💡 e.g. " + skill.placeholder;
-      _hint.classList.add("visible");
-    }
-    // Focus and move cursor to end
+  if (!skill.ph) {
+    // No-arg — fire immediately, no chip
+    _onNoArg?.(skill.cmd);
+    return;
+  }
+
+  // Insert chip
+  _insertChip(skill);
+  _input.focus();
+}
+
+// ── Chip: floats inside the input-panel, left of the input ───────────────
+function _insertChip(skill) {
+  _removeChip(); // clear any existing chip
+
+  _activeCmd = skill.cmd;
+
+  _chip = document.createElement("div");
+  _chip.className = "slash-chip";
+  _chip.innerHTML = `
+    <span class="sc-icon">${skill.icon}</span>
+    <span class="sc-label">${skill.label}</span>
+    <button class="sc-close" tabindex="-1" title="Remove (Backspace)">✕</button>
+  `;
+
+  // Remove chip on ✕
+  _chip.querySelector(".sc-close").addEventListener("mousedown", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    _removeChip();
     _input.focus();
-    const len = _input.value.length;
-    _input.setSelectionRange(len, len);
-    // Set a short lock so send doesn't fire from residual events
-    _input.dataset.slashJustSelected = "1";
-    setTimeout(() => delete _input.dataset.slashJustSelected, 200);
+  });
 
-    // Hide hint and restore when user clears or sends
-    const restore = () => {
-      if (!_input.value.startsWith("/")) {
-        _input.placeholder = "Talk to Flow, Boss...";
-        delete _input.dataset.slashCmd;
-        _input.closest(".input-panel")?.classList.remove("slash-active");
-        if (_hint) _hint.classList.remove("visible");
-        _input.removeEventListener("input", restore);
-      }
-    };
-    _input.addEventListener("input", restore);
-  } else {
-    // No-arg skills: fire immediately
-    _input.value = "";
-    _input.placeholder = "Talk to Flow, Boss...";
-    _onSelect?.(skill.cmd, "");
+  // Insert chip before the input inside .input-panel
+  _wrap.insertBefore(_chip, _input);
+  _wrap.classList.add("slash-active");
+
+  // Show hint
+  if (skill.ph) {
+    _hint.textContent = "💡 e.g. " + skill.ph;
+    _hint.classList.add("visible");
   }
 }
 
-function _show() {
-  _palette.classList.add("open");
-  _render();
+function _removeChip() {
+  if (_chip) { _chip.remove(); _chip = null; }
+  _activeCmd = null;
+  _wrap?.classList.remove("slash-active");
+  _hint?.classList.remove("visible");
 }
 
-function _close() {
+// ── Render palette items ──────────────────────────────────────────────────
+function _renderPalette() {
+  if (!_filtered.length) {
+    _palette.innerHTML = `<div class="slash-empty">No commands match</div>`;
+    return;
+  }
+
+  const groups = {};
+  _filtered.forEach((s, i) => {
+    (groups[s.group] ??= []).push({ s, i });
+  });
+
+  let html = "";
+  for (const [g, items] of Object.entries(groups)) {
+    html += `<div class="slash-group-label">${g}</div>`;
+    for (const { s, i } of items) {
+      html += `<div class="slash-item${i === _activeIdx ? " active" : ""}" data-i="${i}">
+        <span class="slash-icon">${s.icon}</span>
+        <div class="slash-info">
+          <div class="slash-label">${s.label}</div>
+          <div class="slash-desc">${s.desc}</div>
+        </div>
+        <span class="slash-cmd">${s.cmd}</span>
+      </div>`;
+    }
+  }
+  _palette.innerHTML = html;
+
+  _palette.querySelectorAll(".slash-item").forEach(el => {
+    el.addEventListener("mouseenter", () => {
+      _activeIdx = +el.dataset.i;
+      _renderPalette();
+    });
+    el.addEventListener("mousedown", e => {
+      e.preventDefault();          // don't blur the input
+      e.stopImmediatePropagation();
+      _selectSkill(_filtered[+el.dataset.i]);
+    });
+  });
+}
+
+function _closePalette() {
   _palette.classList.remove("open");
   _activeIdx = -1;
-  // Don't hide hint here — keep it visible while user is typing their prompt
-}
-
-// ── Parse slash prefix from input text ───────────────────────────────────
-// Called by app.js before sending — extracts cmd and actual prompt
-export function parseSlashCommand(text) {
-  const t = text.trim();
-  for (const skill of SKILLS) {
-    if (t.toLowerCase().startsWith(skill.cmd + " ") || t.toLowerCase() === skill.cmd) {
-      const prompt = t.slice(skill.cmd.length).trim();
-      return { cmd: skill.cmd, prompt };
-    }
-  }
-  return null;
 }
