@@ -210,10 +210,13 @@ function _onKeydown(e) {
     _activeIdx = (_activeIdx - 1 + _filtered.length) % _filtered.length;
     _render();
   } else if (e.key === "Enter") {
-    // Always intercept Enter when palette is open
     e.preventDefault();
     e.stopPropagation();
-    if (_activeIdx >= 0) _selectSkill(_filtered[_activeIdx]);
+    if (_activeIdx >= 0) {
+      _selectSkill(_filtered[_activeIdx]);
+    } else {
+      _close();
+    }
   } else if (e.key === "Escape") {
     e.preventDefault();
     _close();
@@ -258,7 +261,9 @@ function _render() {
       _activeIdx = parseInt(el.dataset.idx);
       _render();
     });
-    el.addEventListener("click", () => {
+    el.addEventListener("mousedown", (e) => {
+      e.preventDefault();   // prevent input blur
+      e.stopPropagation();  // prevent send-btn click bubbling
       _selectSkill(_filtered[parseInt(el.dataset.idx)]);
     });
   });
@@ -285,6 +290,9 @@ function _selectSkill(skill) {
     _input.focus();
     const len = _input.value.length;
     _input.setSelectionRange(len, len);
+    // Set a short lock so send doesn't fire from residual events
+    _input.dataset.slashJustSelected = "1";
+    setTimeout(() => delete _input.dataset.slashJustSelected, 200);
 
     // Hide hint and restore when user clears or sends
     const restore = () => {
