@@ -15,7 +15,7 @@ import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
 import {
   setNotepad, setSpeakFn, setVision, setSearchHandlers,
-  parseCommand, parseVisionCommand, parseSearchGoalCommand,
+  parseCommand, parseVisionCommand,
   getTime, getDate
 } from "./core/commands.js";
 
@@ -23,7 +23,7 @@ import { Chat }        from "./ui/chat.js";
 import { Orb }         from "./ui/orb.js";
 import { Notepad }     from "./ui/notepad.js";
 import { handleFiles, initFileUpload } from "./ui/fileupload.js";
-import { initImagine, generateImage, removeBackground, parseImageRequest } from "./ui/imagine.js";
+import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import "./ui/particles.js";
@@ -133,46 +133,27 @@ async function flowSend(text) {
   // ── Slash command intercept ────────────────────────────────────────
   const slash = parseSlashCommand(text);
   if (slash) {
-    // Clear the input's slash placeholder
     const inp = document.getElementById("user-input");
-    if (inp) { inp.value = ""; inp.placeholder = "Talk to Flow, Boss..."; }
+    if (inp) { inp.value = ""; inp.placeholder = "Talk to Flow, Boss..."; inp.closest(".input-panel")?.classList.remove("slash-active"); }
+    const hint = document.getElementById("slash-hint");
+    if (hint) hint.classList.remove("visible");
     await handleSlashCmd(slash.cmd, slash.prompt);
     return;
   }
 
-  // Image generation / background removal
-  const imgReq = parseImageRequest(text);
-  if (imgReq) {
-    if (imgReq.type === "remove-bg") {
-      const lastImg = window._lastUploadedBase64;
-      if (lastImg) { await removeBackground(lastImg); }
-      else { Chat.add("Upload an image first, then say 'remove background'.", "bot"); Speech.speak("Upload an image first."); }
-    } else {
-      await generateImage(imgReq.prompt, text);
-    }
-    return;
-  }
+  // Images now handled by /image-flux and /image-design slash commands
 
   // 2. Vision commands
   const vis = await parseVisionCommand(text);
   if (vis !== false) { if (vis !== null) { Chat.add(vis,"bot"); Speech.speak(vis); } return; }
 
-  // 3. Search + Goals
-  const sg = await parseSearchGoalCommand(text);
-  if (sg !== false) { if (sg !== null) { Chat.add(sg,"bot"); Speech.speak(sg); } return; }
+  // Search handled by /search /research /url slash commands
 
   // 4. Local commands (time, weather, alarms, sites, notepad)
   const local = await parseCommand(text);
   if (local !== false) { if (local !== null) { Chat.add(local,"bot"); Speech.speak(local); } return; }
 
-  // 5. Goals: detect pasted goal list (numbered/bulleted, 2+ lines)
-  if (/^(\d+[.)]\s|[-•]\s)/m.test(text) && text.split("\n").length >= 2) {
-    saveGoals(text);
-    const n   = text.split("\n").filter(l => l.trim()).length;
-    const msg = `Goals saved. ${n} things to get done today. Let's go.`;
-    Chat.add(msg,"bot"); Speech.speak(msg);
-    return;
-  }
+  // Goals handled by /goal slash command
 
   // 6. AI (with RAG context automatically injected in ai.js)
   sendMessage(text);
