@@ -166,7 +166,7 @@ export function startCommandListen() {
     const conf = e.results[0][0].confidence;
     if (conf < 0.35 && conf !== 0) { _orbFn?.("idle"); return; }
     const inp = document.getElementById("user-input");
-    if (inp) inp.value = text;
+    if (inp) inp.textContent = text;
     _sendFn(text);
   };
 
