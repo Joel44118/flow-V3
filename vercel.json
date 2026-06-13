@@ -30,6 +30,9 @@
     },
     "api/debug.js": {
       "maxDuration": 5
+    },
+    "api/intel.js": {
+      "maxDuration": 10
     }
   }
 }
