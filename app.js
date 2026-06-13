@@ -117,6 +117,9 @@ async function flowSend(text) {
 
 // ── Input wiring ──────────────────────────────────────────────────────────
 const inputEl = document.getElementById("user-input");
+const getInput = () => inputEl.textContent.trim();
+const setInput = (v) => { inputEl.textContent = v; };
+const clearInput = () => { inputEl.textContent = ""; };
 const sendBtn = document.getElementById("send-btn");
 const micBtn  = document.getElementById("mic-btn");
 
@@ -129,9 +132,9 @@ async function doSend() {
     return;
   }
   // Plain text
-  const text = inputEl.value.trim();
+  const text = getInput();
   if (!text) return;
-  inputEl.value = "";
+  clearInput();
   flowSend(text);
 }
 
