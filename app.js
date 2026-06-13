@@ -83,7 +83,6 @@ async function handleSlashCmd(cmd, prompt) {
 setUI(Chat, Orb);
 setNotepad(Notepad);
 setSpeakFn((t) => Speech.speak(t));
-initWake(sendMessage, (s) => Orb.setState(s));
 
 const visionObj = { Camera, ScreenVision, YOLO };
 initVision(Chat, Orb, sendMessage);
