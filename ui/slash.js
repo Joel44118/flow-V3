@@ -18,6 +18,7 @@ const SKILLS = [
   { cmd:"/intel",    icon:"🌍", label:"World Intel",    desc:"Live news, markets, conflicts & tech — what to act on today", ph:"tech trends  or  markets  or  Nigeria  or leave blank for full brief", group:"Search"       },
   { cmd:"/github", icon:"🐙", label:"GitHub Repo",     desc:"Extract code from any GitHub repo or search repos",  ph:"https://github.com/owner/repo  or  YOLO browser implementation", group:"Code" },
   { cmd:"/code",         icon:"💻", label:"Write Code",       desc:"Write or fix code in any language",                 ph:"a JavaScript debounce function",                    group:"Code"         },
+  { cmd:"/project", icon:"📁", label:"Projects",       desc:"View, create and manage your project workspaces",   ph:"Flow V3  or  show my projects  or  add project MyApp", group:"Productivity" },
   { cmd:"/alarm",        icon:"⏰", label:"Set Alarm",        desc:"Set a timed reminder",                              ph:"meeting at 3pm",                                    group:"Productivity" },
   { cmd:"/goal",         icon:"🎯", label:"Add Goal",         desc:"Add a task to today's goal list",                   ph:"finish the Joelflowstack landing page",             group:"Productivity" },
   { cmd:"/note",         icon:"📝", label:"Notepad",          desc:"Open Flow's notepad",                               ph:"",                                                  group:"Productivity" },
