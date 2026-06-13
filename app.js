@@ -128,7 +128,8 @@ async function flowSend(text) {
   if (local !== false) { if (local !== null) { Chat.add(local,"bot"); Speech.speak(local); } return; }
 
   // AI
-  sendMessage(text);
+  await sendMessage(text);
+  setTimeout(() => extractMemory(Memory.get()), 1500);
 }
 
 // ── Input wiring ──────────────────────────────────────────────────────────
