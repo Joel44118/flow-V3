@@ -52,12 +52,12 @@ export async function sendMessage(overrideText) {
 
   if (typeof overrideText === "string" && overrideText.trim()) {
     text = overrideText.trim();
-  } else if (inputEl?.value.trim()) {
-    text = inputEl.value.trim();
+  } else if (inputEl?.textContent.trim()) {
+    text = inputEl.textContent.trim();
   }
 
   if (!text) { console.warn("[Flow] send() — no text"); return; }
-  if (inputEl) inputEl.value = "";
+  if (inputEl) inputEl.textContent = "";
 
   console.log("[Flow] →", text);
   _chat.add(text, "user");
