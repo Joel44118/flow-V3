@@ -75,6 +75,18 @@ async function handleSlashCmd(cmd, prompt) {
       // Route through parseSearchGoalCommand which handles github URLs
       await parseSearchGoalCommand(p.startsWith("http") ? p : "search github " + p);
       break;
+    case "/intel": {
+      const focus = p || "general";
+      Chat.add("Pulling world intelligence" + (p ? ` (focus: ${p})` : "") + "...", "bot");
+      try {
+        const data   = await fetchIntel(focus);
+        const prompt = buildIntelPrompt(data, focus);
+        await sendToAI(prompt);
+      } catch(e) {
+        Chat.add("⚠️ Intel fetch failed: " + e.message, "bot");
+      }
+      break;
+    }
     default:         sendMessage(cmd + " " + p);
   }
 }
