@@ -1,5 +1,12 @@
 // ═══════════════════════════════════════════
 // ui/slash.js — Slash Command Palette
+//
+// ARCHITECTURE (final, definitive):
+//   - Palette: fixed div appended to body
+//   - Chip: fixed div appended to body (NOT inside input-panel)
+//     Positioned above the input bar via CSS bottom value
+//   - No insertBefore, no closest(), no mousedown tricks
+//   - Works on mouse AND touch
 // ═══════════════════════════════════════════
 
 const SKILLS = [
@@ -19,35 +26,30 @@ const SKILLS = [
 ];
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
-let _input    = null;
-let _palette  = null;
-let _chip     = null;
-let _hint     = null;
-let _wrap     = null;
-let _onNoArg  = null;
+let _input   = null;
+let _palette = null;
+let _chip    = null;   // fixed div on body
+let _hint    = null;   // fixed div on body
+let _onNoArg = null;
 
 // ── State ─────────────────────────────────────────────────────────────────
-let _activeCmd  = null;
-let _filtered   = [];
-let _activeIdx  = -1;
-let _selecting  = false;  // blocks outside-click handler during selection
+let _activeCmd = null;
+let _filtered  = [];
+let _activeIdx = -1;
 
 // ── Init ──────────────────────────────────────────────────────────────────
 export function initSlash(inputEl, onNoArg) {
   _input   = inputEl;
-  _wrap    = inputEl.closest(".input-panel");
   _onNoArg = onNoArg;
   _buildDOM();
   _bindEvents();
 }
 
-// ── Read current slash state (called by app.js on send) ──────────────────
 export function getSlashState() {
   if (!_activeCmd) return null;
   return { cmd: _activeCmd, prompt: _input.value.trim() };
 }
 
-// ── Clear after send ──────────────────────────────────────────────────────
 export function clearSlash() {
   _removeChip();
   _input.value = "";
@@ -55,13 +57,33 @@ export function clearSlash() {
 
 // ── Build DOM ─────────────────────────────────────────────────────────────
 function _buildDOM() {
+  // Palette
   _palette = document.createElement("div");
   _palette.id = "slash-palette";
   document.body.appendChild(_palette);
 
+  // Chip (hidden until a skill is selected)
+  _chip = document.createElement("div");
+  _chip.id = "slash-chip";
+  _chip.style.display = "none";
+  _chip.innerHTML = `
+    <span id="sc-icon"></span>
+    <span id="sc-label"></span>
+    <button id="sc-close" tabindex="-1">✕</button>
+  `;
+  document.body.appendChild(_chip);
+
+  // Hint
   _hint = document.createElement("div");
   _hint.id = "slash-hint";
   document.body.appendChild(_hint);
+
+  // Close chip button
+  document.getElementById("sc-close").addEventListener("click", e => {
+    e.stopPropagation();
+    _removeChip();
+    _input.focus();
+  });
 }
 
 // ── Events ────────────────────────────────────────────────────────────────
@@ -69,10 +91,11 @@ function _bindEvents() {
   _input.addEventListener("input", _onInput);
   _input.addEventListener("keydown", _onKeydown, true);
 
-  document.addEventListener("mousedown", e => {
-    // _selecting means a palette item mousedown is mid-flight — ignore completely
-    if (_selecting) return;
-    if (!_palette.contains(e.target) && e.target !== _input) {
+  // Close palette on outside click/tap
+  document.addEventListener("pointerdown", e => {
+    if (!_palette.contains(e.target) &&
+        e.target !== _input &&
+        !_chip.contains(e.target)) {
       _closePalette();
     }
   });
@@ -80,6 +103,8 @@ function _bindEvents() {
 
 function _onInput() {
   const val = _input.value;
+
+  // Show palette only when no chip active and typing a slash command
   if (!_activeCmd && val.startsWith("/") && !val.includes(" ")) {
     const q = val.slice(1).toLowerCase();
     _filtered  = q
@@ -117,71 +142,56 @@ function _onKeydown(e) {
     return;
   }
 
+  // Backspace on empty input with active chip → remove chip
   if (_activeCmd && e.key === "Backspace" && _input.value === "") {
     e.preventDefault();
     _removeChip();
   }
 }
 
-// ── Select a skill ────────────────────────────────────────────────────────
+// ── Select skill ──────────────────────────────────────────────────────────
 function _selectSkill(skill) {
-  // Set flag BEFORE closing palette so the outside-click handler ignores this event
-  _selecting = true;
-
-  _closePalette();
-  _input.value = "";
+  _closePalette();          // hide palette
+  _input.value = "";        // clear the "/" they typed
 
   if (!skill.ph) {
+    // No-arg skill: fire immediately, no chip needed
     _onNoArg?.(skill.cmd);
-    _selecting = false;
     return;
   }
 
-  _insertChip(skill);
+  // Show chip and hint, then focus input for typing
+  _showChip(skill);
   _input.focus();
-
-  // Clear the flag after the entire event chain has settled
-  setTimeout(() => { _selecting = false; }, 0);
 }
 
-// ── Chip ──────────────────────────────────────────────────────────────────
-function _insertChip(skill) {
-  _removeChip();
+// ── Chip (fixed on body, above input bar) ────────────────────────────────
+function _showChip(skill) {
   _activeCmd = skill.cmd;
 
-  _chip = document.createElement("div");
-  _chip.className = "slash-chip";
-  _chip.innerHTML = `
-    <span class="sc-icon">${skill.icon}</span>
-    <span class="sc-label">${skill.label}</span>
-    <button class="sc-close" tabindex="-1" title="Remove">✕</button>
-  `;
-
-  _chip.querySelector(".sc-close").addEventListener("mousedown", e => {
-    e.preventDefault();
-    e.stopPropagation();
-    _removeChip();
-    _input.focus();
-  });
-
-  // Insert BEFORE the input so it appears left of the text field
-  _wrap.insertBefore(_chip, _input);
-  _wrap.classList.add("slash-active");
+  document.getElementById("sc-icon").textContent  = skill.icon;
+  document.getElementById("sc-label").textContent = skill.label;
+  _chip.style.display = "flex";
+  _chip.classList.add("visible");
 
   if (skill.ph) {
     _hint.textContent = "💡 e.g. " + skill.ph;
     _hint.classList.add("visible");
   }
+
+  // Glow the input panel
+  _input.closest(".input-panel")?.classList.add("slash-active");
 }
 
 function _removeChip() {
-  if (_chip) { _chip.remove(); _chip = null; }
   _activeCmd = null;
-  _wrap?.classList.remove("slash-active");
-  _hint?.classList.remove("visible");
+  _chip.style.display = "none";
+  _chip.classList.remove("visible");
+  _hint.classList.remove("visible");
+  _input.closest(".input-panel")?.classList.remove("slash-active");
 }
 
-// ── Render palette ────────────────────────────────────────────────────────
+// ── Render palette items ──────────────────────────────────────────────────
 function _renderPalette() {
   if (!_filtered.length) {
     _palette.innerHTML = `<div class="slash-empty">No commands match</div>`;
@@ -207,16 +217,19 @@ function _renderPalette() {
   }
   _palette.innerHTML = html;
 
+  // Wire each item — use pointerdown so it works on touch AND mouse
   _palette.querySelectorAll(".slash-item").forEach(el => {
-    el.addEventListener("mouseenter", () => {
+    el.addEventListener("pointerenter", () => {
       _activeIdx = +el.dataset.i;
       _renderPalette();
     });
 
-    // Use mousedown (not click) so it fires before input blur
-    // e.preventDefault() keeps input focused
-    el.addEventListener("mousedown", e => {
+    el.addEventListener("pointerdown", e => {
+      // Prevent the input from losing focus
       e.preventDefault();
+    });
+
+    el.addEventListener("pointerup", e => {
       e.stopImmediatePropagation();
       _selectSkill(_filtered[+el.dataset.i]);
     });
