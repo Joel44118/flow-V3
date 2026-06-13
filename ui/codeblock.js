@@ -1,12 +1,5 @@
 // ═══════════════════════════════════════════
 // ui/codeblock.js — Code block renderer
-// Supports any language, no downloads needed
-// Uses highlight.js from CDN
-//
-// FIXES:
-//   - Handles unclosed ``` blocks (truncated responses)
-//   - Sets plain text immediately, async-replaces with highlight
-//   - Regex handles newlines in fenced blocks correctly
 // ═══════════════════════════════════════════
 
 const HLJS_CSS = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css";
@@ -17,8 +10,9 @@ let _loading = false;
 async function ensureHL() {
   if (_ready) return;
   if (_loading) {
-    // Wait for existing load
-    await new Promise(res => { const t = setInterval(() => { if (_ready) { clearInterval(t); res(); } }, 100); });
+    await new Promise(res => {
+      const t = setInterval(() => { if (_ready) { clearInterval(t); res(); } }, 50);
+    });
     return;
   }
   _loading = true;
@@ -38,69 +32,103 @@ async function ensureHL() {
   _loading = false;
 }
 
-// Detects ``` fenced code blocks (including unclosed ones from truncated responses)
 export function hasCode(text) {
   return /```/.test(text);
 }
 
-// Split text into prose and code parts
-// Handles both closed (``` ... ```) and unclosed (``` ... EOF)
+// Split text into prose and fenced code parts.
+// Uses indexOf for reliability instead of regex with g flag.
 function splitParts(text) {
   const parts = [];
-  // Match: ```lang\ncode``` OR ```lang\ncode (unclosed at end)
-  const re = /```(\w*)\n?([\s\S]*?)(?:```|$)/g;
-  let last = 0;
-  let match;
+  let cursor = 0;
 
-  while ((match = re.exec(text)) !== null) {
-    // Prose before this block
-    if (match.index > last) {
-      parts.push({ type: "prose", text: text.slice(last, match.index) });
+  while (cursor < text.length) {
+    const openIdx = text.indexOf("```", cursor);
+
+    if (openIdx === -1) {
+      // No more code blocks — rest is prose
+      const prose = text.slice(cursor).trim();
+      if (prose) parts.push({ type: "prose", text: prose });
+      break;
     }
-    parts.push({ type: "code", lang: match[1]?.trim() || "", src: match[2] || "" });
-    last = match.index + match[0].length;
-  }
 
-  // Remaining prose after last match
-  if (last < text.length) {
-    const remaining = text.slice(last);
-    if (remaining.trim()) parts.push({ type: "prose", text: remaining });
+    // Prose before the opening ```
+    if (openIdx > cursor) {
+      const prose = text.slice(cursor, openIdx).trim();
+      if (prose) parts.push({ type: "prose", text: prose });
+    }
+
+    // Extract language tag on the same line as ```
+    const afterOpen  = openIdx + 3;
+    const lineEnd    = text.indexOf("\n", afterOpen);
+    const lang       = lineEnd === -1
+      ? text.slice(afterOpen).trim()
+      : text.slice(afterOpen, lineEnd).trim();
+
+    // Code content starts after the language line
+    const codeStart  = lineEnd === -1 ? text.length : lineEnd + 1;
+
+    // Find the closing ```
+    const closeIdx   = text.indexOf("```", codeStart);
+
+    if (closeIdx === -1) {
+      // Unclosed block — take everything to end of string
+      const src = text.slice(codeStart);
+      parts.push({ type: "code", lang, src });
+      cursor = text.length;
+    } else {
+      const src = text.slice(codeStart, closeIdx);
+      parts.push({ type: "code", lang, src });
+      cursor = closeIdx + 3;
+      // Skip trailing newline after closing ```
+      if (text[cursor] === "\n") cursor++;
+    }
   }
 
   return parts;
 }
 
-// Renders text + code blocks into a container element
 export async function renderWithCode(text, container) {
-  // Set plain text immediately so message is always visible
+  // Show plain text immediately so message is never invisible
   container.textContent = text;
 
-  // Then async-upgrade with highlighting
-  await ensureHL();
-  container.innerHTML = "";
+  try {
+    await ensureHL();
+  } catch(e) {
+    // highlight.js failed to load — leave plain text visible
+    console.warn("[Flow] highlight.js failed:", e);
+    return;
+  }
 
   const parts = splitParts(text);
+
+  // Only replace content if we actually found code blocks
+  if (!parts.some(p => p.type === "code")) {
+    // No blocks found even though hasCode() passed — leave plain text
+    return;
+  }
+
+  container.innerHTML = "";
+  container.classList.add("has-code");
 
   for (const part of parts) {
     if (part.type === "code") {
       container.appendChild(buildBlock(part.lang, part.src));
     } else {
-      const lines = part.text.trim();
-      if (!lines) continue;
-      const p = document.createElement("div");
-      p.className   = "code-prose";
-      p.textContent = lines;
-      container.appendChild(p);
+      if (!part.text.trim()) continue;
+      const div = document.createElement("div");
+      div.className   = "code-prose";
+      div.textContent = part.text;
+      container.appendChild(div);
     }
   }
-  container.classList.add("has-code");
 }
 
 function buildBlock(lang, src) {
   const wrap = document.createElement("div");
   wrap.className = "code-block";
 
-  // ── Header ──────────────────────────────
+  // Header
   const hdr  = document.createElement("div");
   hdr.className = "code-header";
 
@@ -116,14 +144,13 @@ function buildBlock(lang, src) {
   copy.className   = "code-copy";
   copy.textContent = "COPY";
   copy.addEventListener("click", () => {
-    const copyText = src;
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(copyText).then(() => {
+      navigator.clipboard.writeText(src).then(() => {
         copy.textContent = "COPIED ✓";
         setTimeout(() => { copy.textContent = "COPY"; }, 2000);
-      }).catch(() => fallbackCopy(copyText, copy));
+      }).catch(() => fallbackCopy(src, copy));
     } else {
-      fallbackCopy(copyText, copy);
+      fallbackCopy(src, copy);
     }
   });
 
@@ -131,20 +158,24 @@ function buildBlock(lang, src) {
   hdr.appendChild(lbl);
   hdr.appendChild(copy);
 
-  // ── Code ────────────────────────────────
+  // Code
   const pre    = document.createElement("pre");
   const codeEl = document.createElement("code");
 
-  if (window.hljs && lang && window.hljs.getLanguage(lang)) {
-    codeEl.innerHTML = window.hljs.highlight(src, { language: lang, ignoreIllegals: true }).value;
-    codeEl.className = `language-${lang}`;
-  } else if (window.hljs) {
-    const result = window.hljs.highlightAuto(src);
-    codeEl.innerHTML  = result.value;
-    codeEl.className  = `language-${result.language || "plaintext"}`;
-    if (!lang) lbl.textContent = (result.language || "CODE").toUpperCase();
+  const trimmed = src.replace(/\n$/, ""); // strip trailing newline
+
+  if (window.hljs) {
+    if (lang && window.hljs.getLanguage(lang)) {
+      codeEl.innerHTML = window.hljs.highlight(trimmed, { language: lang, ignoreIllegals: true }).value;
+      codeEl.className = `language-${lang}`;
+    } else {
+      const result = window.hljs.highlightAuto(trimmed);
+      codeEl.innerHTML = result.value;
+      codeEl.className = `language-${result.language || "plaintext"}`;
+      if (!lang) lbl.textContent = (result.language || "CODE").toUpperCase();
+    }
   } else {
-    codeEl.textContent = src;
+    codeEl.textContent = trimmed;
   }
 
   pre.appendChild(codeEl);
