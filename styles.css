@@ -203,34 +203,71 @@ body { overflow:hidden; background:var(--deep); font-family:var(--fb); color:#ff
 .kb-empty, .kb-loading { color:rgba(255,255,255,.25); font-family:var(--fb); font-size:13px; text-align:center; padding:16px 0; }
 
 /* ── INPUT PANEL ─────────────────────────────────── */
+
+/* ── INPUT PANEL ── */
 .input-panel {
-  position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
-  width:46%; max-width:620px;
-  background:var(--panel); backdrop-filter:blur(20px);
-  border:1px solid var(--border); border-radius:40px;
-  display:flex; align-items:center; padding:8px 18px;
-  z-index:20; transition:border-color .3s,box-shadow .3s;
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  width: 46%; max-width: 620px;
+  background: var(--panel); backdrop-filter: blur(20px);
+  border: 1px solid var(--border); border-radius: 40px;
+  display: flex; align-items: center; padding: 8px 18px;
+  z-index: 20; transition: border-color .3s, box-shadow .3s;
 }
 .input-panel:focus-within { border-color:rgba(56,189,248,.5); box-shadow:0 0 30px rgba(56,189,248,.08); }
 .input-panel.slash-active  { border-color:rgba(56,189,248,.6); box-shadow:0 0 30px rgba(56,189,248,.15); }
-.input-panel input {
-  flex:1; background:transparent; border:none; outline:none;
-  color:#fff; font-family:var(--fb); font-size:15px; font-weight:600;
-  letter-spacing:.03em; padding:10px 12px; user-select:text;
-}
-.input-panel input::placeholder { color:rgba(255,255,255,.28); font-weight:400; }
-.input-panel button {
-  background:transparent; border:none; color:#fff; font-size:20px;
-  cursor:pointer; padding:8px 10px; border-radius:50%;
-  opacity:.58; transition:opacity .2s,background .2s;
-}
-.input-panel button:hover { opacity:1; background:rgba(56,189,248,.13); }
 
-/* File upload button */
-#file-btn { background:transparent; border:none; color:rgba(255,255,255,.55); font-size:18px; cursor:pointer; padding:8px 10px; border-radius:50%; opacity:.7; transition:opacity .2s,background .2s; }
+.input-panel input {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: #fff; font-family: var(--fb); font-size: 15px; font-weight: 600;
+  letter-spacing: .03em; padding: 10px 12px; user-select: text;
+  position: relative; z-index: 1;
+}
+.input-panel input::placeholder { color: transparent; }
+
+/* Animated rotating placeholder */
+#input-placeholder {
+  position: absolute;
+  left: 0; top: 0; right: 0; bottom: 0;
+  display: flex; align-items: center;
+  padding-left: 118px;
+  padding-right: 90px;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+#input-placeholder span {
+  position: absolute;
+  font-family: var(--fb); font-size: 14px; font-weight: 400;
+  color: rgba(255,255,255,0.3);
+  white-space: nowrap; opacity: 0;
+  animation: phCycle 12s infinite;
+}
+#input-placeholder span:nth-child(1) { animation-delay: 0s; }
+#input-placeholder span:nth-child(2) { animation-delay: 3s; }
+#input-placeholder span:nth-child(3) { animation-delay: 6s; }
+#input-placeholder span:nth-child(4) { animation-delay: 9s; }
+@keyframes phCycle {
+  0%   { opacity: 0; transform: translateY(6px);  }
+  5%   { opacity: 1; transform: translateY(0);    }
+  20%  { opacity: 1; transform: translateY(0);    }
+  25%  { opacity: 0; transform: translateY(-6px); }
+  100% { opacity: 0; transform: translateY(-6px); }
+}
+.input-panel:focus-within #input-placeholder { display: none; }
+
+.input-panel button {
+  background: transparent; border: none; color: #fff; font-size: 20px;
+  cursor: pointer; padding: 8px 10px; border-radius: 50%;
+  opacity: .58; transition: opacity .2s, background .2s;
+  position: relative; z-index: 2;
+}
+.input-panel button:hover { opacity: 1; background: rgba(56,189,248,.13); }
+
+#file-btn { background:transparent; border:none; color:rgba(255,255,255,.55); font-size:18px; cursor:pointer; padding:8px 10px; border-radius:50%; opacity:.7; transition:opacity .2s,background .2s; position:relative; z-index:2; }
 #file-btn:hover { opacity:1; background:rgba(56,189,248,.13); }
 
-/* Drag-over glow */
+body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
+
 body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
 
 /* ── VISION WINDOWS ──────────────────────────────── */
@@ -315,49 +352,28 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
    SLASH PALETTE
    ═══════════════════════════════════════════════════ */
 #slash-palette {
-  display: none;
-  position: fixed;
-  bottom: 82px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(480px, 90vw);
-  max-height: 420px;
-  overflow-y: auto;
-  background: rgba(3, 7, 28, 0.97);
-  border: 1px solid rgba(56,189,248,0.25);
-  border-radius: 18px;
-  padding: 8px 6px;
-  z-index: 9999;
+  display: none; position: fixed;
+  bottom: 82px; left: 50%; transform: translateX(-50%);
+  width: min(480px, 90vw); max-height: 420px; overflow-y: auto;
+  background: rgba(3,7,28,0.97); border: 1px solid rgba(56,189,248,0.25);
+  border-radius: 18px; padding: 8px 6px; z-index: 9999;
   box-shadow: 0 0 60px rgba(56,189,248,0.12), 0 20px 60px rgba(0,0,0,0.7);
-  backdrop-filter: blur(24px);
-  scrollbar-width: none;
+  backdrop-filter: blur(24px); scrollbar-width: none;
 }
 #slash-palette::-webkit-scrollbar { display: none; }
 #slash-palette.open { display: block; }
-
 .slash-group-label {
-  font-family: var(--fb);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  color: rgba(56,189,248,0.5);
-  text-transform: uppercase;
-  padding: 10px 14px 4px;
+  font-family: var(--fb); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.12em; color: rgba(56,189,248,0.5);
+  text-transform: uppercase; padding: 10px 14px 4px;
 }
 .slash-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-radius: 11px;
-  cursor: pointer;
-  transition: background 0.12s;
-  user-select: none;
-  -webkit-user-select: none;
-  touch-action: manipulation;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; border-radius: 11px; cursor: pointer;
+  transition: background 0.12s; user-select: none;
+  -webkit-user-select: none; touch-action: manipulation;
 }
-.slash-item:hover,
-.slash-item.active { background: rgba(56,189,248,0.1); }
+.slash-item:hover, .slash-item.active { background: rgba(56,189,248,0.1); }
 .slash-item.active { border-left: 2px solid rgba(56,189,248,0.6); padding-left: 12px; }
 .slash-icon  { font-size: 20px; width: 28px; text-align: center; flex-shrink: 0; }
 .slash-info  { flex: 1; min-width: 0; }
@@ -367,34 +383,16 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
 .slash-cmd   { font-family: monospace; font-size: 11px; color: rgba(56,189,248,0.5); flex-shrink: 0; }
 .slash-empty { padding: 20px; text-align: center; color: rgba(255,255,255,0.3); font-size: 13px; }
 
-/* ═══════════════════════════════════════════════════
-   SLASH CHIP — fixed to body, floats above input bar
-   ═══════════════════════════════════════════════════ */
+/* SLASH CHIP */
 #slash-chip {
-  position: fixed;
-  bottom: 84px;              /* sits just above the input panel (bottom:20px + ~56px height + 8px gap) */
-  left: 50%;
-  transform: translateX(-50%);
-  display: none;             /* JS sets to flex when active */
-  align-items: center;
-  gap: 6px;
-  z-index: 9997;
-
-  background: linear-gradient(135deg, rgba(56,189,248,0.25), rgba(167,139,250,0.25));
-  border: 1px solid rgba(56,189,248,0.6);
-  border-radius: 20px;
-  padding: 5px 10px 5px 9px;
-  box-shadow: 0 0 16px rgba(56,189,248,0.25);
-
-  font-family: var(--fd);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: #fff;
-  white-space: nowrap;
-  cursor: default;
-  user-select: none;
-  animation: chipPop 0.18s ease forwards;
+  position: fixed; bottom: 84px; left: 50%; transform: translateX(-50%);
+  display: none; align-items: center; gap: 6px; z-index: 9997;
+  background: linear-gradient(135deg,rgba(56,189,248,0.25),rgba(167,139,250,0.25));
+  border: 1px solid rgba(56,189,248,0.6); border-radius: 20px;
+  padding: 5px 10px 5px 9px; box-shadow: 0 0 16px rgba(56,189,248,0.25);
+  font-family: var(--fd); font-size: 12px; font-weight: 700;
+  letter-spacing: 0.06em; color: #fff; white-space: nowrap;
+  cursor: default; user-select: none; animation: chipPop 0.18s ease forwards;
 }
 @keyframes chipPop {
   from { transform: translateX(-50%) scale(0.85); opacity: 0; }
@@ -403,44 +401,24 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
 #sc-icon  { font-size: 15px; line-height: 1; }
 #sc-label { color: var(--cyan); }
 #sc-close {
-  background: transparent;
-  border: none;
-  color: rgba(255,255,255,0.4);
-  font-size: 10px;
-  cursor: pointer;
-  padding: 0 3px;
-  margin-left: 2px;
-  border-radius: 50%;
-  line-height: 1;
-  transition: color 0.15s;
+  background: transparent; border: none; color: rgba(255,255,255,0.4);
+  font-size: 10px; cursor: pointer; padding: 0 3px; margin-left: 2px;
+  border-radius: 50%; line-height: 1; transition: color 0.15s;
 }
 #sc-close:hover { color: #f87171; }
 
-/* ── Hint label ── */
+/* HINT */
 #slash-hint {
-  display: none;
-  position: fixed;
-  bottom: 118px;             /* above the chip */
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(3, 7, 28, 0.88);
-  border: 1px solid rgba(56,189,248,0.12);
-  border-radius: 10px;
-  padding: 5px 14px;
-  font-family: var(--fb);
-  font-size: 12px;
-  color: rgba(56,189,248,0.6);
-  max-width: min(480px, 88vw);
-  text-align: center;
-  white-space: normal;
-  word-break: break-word;
-  line-height: 1.5;
-  z-index: 9996;
-  pointer-events: none;
+  display: none; position: fixed; bottom: 118px;
+  left: 50%; transform: translateX(-50%);
+  background: rgba(3,7,28,0.88); border: 1px solid rgba(56,189,248,0.12);
+  border-radius: 10px; padding: 5px 14px;
+  font-family: var(--fb); font-size: 12px; color: rgba(56,189,248,0.6);
+  max-width: min(480px, 88vw); text-align: center;
+  white-space: normal; word-break: break-word; line-height: 1.5;
+  z-index: 9996; pointer-events: none;
 }
 #slash-hint.visible { display: block; }
-
-/* Input panel glow when skill is active */
 .input-panel.slash-active {
   border-color: rgba(56,189,248,0.55) !important;
   box-shadow: 0 0 30px rgba(56,189,248,0.14) !important;
