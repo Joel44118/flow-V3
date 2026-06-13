@@ -310,7 +310,6 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
    ═══════════════════════════════════════════════════ */
 
 /* Palette — opens above the input bar */
-}
 
 /* ═══════════════════════════════════════════════════
    SLASH PALETTE
@@ -318,7 +317,7 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
 #slash-palette {
   display: none;
   position: fixed;
-  bottom: 80px;
+  bottom: 82px;
   left: 50%;
   transform: translateX(-50%);
   width: min(480px, 90vw);
@@ -345,7 +344,6 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
   text-transform: uppercase;
   padding: 10px 14px 4px;
 }
-
 .slash-item {
   display: flex;
   align-items: center;
@@ -355,61 +353,43 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
   cursor: pointer;
   transition: background 0.12s;
   user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
 }
 .slash-item:hover,
 .slash-item.active { background: rgba(56,189,248,0.1); }
 .slash-item.active { border-left: 2px solid rgba(56,189,248,0.6); padding-left: 12px; }
-
 .slash-icon  { font-size: 20px; width: 28px; text-align: center; flex-shrink: 0; }
 .slash-info  { flex: 1; min-width: 0; }
 .slash-label { font-family: var(--fb); font-size: 13px; font-weight: 700; color: #fff; }
-.slash-desc  { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slash-desc  { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 2px;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .slash-cmd   { font-family: monospace; font-size: 11px; color: rgba(56,189,248,0.5); flex-shrink: 0; }
 .slash-empty { padding: 20px; text-align: center; color: rgba(255,255,255,0.3); font-size: 13px; }
 
-/* ── Hint label (example prompt, wraps fully) ── */
-#slash-hint {
-  display: none;
+/* ═══════════════════════════════════════════════════
+   SLASH CHIP — fixed to body, floats above input bar
+   ═══════════════════════════════════════════════════ */
+#slash-chip {
   position: fixed;
-  bottom: 82px;
+  bottom: 84px;              /* sits just above the input panel (bottom:20px + ~56px height + 8px gap) */
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(3, 7, 28, 0.92);
-  border: 1px solid rgba(56,189,248,0.15);
-  border-radius: 10px;
-  padding: 6px 16px;
-  font-family: var(--fb);
-  font-size: 12px;
-  font-weight: 500;
-  color: rgba(56,189,248,0.6);
-  max-width: min(480px, 88vw);
-  text-align: center;
-  white-space: normal;
-  word-break: break-word;
-  line-height: 1.5;
-  z-index: 9998;
-  pointer-events: none;
-}
-#slash-hint.visible { display: block; }
-
-/* ═══════════════════════════════════════════════════
-   SLASH CHIP — sits inside .input-panel, left of the text field
-   Visually distinct: gradient pill, NOT plain text
-   ═══════════════════════════════════════════════════ */
-.slash-chip {
-  display: inline-flex;
+  display: none;             /* JS sets to flex when active */
   align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  background: linear-gradient(135deg, rgba(56,189,248,0.22), rgba(167,139,250,0.22));
-  border: 1px solid rgba(56,189,248,0.55);
+  gap: 6px;
+  z-index: 9997;
+
+  background: linear-gradient(135deg, rgba(56,189,248,0.25), rgba(167,139,250,0.25));
+  border: 1px solid rgba(56,189,248,0.6);
   border-radius: 20px;
-  padding: 4px 8px 4px 7px;
-  box-shadow: 0 0 12px rgba(56,189,248,0.2), inset 0 0 8px rgba(56,189,248,0.06);
+  padding: 5px 10px 5px 9px;
+  box-shadow: 0 0 16px rgba(56,189,248,0.25);
+
   font-family: var(--fd);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.06em;
   color: #fff;
   white-space: nowrap;
   cursor: default;
@@ -417,32 +397,51 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
   animation: chipPop 0.18s ease forwards;
 }
 @keyframes chipPop {
-  from { transform: scale(0.8); opacity: 0; }
-  to   { transform: scale(1);   opacity: 1; }
+  from { transform: translateX(-50%) scale(0.85); opacity: 0; }
+  to   { transform: translateX(-50%) scale(1);    opacity: 1; }
 }
-
-.sc-icon  { font-size: 14px; line-height: 1; }
-.sc-label { color: var(--cyan); letter-spacing: 0.06em; }
-.sc-close {
+#sc-icon  { font-size: 15px; line-height: 1; }
+#sc-label { color: var(--cyan); }
+#sc-close {
   background: transparent;
   border: none;
   color: rgba(255,255,255,0.4);
-  font-size: 9px;
+  font-size: 10px;
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0 3px;
   margin-left: 2px;
   border-radius: 50%;
   line-height: 1;
-  transition: color 0.15s, background 0.15s;
+  transition: color 0.15s;
 }
-.sc-close:hover { color: #f87171; background: rgba(248,113,113,0.15); }
+#sc-close:hover { color: #f87171; }
 
-/* Input panel state when chip is active */
+/* ── Hint label ── */
+#slash-hint {
+  display: none;
+  position: fixed;
+  bottom: 118px;             /* above the chip */
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(3, 7, 28, 0.88);
+  border: 1px solid rgba(56,189,248,0.12);
+  border-radius: 10px;
+  padding: 5px 14px;
+  font-family: var(--fb);
+  font-size: 12px;
+  color: rgba(56,189,248,0.6);
+  max-width: min(480px, 88vw);
+  text-align: center;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.5;
+  z-index: 9996;
+  pointer-events: none;
+}
+#slash-hint.visible { display: block; }
+
+/* Input panel glow when skill is active */
 .input-panel.slash-active {
   border-color: rgba(56,189,248,0.55) !important;
   box-shadow: 0 0 30px rgba(56,189,248,0.14) !important;
-}
-/* Input shrinks to fit alongside chip */
-.input-panel.slash-active #user-input {
-  min-width: 80px;
 }
