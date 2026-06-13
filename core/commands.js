@@ -7,6 +7,7 @@ import { Storage }         from "./storage.js";
 import { CONFIG }          from "./config.js";
 import { webSearch, deepResearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
+import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults } from "./github.js";
 
 // ── Injected refs (set at boot to avoid circular imports) ──
 let _notepad = null;
@@ -129,6 +130,65 @@ export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
   // Web search
+
+
+  // ── GitHub repo extraction ─────────────────────────────────────────────
+  // Triggers: github.com URL anywhere in text, or explicit "from github" phrasing
+  const ghUrl = parseGithubUrl(text);
+  const isGhSearch = /search\s+github|find\s+(on|in)\s+github|github\s+repos?\s+for/i.test(t);
+
+  if (isGhSearch) {
+    const q = text.replace(/search\s+github|find\s+(on|in)\s+github|github\s+repos?\s+for/gi, "").trim();
+    if (q) {
+      _chatAdd?.(\`Searching GitHub for "\${q}"...\`, "bot");
+      try {
+        const data = await searchRepos(q);
+        const formatted = formatSearchResults(data, q);
+        _searchSend?.(\`I searched GitHub for "\${q}". Results:\n\n\${formatted}\n\nSummarise the best options and recommend which looks most useful for what was asked.\`);
+      } catch(e) { _chatAdd?.(\`GitHub search failed: \${e.message}\`, "bot"); }
+      return null;
+    }
+  }
+
+  if (ghUrl) {
+    const { owner, repo, path } = ghUrl;
+    const isDeep = /deep|full|entire|all files|everything|explain|analyse|analyze|how does|understand/i.test(t);
+
+    // If a specific file path was in the URL — fetch just that file
+    if (path && /\.\w+$/.test(path)) {
+      _chatAdd?.(\`Fetching \${owner}/\${repo}/\${path}...\`, "bot");
+      try {
+        const file = await getFile(owner, repo, path);
+        _searchSend?.(\`Here is the file \${file.path} from GitHub repo \${owner}/\${repo}:\n\n\\`\\`\\`\n\${file.content}\n\\`\\`\\`\n\nAnalyse this code: explain what it does, how it works, and anything notable.\`);
+      } catch(e) { _chatAdd?.(\`Couldn't fetch that file: \${e.message}\`, "bot"); }
+      return null;
+    }
+
+    // Fetch the full repo tree
+    _chatAdd?.(\`Reading \${owner}/\${repo}...\`, "bot");
+    try {
+      const tree = await getRepoTree(owner, repo);
+      if (!tree.files?.length) {
+        _chatAdd?.("That repo appears to be empty or has no readable files.", "bot");
+        return null;
+      }
+
+      // Pick most relevant files based on intent
+      const intent  = text.replace(/https?:\/\/\S+/g, "").trim();
+      const toFetch = pickRelevantFiles(tree.files, intent, isDeep ? 16 : 8, isDeep ? 80_000 : 40_000);
+
+      _chatAdd?.(\`Fetching \${toFetch.length} of \${tree.files.length} files...\`, "bot");
+      const fetched = await getFiles(owner, repo, toFetch.map(f => f.path));
+      const summary = formatRepoSummary(tree, fetched.files, intent);
+
+      const aiPrompt = isDeep
+        ? \`Do a thorough analysis of this GitHub repo. Cover: what it does, how the code is structured, key design decisions, tech stack, and anything worth learning or reusing.\n\n\${summary}\`
+        : \`Summarise this GitHub repo. What does it do, how is it structured, and what are the key files?\n\n\${summary}\`;
+
+      _searchSend?.(aiPrompt);
+    } catch(e) { _chatAdd?.(\`GitHub fetch failed: \${e.message}\`, "bot"); }
+    return null;
+  }
 
   // ── URL inspection ─────────────────────────────────────────────────────
   const urlMatch = text.match(/https?:\/\/[^\s]+/i);
