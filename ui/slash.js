@@ -15,6 +15,7 @@ const SKILLS = [
   { cmd:"/search",       icon:"🔍", label:"Quick Search",     desc:"Search the web for current info",                   ph:"latest AI news in Nigeria 2025",                    group:"Search"       },
   { cmd:"/research",     icon:"📖", label:"Deep Research",    desc:"Multi-source deep dive on any topic",               ph:"how to grow a bot development business",            group:"Search"       },
   { cmd:"/url",          icon:"🌐", label:"Inspect Website",  desc:"Analyse a website — features, tech stack, purpose", ph:"https://example.com",                               group:"Search"       },
+  { cmd:"/github", icon:"🐙", label:"GitHub Repo",     desc:"Extract code from any GitHub repo or search repos",  ph:"https://github.com/owner/repo  or  YOLO browser implementation", group:"Code" },
   { cmd:"/code",         icon:"💻", label:"Write Code",       desc:"Write or fix code in any language",                 ph:"a JavaScript debounce function",                    group:"Code"         },
   { cmd:"/alarm",        icon:"⏰", label:"Set Alarm",        desc:"Set a timed reminder",                              ph:"meeting at 3pm",                                    group:"Productivity" },
   { cmd:"/goal",         icon:"🎯", label:"Add Goal",         desc:"Add a task to today's goal list",                   ph:"finish the Joelflowstack landing page",             group:"Productivity" },
