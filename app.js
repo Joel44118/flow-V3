@@ -29,8 +29,12 @@ import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import "./ui/particles.js";
 import { fetchIntel, buildIntelPrompt } from "./core/intel.js";
 import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
+import { Projects } from "./core/projects.js";
+import { initProjects, handleProjectCommand } from "./ui/projects.js";
 
 // ── Handle slash commands ─────────────────────────────────────────────────
+function _openProjects() { document.getElementById('proj-btn')?.click(); }
+
 async function handleSlashCmd(cmd, prompt) {
   const p = prompt.trim();
   switch (cmd) {
@@ -88,6 +92,13 @@ async function handleSlashCmd(cmd, prompt) {
       }
       break;
     }
+    case "/project": {
+      if (!p) { _openProjects(); return; }
+      const parsed = Projects.parse(p);
+      if (parsed) { handleProjectCommand(parsed); return; }
+      sendMessage(p);
+      break;
+    }
     default:         sendMessage(cmd + " " + p);
   }
 }
@@ -109,6 +120,7 @@ initSlash(_inputEl, (cmd) => handleSlashCmd(cmd, ""));
 initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
 initImagine(Chat, Orb);
 initKnowledge(Chat);
+initProjects(Chat, (t) => sendToAI(t));
 
 // ── Master send function ──────────────────────────────────────────────────
 async function flowSend(text) {
@@ -123,6 +135,10 @@ async function flowSend(text) {
   // Vision commands (camera, screen, yolo)
   const vis = await parseVisionCommand(text);
   if (vis !== false) { if (vis !== null) { Chat.add(vis,"bot"); Speech.speak(vis); } return; }
+
+  // Project workspace commands
+  const projCmd = Projects.parse(text);
+  if (projCmd) { handleProjectCommand(projCmd); return; }
 
   // Local commands (time, weather, alarms, sites, notepad)
   const local = await parseCommand(text);
