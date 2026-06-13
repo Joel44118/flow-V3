@@ -64,7 +64,13 @@
       accept="image/*,.pdf,.txt,.md,.js,.ts,.jsx,.tsx,.py,.html,.css,.json,.csv,.xml,.yaml,.yml,.sh,.log,.sql"
       style="display:none">
 
-    <input type="text" id="user-input" placeholder="Talk to Flow, Boss...">
+    <div id="input-placeholder">
+      <span>Ask me anything...</span>
+      <span>/ triggers skills</span>
+      <span>What's on your mind, Boss?</span>
+      <span>Search, code, create...</span>
+    </div>
+    <input type="text" id="user-input" autocomplete="off">
 
     <button id="mic-btn">🎤</button>
     <button id="send-btn">➤</button>
