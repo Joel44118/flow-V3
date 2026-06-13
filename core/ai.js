@@ -15,6 +15,7 @@ import { Speech }        from "./speech.js";
 import { RAG }           from "./rag.js";
 import { getSkillContext } from "./skills.js";
 import { getExtractedMemoryContext } from "./memextract.js";
+import { Projects } from "./projects.js";
 
 // UI refs injected at init (avoids circular imports)
 let _chat = null;
@@ -31,6 +32,11 @@ function buildPrompt(weather, ragContext, skillContext, extractedMemory) {
     ? `\nJOEL'S KNOWN CONTEXT (from past conversations):\n${extractedMemory}\n`
     : "";
 
+  const projectsCtx = Projects.toPromptContext();
+  const projectsBlock = projectsCtx
+    ? `\n${projectsCtx}\n`
+    : "";
+
   const skillBlock = skillContext
     ? `\nSKILL CONTEXT — you are acting as a ${skillContext.name} specialist for this response:\n${skillContext.content}\n`
     : "";
@@ -38,7 +44,7 @@ function buildPrompt(weather, ragContext, skillContext, extractedMemory) {
   return `${CONFIG.PERSONALITY}
 
 ${selfKnowledgeBlock()}
-${ragBlock}${skillBlock}${extractedBlock}
+${ragBlock}${skillBlock}${extractedBlock}${projectsBlock}
 LIVE CONTEXT:
 Time: ${getTime()}
 Date: ${getDate()}
