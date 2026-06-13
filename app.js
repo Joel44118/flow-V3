@@ -15,7 +15,7 @@ import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
 import {
   setNotepad, setSpeakFn, setVision, setSearchHandlers,
-  parseCommand, parseVisionCommand,
+  parseCommand, parseVisionCommand, parseSearchGoalCommand,
   getTime, getDate
 } from "./core/commands.js";
 
@@ -70,6 +70,11 @@ async function handleSlashCmd(cmd, prompt) {
     case "/camera":  sendMessage("open camera");    break;
     case "/screen":  sendMessage("share screen");   break;
     case "/yolo":    sendMessage("start yolo");     break;
+    case "/github":
+      if (!p) { Chat.add("Paste a GitHub repo URL or say what to search for. e.g. /github https://github.com/owner/repo", "bot"); return; }
+      // Route through parseSearchGoalCommand which handles github URLs
+      await parseSearchGoalCommand(p.startsWith("http") ? p : "search github " + p);
+      break;
     default:         sendMessage(cmd + " " + p);
   }
 }
