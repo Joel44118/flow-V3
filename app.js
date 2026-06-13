@@ -27,7 +27,8 @@ import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import "./ui/particles.js";
-
+import { fetchIntel, buildIntelPrompt } from "./core/intel.js";
+import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
 
 // ── Handle slash commands ─────────────────────────────────────────────────
 async function handleSlashCmd(cmd, prompt) {
