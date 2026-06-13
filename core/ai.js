@@ -13,22 +13,27 @@ import { goalsSummary } from "./goals.js";
 import { selfKnowledgeBlock } from "./identity.js";
 import { Speech }        from "./speech.js";
 import { RAG }           from "./rag.js";
+import { getSkillContext } from "./skills.js";
 
 // UI refs injected at init (avoids circular imports)
 let _chat = null;
 let _orb  = null;
 export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 
-function buildPrompt(weather, ragContext) {
+function buildPrompt(weather, ragContext, skillContext) {
   const p = Memory.getProfile();
   const ragBlock = ragContext
     ? `\nKNOWLEDGE BASE (relevant to this query):\n${ragContext}\n`
     : "";
 
+  const skillBlock = skillContext
+    ? `\nSKILL CONTEXT — you are acting as a ${skillContext.name} specialist for this response:\n${skillContext.content}\n`
+    : "";
+
   return `${CONFIG.PERSONALITY}
 
 ${selfKnowledgeBlock()}
-${ragBlock}
+${ragBlock}${skillBlock}
 LIVE CONTEXT:
 Time: ${getTime()}
 Date: ${getDate()}
@@ -75,13 +80,14 @@ export async function sendMessage(overrideText) {
 
   try {
     // Run weather + RAG search in parallel
-    const [weather, ragContext] = await Promise.all([
+    const [weather, ragContext, skillContext] = await Promise.all([
       Weather.get(),
       RAG.search(text),
+      getSkillContext(text),
     ]);
 
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext) },
+      { role: "system", content: buildPrompt(weather, ragContext, skillContext) },
       ...Memory.forAPI(),
     ];
 
@@ -119,13 +125,14 @@ export async function sendToAI(text) {
   _chat.showTyping();
 
   try {
-    const [weather, ragContext] = await Promise.all([
+    const [weather, ragContext, skillContext] = await Promise.all([
       Weather.get(),
       RAG.search(text),
+      getSkillContext(text),
     ]);
 
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext) },
+      { role: "system", content: buildPrompt(weather, ragContext, skillContext) },
       ...Memory.forAPI(),
       { role: "user", content: text },
     ];
