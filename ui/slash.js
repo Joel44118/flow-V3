@@ -47,12 +47,12 @@ export function initSlash(inputEl, onNoArg) {
 
 export function getSlashState() {
   if (!_activeCmd) return null;
-  return { cmd: _activeCmd, prompt: _input.value.trim() };
+  return { cmd: _activeCmd, prompt: _input.textContent.trim() };
 }
 
 export function clearSlash() {
   _removeChip();
-  _input.value = "";
+  _input.textContent = "";
 }
 
 // ── Build DOM ─────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ function _bindEvents() {
 }
 
 function _onInput() {
-  const val = _input.value;
+  const val = _input.textContent;
 
   // Show palette only when no chip active and typing a slash command
   if (!_activeCmd && val.startsWith("/") && !val.includes(" ")) {
@@ -143,7 +143,7 @@ function _onKeydown(e) {
   }
 
   // Backspace on empty input with active chip → remove chip
-  if (_activeCmd && e.key === "Backspace" && _input.value === "") {
+  if (_activeCmd && e.key === "Backspace" && _input.textContent === "") {
     e.preventDefault();
     _removeChip();
   }
@@ -152,7 +152,7 @@ function _onKeydown(e) {
 // ── Select skill ──────────────────────────────────────────────────────────
 function _selectSkill(skill) {
   _closePalette();          // hide palette
-  _input.value = "";        // clear the "/" they typed
+  _input.textContent = "";        // clear the "/" they typed
 
   if (!skill.ph) {
     // No-arg skill: fire immediately, no chip needed
