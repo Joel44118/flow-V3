@@ -14,16 +14,21 @@ import { selfKnowledgeBlock } from "./identity.js";
 import { Speech }        from "./speech.js";
 import { RAG }           from "./rag.js";
 import { getSkillContext } from "./skills.js";
+import { getExtractedMemoryContext } from "./memextract.js";
 
 // UI refs injected at init (avoids circular imports)
 let _chat = null;
 let _orb  = null;
 export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 
-function buildPrompt(weather, ragContext, skillContext) {
+function buildPrompt(weather, ragContext, skillContext, extractedMemory) {
   const p = Memory.getProfile();
   const ragBlock = ragContext
     ? `\nKNOWLEDGE BASE (relevant to this query):\n${ragContext}\n`
+    : "";
+
+  const extractedBlock = extractedMemory
+    ? `\nJOEL'S KNOWN CONTEXT (from past conversations):\n${extractedMemory}\n`
     : "";
 
   const skillBlock = skillContext
@@ -33,7 +38,7 @@ function buildPrompt(weather, ragContext, skillContext) {
   return `${CONFIG.PERSONALITY}
 
 ${selfKnowledgeBlock()}
-${ragBlock}${skillBlock}
+${ragBlock}${skillBlock}${extractedBlock}
 LIVE CONTEXT:
 Time: ${getTime()}
 Date: ${getDate()}
@@ -85,9 +90,10 @@ export async function sendMessage(overrideText) {
       RAG.search(text),
       getSkillContext(text),
     ]);
+    const extractedMemory = getExtractedMemoryContext();
 
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext, skillContext) },
+      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory) },
       ...Memory.forAPI(),
     ];
 
@@ -130,9 +136,10 @@ export async function sendToAI(text) {
       RAG.search(text),
       getSkillContext(text),
     ]);
+    const extractedMemory = getExtractedMemoryContext();
 
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext, skillContext) },
+      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory) },
       ...Memory.forAPI(),
       { role: "user", content: text },
     ];
