@@ -37,6 +37,8 @@ function _openProjects() { document.getElementById('proj-btn')?.click(); }
 
 async function handleSlashCmd(cmd, prompt) {
   const p = prompt.trim();
+  // Reset globe if switching to a non-intel skill
+  if (cmd !== "/intel") Orb.setGlobe?.(false);
   switch (cmd) {
     case "/image-flux":
       if (!p) { Chat.add("What should I generate? e.g. a sunset over Lagos", "bot"); return; }
@@ -83,11 +85,13 @@ async function handleSlashCmd(cmd, prompt) {
     case "/intel": {
       const focus = p || "general";
       Chat.add("Pulling world intelligence" + (p ? ` (focus: ${p})` : "") + "...", "bot");
+      Orb.setGlobe(true);   // morph to globe while fetching + speaking
       try {
         const data   = await fetchIntel(focus);
         const prompt = buildIntelPrompt(data, focus);
         await sendToAI(prompt);
       } catch(e) {
+        Orb.setGlobe(false);
         Chat.add("⚠️ Intel fetch failed: " + e.message, "bot");
       }
       break;
