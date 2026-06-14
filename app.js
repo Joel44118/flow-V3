@@ -26,7 +26,7 @@ import { handleFiles, initFileUpload } from "./ui/fileupload.js";
 import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
-import "./ui/particles.js";
+import { setGlobeBackground } from "./ui/particles.js";
 import { fetchIntel, buildIntelPrompt } from "./core/intel.js";
 import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
 import { Projects } from "./core/projects.js";
@@ -38,7 +38,7 @@ function _openProjects() { document.getElementById('proj-btn')?.click(); }
 async function handleSlashCmd(cmd, prompt) {
   const p = prompt.trim();
   // Reset globe if switching to a non-intel skill
-  if (cmd !== "/intel") Orb.setGlobe?.(false);
+  if (cmd !== "/intel") setGlobeBackground(false);
   switch (cmd) {
     case "/image-flux":
       if (!p) { Chat.add("What should I generate? e.g. a sunset over Lagos", "bot"); return; }
@@ -85,13 +85,13 @@ async function handleSlashCmd(cmd, prompt) {
     case "/intel": {
       const focus = p || "general";
       Chat.add("Pulling world intelligence" + (p ? ` (focus: ${p})` : "") + "...", "bot");
-      Orb.setGlobe(true);   // morph to globe while fetching + speaking
+      setGlobeBackground(true);   // transform background to world map
       try {
         const data   = await fetchIntel(focus);
         const prompt = buildIntelPrompt(data, focus);
         await sendToAI(prompt);
       } catch(e) {
-        Orb.setGlobe(false);
+        setGlobeBackground(false);
         Chat.add("⚠️ Intel fetch failed: " + e.message, "bot");
       }
       break;
@@ -151,6 +151,7 @@ async function flowSend(text) {
 
   // AI
   await sendMessage(text);
+  setGlobeBackground(false);  // reset world map after response
   setTimeout(() => extractMemory(Memory.get()), 1500);
 }
 
