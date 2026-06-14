@@ -5,7 +5,7 @@ import { Weather }         from "./weather.js";
 import { Alarms, normaliseTime } from "./alarms.js";
 import { Storage }         from "./storage.js";
 import { CONFIG }          from "./config.js";
-import { webSearch, deepResearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
+import { webSearch, deepResearch, smartSearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
 import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults } from "./github.js";
 
@@ -129,8 +129,15 @@ export async function parseVisionCommand(text) {
 export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
-  // Web search
+  // ── Smart web search (news, research, general) ───────────────────────────
+  // Triggers: search/news/latest/look up/tell me about + any topic
+  const isSearch = /^(search|look up|find|tell me|what\'s|whats|latest|recent|news on|news about|update on|give me|show me)/i.test(t)
+    && !/github\.com/i.test(t);
 
+  if (isSearch) {
+    await smartSearch(text, _searchSend, _chatAdd);
+    return null;
+  }
 
   // ── GitHub repo extraction ─────────────────────────────────────────────
   // Triggers: github.com URL anywhere in text, or explicit "from github" phrasing
