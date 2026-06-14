@@ -102,3 +102,12 @@ export async function inspectUrl(url, sendToAI, chatAdd) {
 }
 
 export { formatResults as formatUrlResult };
+
+// ── Business research (backward compat) ──────────────────────────────────
+export async function businessResearch(sendToAI) {
+  await smartSearch(
+    "latest news Nigeria tech business development AI trends",
+    sendToAI,
+    null
+  );
+}
