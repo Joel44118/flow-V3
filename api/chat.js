@@ -1,14 +1,16 @@
 // ═══════════════════════════════════════════════════════════════
 // api/chat.js — Multi-Provider AI Chain
 //
-// FIXES:
-//   1. Groq stop array capped at 4 (was 6 → rejected every time)
-//   2. OpenRouter models updated + 404 handling per model
-//   3. HuggingFace: no stop tokens (HF rejects them), smaller max_tokens
+// Provider order: OpenRouter → Groq → HuggingFace
 //
-// ENV VARS → Vercel Dashboard → Settings → Environment Variables:
+// Each provider now has a FULL model chain per intent:
+//   OpenRouter: best free models per task, tries each on 404/fail
+//   Groq:       fast chain — big model first, instant model fallback
+//   HuggingFace: warm models, no stop tokens
+//
+// ENV VARS (Vercel Dashboard → Settings → Environment Variables):
 //   OPENROUTER_API_KEY  openrouter.ai/keys
-//   GROQ_API_KEY        console.groq.com → API Keys (free, fastest)
+//   GROQ_API_KEY        console.groq.com → API Keys (free)
 //   HF_TOKEN            huggingface.co/settings/tokens → Read
 // ═══════════════════════════════════════════════════════════════
 
@@ -17,6 +19,7 @@ function detectIntent(text) {
   if (/\b(write|create|build|fix|debug|code|function|script|html|css|javascript|typescript|python|react|component|api|endpoint)\b/.test(t)) return "code";
   if (/\b(research|explain|summarise|summarize|how does|what is|history of|deep dive|analyse|analyze)\b/.test(t)) return "research";
   if (/\b(pdf|document|extract|read this file)\b/.test(t)) return "pdf";
+  if (/\b(image|generate|draw|create.*image|picture of)\b/.test(t)) return "creative";
   return "chat";
 }
 
@@ -42,17 +45,37 @@ function cleanReply(text) {
     .trim();
 }
 
-// Exactly 4 stop tokens — Groq's hard limit, works on all providers
+// Exactly 4 stop tokens — Groq's hard limit, safe for all providers
 const STOP4 = ["</s>", "<|eot_id|>", "Human:", "User:"];
 
-// ── OPENROUTER ───────────────────────────────────────────────────────────────
+// ── OPENROUTER ────────────────────────────────────────────────────────────────
+// Each intent has an ordered list — tries each model, moves on if 404/fail
 const OR_MODELS = {
-  code:     ["qwen/qwen-2.5-coder-32b-instruct:free", "meta-llama/llama-3.1-8b-instruct:free"],
-  research: ["meta-llama/llama-3.3-70b-instruct:free", "meta-llama/llama-3.1-8b-instruct:free"],
-  pdf:      ["meta-llama/llama-3.1-8b-instruct:free", "mistralai/mistral-7b-instruct:free"],
-  chat:     ["meta-llama/llama-3.1-8b-instruct:free", "mistralai/mistral-7b-instruct:free"],
+  code:     [
+    "qwen/qwen-2.5-coder-32b-instruct:free",
+    "deepseek/deepseek-r1-0528:free",
+    "meta-llama/llama-3.1-8b-instruct:free",
+  ],
+  research: [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "deepseek/deepseek-r1-0528:free",
+    "meta-llama/llama-3.1-8b-instruct:free",
+  ],
+  creative: [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+  ],
+  pdf:      [
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+  ],
+  chat:     [
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+    "qwen/qwen-2.5-7b-instruct:free",
+  ],
 };
-const OR_TOKENS = { code: 2500, research: 1200, pdf: 1000, chat: 500 };
+const OR_TOKENS = { code: 2500, research: 1200, creative: 800, pdf: 1000, chat: 500 };
 
 async function tryOpenRouter(messages, intent, key) {
   const models    = OR_MODELS[intent] || OR_MODELS.chat;
@@ -78,7 +101,9 @@ async function tryOpenRouter(messages, intent, key) {
 
       if (data.error?.message?.includes("Prompt tokens limit")) throw new Error("token_limit");
       if (r.status === 429)  throw new Error("rate_limit");
-      if (r.status === 404 || data.error?.code === 404) { console.warn(`[Flow] OR 404: ${model}`); continue; }
+      if (r.status === 404 || data.error?.code === 404) {
+        console.warn(`[Flow] OR 404: ${model}`); continue;
+      }
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
 
       return { reply: cleanReply(data.choices[0].message.content), model: `OR:${model}` };
@@ -88,37 +113,85 @@ async function tryOpenRouter(messages, intent, key) {
       console.warn(`[Flow] OR ${model}: ${e.message}`);
     }
   }
-  throw new Error("all OR models failed");
+  throw new Error("OpenRouter: all models failed");
 }
 
-// ── GROQ ─────────────────────────────────────────────────────────────────────
+// ── GROQ — Full model chain per intent ───────────────────────────────────────
+//
+// Groq free models (June 2026):
+//   llama-3.3-70b-versatile  — best quality, 128k ctx, 6000 req/day
+//   llama-3.1-70b-versatile  — strong fallback, 128k ctx
+//   llama-3.1-8b-instant     — fastest, good for chat, 128k ctx
+//   gemma2-9b-it             — Google Gemma, good all-rounder
+//   mixtral-8x7b-32768       — Mistral MoE, great for code + research
+//
+// Strategy:
+//   code     → Mixtral (great at code) → Llama 70B → Llama 8B instant
+//   research → Llama 3.3 70B (best reasoning) → Llama 3.1 70B → Gemma2
+//   creative → Llama 3.3 70B → Gemma2
+//   pdf      → Llama 8B instant (fast, enough for extraction) → Gemma2
+//   chat     → Llama 8B instant (sub-second) → Gemma2 → Mixtral
+
 const GROQ_MODELS = {
-  code: "llama-3.3-70b-versatile", research: "llama-3.3-70b-versatile",
-  pdf:  "llama-3.1-8b-instant",    chat:     "llama-3.1-8b-instant",
+  code:     [
+    { model: "mixtral-8x7b-32768",       maxTokens: 3000 },
+    { model: "llama-3.3-70b-versatile",  maxTokens: 2500 },
+    { model: "llama-3.1-8b-instant",     maxTokens: 2000 },
+  ],
+  research: [
+    { model: "llama-3.3-70b-versatile",  maxTokens: 1500 },
+    { model: "llama-3.1-70b-versatile",  maxTokens: 1500 },
+    { model: "gemma2-9b-it",             maxTokens: 1200 },
+  ],
+  creative: [
+    { model: "llama-3.3-70b-versatile",  maxTokens: 1000 },
+    { model: "gemma2-9b-it",             maxTokens: 800  },
+  ],
+  pdf:      [
+    { model: "llama-3.1-8b-instant",     maxTokens: 1200 },
+    { model: "gemma2-9b-it",             maxTokens: 1000 },
+  ],
+  chat:     [
+    { model: "llama-3.1-8b-instant",     maxTokens: 600  },
+    { model: "gemma2-9b-it",             maxTokens: 600  },
+    { model: "mixtral-8x7b-32768",       maxTokens: 600  },
+  ],
 };
-const GROQ_TOKENS = { code: 3000, research: 1500, pdf: 1200, chat: 600 };
 
 async function tryGroq(messages, intent, key) {
-  const model     = GROQ_MODELS[intent] || "llama-3.1-8b-instant";
-  const maxTokens = GROQ_TOKENS[intent] || 600;
+  const chain = GROQ_MODELS[intent] || GROQ_MODELS.chat;
 
-  const ctrl = new AbortController();
-  const t    = setTimeout(() => ctrl.abort(), 8500);
-  try {
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method:  "POST",
-      headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
-      body:    JSON.stringify({ model, max_tokens: maxTokens, stop: STOP4, messages }),
-      signal:  ctrl.signal,
-    });
-    clearTimeout(t);
-    const data = await r.json();
-    if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-    return { reply: cleanReply(data.choices[0].message.content), model: `Groq:${model}` };
-  } catch (e) {
-    clearTimeout(t);
-    throw new Error(`Groq: ${e.message}`);
+  for (const { model, maxTokens } of chain) {
+    const ctrl = new AbortController();
+    const t    = setTimeout(() => ctrl.abort(), 8500);
+    try {
+      const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method:  "POST",
+        headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+        body:    JSON.stringify({ model, max_tokens: maxTokens, stop: STOP4, messages }),
+        signal:  ctrl.signal,
+      });
+      clearTimeout(t);
+      const data = await r.json();
+
+      // Model not found on Groq — try next in chain
+      if (r.status === 404 || data.error?.code === "model_not_found") {
+        console.warn(`[Flow] Groq 404: ${model}`); continue;
+      }
+      // Rate limit on this model — try next (different model, different limit)
+      if (r.status === 429) {
+        console.warn(`[Flow] Groq rate limit: ${model}`); continue;
+      }
+      if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
+
+      return { reply: cleanReply(data.choices[0].message.content), model: `Groq:${model}` };
+    } catch (e) {
+      clearTimeout(t);
+      console.warn(`[Flow] Groq ${model}: ${e.message}`);
+      // Don't break the chain on timeout — next model might respond faster
+    }
   }
+  throw new Error("Groq: all models failed");
 }
 
 // ── HUGGINGFACE ───────────────────────────────────────────────────────────────
@@ -137,7 +210,6 @@ async function tryHuggingFace(messages, intent, token) {
       const r = await fetch("https://api-inference.huggingface.co/v1/chat/completions", {
         method:  "POST",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-        // No stop tokens for HF — it rejects them unpredictably
         body:    JSON.stringify({ model, max_tokens: maxTokens, messages }),
         signal:  ctrl.signal,
       });
@@ -167,7 +239,7 @@ export default async function handler(req, res) {
   const HF_KEY = process.env.HF_TOKEN;
 
   if (!OR_KEY && !GR_KEY && !HF_KEY) {
-    return res.status(500).json({ error: "No AI provider set. Add OPENROUTER_API_KEY, GROQ_API_KEY, or HF_TOKEN in Vercel → Settings → Environment Variables" });
+    return res.status(500).json({ error: "No AI provider configured. Add OPENROUTER_API_KEY, GROQ_API_KEY, or HF_TOKEN in Vercel → Settings → Environment Variables" });
   }
 
   const { messages } = req.body || {};
@@ -183,19 +255,19 @@ export default async function handler(req, res) {
 
   if (OR_KEY) {
     try   { const r = await tryOpenRouter(trimmed, intent, OR_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(e.message); }
+    catch (e) { errors.push(`OpenRouter: ${e.message}`); }
   }
   if (GR_KEY) {
     try   { const r = await tryGroq(trimmed, intent, GR_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(e.message); }
+    catch (e) { errors.push(`Groq: ${e.message}`); }
   }
   if (HF_KEY) {
     try   { const r = await tryHuggingFace(trimmed, intent, HF_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(e.message); }
+    catch (e) { errors.push(`HF: ${e.message}`); }
   }
 
   const missing = [!OR_KEY && "OPENROUTER_API_KEY", !GR_KEY && "GROQ_API_KEY", !HF_KEY && "HF_TOKEN"].filter(Boolean);
   return res.status(502).json({
-    error: `All providers failed: ${errors.join(" | ")}${missing.length ? ` | Missing: ${missing.join(", ")}` : ""}`,
+    error: `All providers failed: ${errors.join(" | ")}${missing.length ? ` | Missing keys: ${missing.join(", ")}` : ""}`,
   });
 }
