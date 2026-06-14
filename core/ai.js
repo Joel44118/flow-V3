@@ -117,7 +117,7 @@ export async function sendMessage(overrideText) {
     const _wrap = _chat.add(data.reply, "bot");
     Memory.add("assistant", data.reply);
     _orb.setState("speaking");
-    Speech.speak(data.reply, () => { _orb.setState("idle"); _orb.setGlobe?.(false); }, _wrap);
+    Speech.speak(data.reply, () => { _orb.setState("idle"); }, _wrap);
 
   } catch(err) {
     _chat.hideTyping();
@@ -162,7 +162,7 @@ export async function sendToAI(text) {
     const _wrap = _chat.add(data.reply, "bot");
     Memory.add("assistant", data.reply);
     _orb.setState("speaking");
-    Speech.speak(data.reply, () => { _orb.setState("idle"); _orb.setGlobe?.(false); }, _wrap);
+    Speech.speak(data.reply, () => { _orb.setState("idle"); }, _wrap);
 
   } catch (err) {
     _chat.hideTyping();
