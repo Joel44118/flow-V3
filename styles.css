@@ -464,3 +464,84 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
   color:var(--cyan); border-radius:10px; padding:8px 16px; cursor:pointer;
   font-size:13px; font-family:var(--fd); letter-spacing:.06em; }
 #proj-new-btn:hover { background:rgba(56,189,248,.28); }
+
+/* ═══════════════════════════════════════════
+   CODE BLOCKS
+   ═══════════════════════════════════════════ */
+.mbubble.has-code {
+  background: transparent !important;
+  padding: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.code-prose {
+  color: rgba(255,255,255,0.85);
+  font-family: var(--fb);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 6px 0 10px;
+  padding: 0 4px;
+}
+.code-block {
+  background: #1a1d2e;
+  border: 1px solid rgba(56,189,248,0.2);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 8px 0;
+  font-family: 'Fira Code', 'Courier New', monospace;
+}
+.code-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(56,189,248,0.06);
+  border-bottom: 1px solid rgba(56,189,248,0.12);
+}
+.code-dots {
+  display: flex;
+  gap: 5px;
+}
+.code-dots span {
+  width: 10px; height: 10px; border-radius: 50%;
+}
+.code-dots span:nth-child(1) { background: #ff5f57; }
+.code-dots span:nth-child(2) { background: #ffbd2e; }
+.code-dots span:nth-child(3) { background: #28ca41; }
+.code-lang {
+  flex: 1;
+  font-family: var(--fd);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: rgba(56,189,248,0.6);
+  text-transform: uppercase;
+}
+.code-copy {
+  background: rgba(56,189,248,0.1);
+  border: 1px solid rgba(56,189,248,0.2);
+  color: rgba(56,189,248,0.7);
+  font-family: var(--fd);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  padding: 3px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.code-copy:hover { background: rgba(56,189,248,0.2); color: #fff; }
+.code-block pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(56,189,248,0.2) transparent;
+}
+.code-block pre::-webkit-scrollbar { height: 4px; }
+.code-block pre::-webkit-scrollbar-thumb { background: rgba(56,189,248,0.2); border-radius: 2px; }
+.code-block code {
+  font-family: 'Fira Code', 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #abb2bf;
+  background: transparent;
+}
