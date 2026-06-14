@@ -6,22 +6,74 @@
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  const focus = req.query.focus || "general";
+  const focus  = req.query.focus  || "general";
+  const search = req.query.search || "";  // specific topic search
 
-  const results = await Promise.allSettled([
-    fetchForex(),
-    fetchNews(),
-    fetchTech(),
-    fetchQuakes(),
-    fetchFires(),
-    fetchConflicts(),
-  ]);
+  // Always run the full brief in parallel
+  const [forexR, newsR, techR, quakesR, firesR, conflictsR, searchR] =
+    await Promise.allSettled([
+      fetchForex(),
+      fetchNews(),
+      fetchTech(),
+      fetchQuakes(),
+      fetchFires(),
+      fetchConflicts(),
+      search ? fetchTargetedNews(search) : Promise.resolve([]),
+    ]);
 
-  const [forex, news, tech, quakes, fires, conflicts] = results.map(r =>
-    r.status === "fulfilled" ? r.value : []
-  );
+  const forex     = forexR.status     === "fulfilled" ? forexR.value     : [];
+  const news      = newsR.status      === "fulfilled" ? newsR.value      : [];
+  const tech      = techR.status      === "fulfilled" ? techR.value      : [];
+  const quakes    = quakesR.status    === "fulfilled" ? quakesR.value    : [];
+  const fires     = firesR.status     === "fulfilled" ? firesR.value     : [];
+  const conflicts = conflictsR.status === "fulfilled" ? conflictsR.value : [];
+  const targeted  = searchR.status    === "fulfilled" ? searchR.value    : [];
 
-  return res.status(200).json({ forex, news, tech, quakes, fires, conflicts, focus, ts: Date.now() });
+  return res.status(200).json({
+    forex, news, tech, quakes, fires, conflicts,
+    targeted, search,
+    focus, ts: Date.now()
+  });
+}
+
+// ── Targeted news search via Google News RSS ──────────────────────────────
+async function fetchTargetedNews(query) {
+  const items = [];
+  try {
+    const encoded = encodeURIComponent(query);
+    const feeds = [
+      `https://news.google.com/rss/search?q=${encoded}&hl=en-US&gl=US&ceid=US:en`,
+      `https://news.google.com/rss/search?q=${encoded}+Nigeria&hl=en-US&gl=NG&ceid=NG:en`,
+    ];
+
+    await Promise.allSettled(feeds.map(async (url) => {
+      try {
+        const r    = await fetch(url, { signal: AbortSignal.timeout(6000) });
+        const text = await r.text();
+        const raws = [...text.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+        raws.slice(0, 8).forEach(m => {
+          const block = m[1];
+          const title = (block.match(/<title><!\[CDATA\[(.+?)\]\]><\/title>/) ||
+                         block.match(/<title>([^<]+)<\/title>/))?.[1]?.trim();
+          const pub   = block.match(/<pubDate>([^<]+)<\/pubDate>/)?.[1]?.trim();
+          const src   = block.match(/<source[^>]*>([^<]+)<\/source>/)?.[1]?.trim() || "News";
+          const link  = block.match(/<link>([^<]+)<\/link>/)?.[1]?.trim() || "";
+          if (title && title.length > 10) {
+            items.push({ title, pub: pub || "", source: src, url: link });
+          }
+        });
+      } catch {}
+    }));
+  } catch {}
+
+  // Deduplicate by title prefix
+  const seen = new Set();
+  return items.filter(i => {
+    const key = i.title.slice(0, 40).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 12);
 }
 
 // ── FOREX: USD/NGN, EUR/USD, GBP/USD, BTC/USD ────────────────────────────
