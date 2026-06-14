@@ -114,10 +114,10 @@ export async function sendMessage(overrideText) {
 
     console.log("[Flow] ←", data.reply.slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
     _chat.hideTyping();
-    _chat.add(data.reply, "bot");
+    const _wrap = _chat.add(data.reply, "bot");
     Memory.add("assistant", data.reply);
     _orb.setState("speaking");
-    Speech.speak(data.reply, () => _orb.setState("idle"));
+    Speech.speak(data.reply, () => _orb.setState("idle"), _wrap);
 
   } catch(err) {
     _chat.hideTyping();
@@ -159,10 +159,10 @@ export async function sendToAI(text) {
     if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
 
     _chat.hideTyping();
-    _chat.add(data.reply, "bot");
+    const _wrap = _chat.add(data.reply, "bot");
     Memory.add("assistant", data.reply);
     _orb.setState("speaking");
-    Speech.speak(data.reply, () => _orb.setState("idle"));
+    Speech.speak(data.reply, () => _orb.setState("idle"), _wrap);
 
   } catch (err) {
     _chat.hideTyping();
