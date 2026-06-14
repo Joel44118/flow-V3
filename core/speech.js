@@ -1,59 +1,77 @@
 // ═══════════════════════════════════════════
 // core/speech.js — TTS + speech envelope
-//
-// FIX: stripForSpeech now uses greedy regex
-// so unclosed ``` blocks (truncated responses)
-// are also silenced — not read aloud.
 // ═══════════════════════════════════════════
 
 let _isSpeaking   = false;
+let _isPaused     = false;
 let _envelope     = 0;
 let _lastBoundary = 0;
 let _onDone       = null;
+// Track the active message wrap so we can update its button state
+let _activeWrap   = null;
 
-// Tick: updates envelope ~60fps, read by orb.js
 setInterval(() => {
-  if (!_isSpeaking) { _envelope *= 0.82; return; }
+  if (!_isSpeaking || _isPaused) { _envelope *= 0.82; return; }
   const age   = performance.now() - _lastBoundary;
   const decay = Math.max(0, 1 - age / 260);
   _envelope   = decay * (0.5 + 0.5 * Math.sin(performance.now() * 0.025));
 }, 16);
 
-// Strip ALL code before speaking
-// Uses greedy [\s\S]* so unclosed blocks at end of string are caught too
 function stripForSpeech(text) {
   if (!text) return "";
   return text
-    // Closed fenced blocks: ```...``` — greedy, catches multiline
     .replace(/```[\s\S]*?```/g, "here is the code")
-    // Unclosed fenced block at end of string (truncated response)
     .replace(/```[\s\S]*/g, "here is the code")
-    // Inline code: `...`
     .replace(/`[^`]+`/g, "")
-    // Remaining backticks
     .replace(/`/g, "")
-    // Markdown cleanup
     .replace(/\*\*/g, "")
     .replace(/^#+\s/gm, "")
     .replace(/^[-•]\s/gm, "")
-    // URL cleanup — don't read raw URLs
     .replace(/https?:\/\/\S+/g, "link")
     .replace(/\s+/g, " ")
     .trim();
 }
 
+function _setButtonState(wrap, state) {
+  // state: "playing" | "paused" | "idle"
+  if (!wrap) return;
+  const btn = wrap.querySelector(".msg-play-btn");
+  if (!btn) return;
+  if (state === "playing") {
+    btn.textContent = "⏸";
+    btn.title = "Pause";
+    btn.dataset.state = "playing";
+  } else if (state === "paused") {
+    btn.textContent = "▶";
+    btn.title = "Resume";
+    btn.dataset.state = "paused";
+  } else {
+    btn.textContent = "▶";
+    btn.title = "Read aloud";
+    btn.dataset.state = "idle";
+  }
+}
+
 export const Speech = {
 
-  speak(text, onDone) {
+  speak(text, onDone, wrap) {
     const clean = stripForSpeech(text);
-    // If nothing left after stripping (pure code response), just call onDone
     if (!clean || clean === "here is the code") {
       if (onDone) onDone();
       return;
     }
+
+    // Reset previous active button
+    if (_activeWrap && _activeWrap !== wrap) {
+      _setButtonState(_activeWrap, "idle");
+    }
+
     window.speechSynthesis.cancel();
-    _isSpeaking = true;
-    _onDone     = onDone || null;
+    _isSpeaking  = true;
+    _isPaused    = false;
+    _onDone      = onDone || null;
+    _activeWrap  = wrap || null;
+    _setButtonState(_activeWrap, "playing");
 
     const u    = new SpeechSynthesisUtterance(clean);
     u.lang     = "en-US";
@@ -70,19 +88,47 @@ export const Speech = {
 
     u.onend = u.onerror = () => {
       _isSpeaking = false;
+      _isPaused   = false;
       _envelope   = 0;
+      _setButtonState(_activeWrap, "idle");
+      _activeWrap = null;
       if (_onDone) _onDone();
     };
 
     window.speechSynthesis.speak(u);
   },
 
+  pause() {
+    if (_isSpeaking && !_isPaused) {
+      window.speechSynthesis.pause();
+      _isPaused = true;
+      _envelope = 0;
+      _setButtonState(_activeWrap, "paused");
+    }
+  },
+
+  resume() {
+    if (_isSpeaking && _isPaused) {
+      window.speechSynthesis.resume();
+      _isPaused = false;
+      _setButtonState(_activeWrap, "playing");
+    }
+  },
+
   cancel() {
     window.speechSynthesis.cancel();
     _isSpeaking = false;
+    _isPaused   = false;
     _envelope   = 0;
+    _setButtonState(_activeWrap, "idle");
+    _activeWrap = null;
+  },
+
+  reread(text, wrap) {
+    this.speak(text, null, wrap);
   },
 
   isSpeaking()  { return _isSpeaking; },
+  isPaused()    { return _isPaused;   },
   getEnvelope() { return _envelope;   },
 };
