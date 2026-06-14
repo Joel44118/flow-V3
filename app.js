@@ -105,6 +105,7 @@ async function handleSlashCmd(cmd, prompt) {
 
 // ── Wire cross-module dependencies ────────────────────────────────────────
 setUI(Chat, Orb);
+window.__flowOrb = Orb; // used by speech.js cancel/pause to reset orb state
 setNotepad(Notepad);
 setSpeakFn((t) => Speech.speak(t));
 
