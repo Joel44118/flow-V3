@@ -1,161 +1,151 @@
 // ═══════════════════════════════════════════
-// api/search.js — Search + URL Inspector
+// api/search.js — Smart search + URL inspector
 //
 // MODES:
 //   quick  → DuckDuckGo instant answer
-//   deep   → DDG + recent news
+//   deep   → DDG + news RSS (more results)
+//   news   → targeted news search (RSS feeds)
 //   url    → fetch & extract a specific URL
-//            (for "check this website", "inspect this URL")
-//
-// GET /api/search?q=query&mode=quick
-// GET /api/search?q=https://example.com&mode=url
 // ═══════════════════════════════════════════
 
-// ── Strip HTML to clean readable text ───────────────────────────────────
 function extractText(html) {
   return html
-    // Remove scripts, styles, nav, footer, header, ads
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<nav[\s\S]*?<\/nav>/gi, "")
-    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
     .replace(/<header[\s\S]*?<\/header>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    // Extract title
-    .replace(/<title[^>]*>([\s\S]*?)<\/title>/i, "\nPAGE TITLE: $1\n")
-    // Extract meta description
-    .replace(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["'][^>]*>/i, "\nDESCRIPTION: $1\n")
-    .replace(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']description["'][^>]*>/i, "\nDESCRIPTION: $1\n")
-    // Extract headings (important for understanding site structure)
-    .replace(/<h([1-3])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, text) =>
-      `\n${"#".repeat(parseInt(level))} ${text.replace(/<[^>]+>/g, "").trim()}\n`)
-    // Convert links to readable format
-    .replace(/<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
-      (_, href, text) => `${text.replace(/<[^>]+>/g, "").trim()} [${href}]`)
-    // Strip remaining tags
+    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
     .replace(/<[^>]+>/g, " ")
-    // Clean whitespace
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s{3,}/g, "\n\n")
-    .trim();
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/\s{2,}/g, " ").trim();
 }
 
-// ── Fetch a URL and extract useful content ───────────────────────────────
-async function fetchUrl(url, deep = false) {
-  const ctrl    = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 8000);
+// ── DuckDuckGo search ─────────────────────────────────────────────────────
+async function ddgSearch(query) {
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1&skip_disambig=1`;
+  const r   = await fetch(url, { signal: AbortSignal.timeout(6000) });
+  const d   = await r.json();
 
-  try {
-    const r = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; FlowBot/3.0)",
-        "Accept":     "text/html,application/xhtml+xml,*/*",
-      },
-      signal: ctrl.signal,
-      redirect: "follow",
-    });
-    clearTimeout(timeout);
+  const results = [];
 
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-
-    const ct   = r.headers.get("content-type") || "";
-    const html = await r.text();
-    const text = extractText(html);
-
-    // Trim to reasonable length
-    const maxChars = deep ? 8000 : 3000;
-    const trimmed  = text.length > maxChars
-      ? text.slice(0, maxChars) + "\n\n[content trimmed — showing first portion]"
-      : text;
-
-    // Count words, links, approximate reading time
-    const wordCount = text.split(/\s+/).filter(Boolean).length;
-    const links     = (html.match(/<a\s+[^>]*href/gi) || []).length;
-    const hasLogin  = /<(form|input)[^>]*type=["']?password["']?/i.test(html);
-    const hasPricing = /pricing|price|subscribe|plan|cost|payment/i.test(text);
-
-    return {
-      url,
-      content:   trimmed,
-      wordCount,
-      links,
-      hasLogin,
-      hasPricing,
-      statusCode: r.status,
-      contentType: ct,
-    };
-  } catch (e) {
-    clearTimeout(timeout);
-    throw e;
+  // Abstract (top answer)
+  if (d.AbstractText) {
+    results.push({ title: d.Heading || query, snippet: d.AbstractText, url: d.AbstractURL });
   }
+
+  // Related topics
+  (d.RelatedTopics || []).slice(0, 6).forEach(t => {
+    if (t.Text) results.push({ title: t.Text.split(" - ")[0], snippet: t.Text, url: t.FirstURL });
+  });
+
+  return results;
 }
 
+// ── RSS news search — searches Google News RSS for targeted queries ────────
+async function newsSearch(query) {
+  const results = [];
+
+  // Google News RSS - returns actual recent news articles
+  const feeds = [
+    `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`,
+    `https://feeds.bbci.co.uk/news/rss.xml`,
+  ];
+
+  await Promise.allSettled(feeds.map(async (feedUrl) => {
+    try {
+      const r    = await fetch(feedUrl, { signal: AbortSignal.timeout(6000) });
+      const text = await r.text();
+
+      // Parse <item> blocks
+      const items = [...text.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+      items.slice(0, 8).forEach(m => {
+        const block = m[1];
+        const title = (block.match(/<title><!\[CDATA\[(.+?)\]\]><\/title>/) ||
+                       block.match(/<title>([^<]+)<\/title>/))?.[1]?.trim();
+        const desc  = (block.match(/<description><!\[CDATA\[(.+?)\]\]><\/description>/) ||
+                       block.match(/<description>([^<]{20,})<\/description>/))?.[1]?.trim();
+        const link  = block.match(/<link>([^<]+)<\/link>/)?.[1]?.trim() ||
+                      block.match(/<guid[^>]*>([^<]+)<\/guid>/)?.[1]?.trim();
+        const pub   = block.match(/<pubDate>([^<]+)<\/pubDate>/)?.[1]?.trim();
+
+        if (title && title.length > 5) {
+          const clean = desc ? extractText(desc).slice(0, 200) : "";
+          results.push({ title, snippet: clean || title, url: link || "", pub });
+        }
+      });
+    } catch {}
+  }));
+
+  // Filter to query-relevant results if we have enough
+  const q = query.toLowerCase();
+  const relevant = results.filter(r =>
+    r.title.toLowerCase().includes(q.split(" ")[0]) ||
+    r.snippet.toLowerCase().includes(q.split(" ")[0])
+  );
+
+  return (relevant.length >= 3 ? relevant : results).slice(0, 8);
+}
+
+// ── URL Inspector ─────────────────────────────────────────────────────────
+async function inspectUrl(url) {
+  const r    = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; FlowBot/1.0)" },
+    signal: AbortSignal.timeout(8000)
+  });
+  const html = await r.text();
+  const text = extractText(html).slice(0, 4000);
+
+  const title    = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim() || "";
+  const desc     = html.match(/<meta[^>]*name="description"[^>]*content="([^"]+)"/i)?.[1] || "";
+  const words    = text.split(/\s+/).length;
+  const links    = (html.match(/<a\s/gi) || []).length;
+  const hasPay   = /pricing|subscribe|checkout|payment|buy now/i.test(text);
+  const hasLogin = /login|sign in|register|sign up/i.test(text);
+
+  return { title, description: desc, text, words, links, hasPricing: hasPay, hasLogin };
+}
+
+// ── Handler ───────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin",  "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.status(200).end();
+  res.setHeader("Access-Control-Allow-Origin", "*");
 
   const { q, mode = "quick" } = req.query;
-  if (!q) return res.status(400).json({ error: "query required" });
+  if (!q) return res.status(400).json({ error: "q is required" });
 
   try {
-
-    // ── URL INSPECT MODE ───────────────────────────────────────────────
-    if (mode === "url" || /^https?:\/\//i.test(q)) {
-      const deep   = mode === "deep-url";
-      const result = await fetchUrl(q, deep);
-      return res.status(200).json({ mode: "url", ...result });
-    }
-
-    // ── QUICK / NEWS SEARCH ────────────────────────────────────────────
-    if (mode === "quick" || mode === "news") {
-      const url  = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1`;
-      const r    = await fetch(url, { headers: { "User-Agent": "FlowAI/3.0" } });
-      const data = await r.json();
-
-      const results = [];
-      if (data.AbstractText) results.push({ title: data.AbstractSource || "Summary", snippet: data.AbstractText, url: data.AbstractURL });
-      (data.RelatedTopics || []).slice(0, 5).forEach(t => {
-        if (t.Text) results.push({ title: t.Text.split(" - ")[0] || "", snippet: t.Text, url: t.FirstURL || "" });
+    // URL mode
+    if (mode === "url" || q.startsWith("http")) {
+      const data = await inspectUrl(q);
+      return res.status(200).json({
+        type: "url",
+        url:  q,
+        ...data,
+        context: `URL: ${q}\nTitle: ${data.title}\nWords: ~${data.words} | Links: ${data.links}${data.hasPricing ? " | Has pricing/payment section" : ""}${data.hasLogin ? " | Has login" : ""}\nDESCRIPTION: ${data.description}\n\n${data.text.slice(0, 2000)}`
       });
-      if (data.Answer) results.push({ title: "Direct Answer", snippet: data.Answer, url: "" });
-
-      return res.status(200).json({ query: q, results, source: "duckduckgo" });
     }
 
-    // ── DEEP SEARCH ────────────────────────────────────────────────────
+    // News mode — targeted news search
+    if (mode === "news") {
+      const results = await newsSearch(q);
+      return res.status(200).json({ results, mode: "news" });
+    }
+
+    // Deep mode — DDG + news combined
     if (mode === "deep") {
-      const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1`;
-      const ddgRes = await fetch(ddgUrl, { headers: { "User-Agent": "FlowAI/3.0" } });
-      const ddg    = await ddgRes.json();
-
-      const results = [];
-      if (ddg.AbstractText) results.push({ title: ddg.AbstractSource, snippet: ddg.AbstractText, url: ddg.AbstractURL });
-      (ddg.RelatedTopics || []).slice(0, 8).forEach(t => {
-        if (t.Text) results.push({ title: t.Text.split(" - ")[0], snippet: t.Text, url: t.FirstURL || "" });
-      });
-
-      const newsRes = await fetch(
-        `https://api.duckduckgo.com/?q=${encodeURIComponent(q + " 2025 latest")}&format=json&no_html=1&skip_disambig=1`,
-        { headers: { "User-Agent": "FlowAI/3.0" } }
-      );
-      const news = await newsRes.json();
-      (news.RelatedTopics || []).slice(0, 5).forEach(t => {
-        if (t.Text) results.push({ title: "[Recent] " + t.Text.split(" - ")[0], snippet: t.Text, url: t.FirstURL || "" });
-      });
-
-      return res.status(200).json({ query: q, results, source: "duckduckgo-deep" });
+      const [ddg, news] = await Promise.allSettled([ddgSearch(q), newsSearch(q)]);
+      const results = [
+        ...(ddg.status === "fulfilled" ? ddg.value : []),
+        ...(news.status === "fulfilled" ? news.value : []),
+      ].slice(0, 10);
+      return res.status(200).json({ results, mode: "deep" });
     }
 
-    return res.status(400).json({ error: "Unknown mode" });
+    // Quick mode — DDG only
+    const results = await ddgSearch(q);
+    return res.status(200).json({ results, mode: "quick" });
 
-  } catch (e) {
-    return res.status(502).json({ error: e.message });
+  } catch(e) {
+    return res.status(500).json({ error: e.message });
   }
 }
