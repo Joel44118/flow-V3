@@ -4,7 +4,6 @@
 import { Weather }         from "./weather.js";
 import { Alarms, normaliseTime } from "./alarms.js";
 import { Storage }         from "./storage.js";
-import { Memory }          from "./memory.js";
 import { CONFIG }          from "./config.js";
 import { webSearch, deepResearch, smartSearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
@@ -14,13 +13,15 @@ import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickReleva
 let _notepad = null;
 let _speak   = null;
 let _vision  = null;
-let _searchSend = null;
-let _chatAdd    = null;
+let _searchSend  = null;
+let _chatAdd     = null;
+let _getHistory  = null;
 
 export function setNotepad(n)          { _notepad    = n; }
 export function setSpeakFn(fn)         { _speak      = fn; }
 export function setVision(v)           { _vision     = v; }
 export function setSearchHandlers(s,c) { _searchSend = s; _chatAdd = c; }
+export function setHistoryFn(fn)       { _getHistory = fn; }
 
 // ── Site open map ──────────────────────────
 const SITES = [
@@ -142,7 +143,7 @@ export async function parseSearchGoalCommand(text) {
     else if (bareRepoM) { repo = bareRepoM[1]; }
     if (repo) {
       _chatAdd?.(`Re-generating file structure for ${owner}/${repo} from our conversation...`, "bot");
-      const history = Memory.forAPI().slice(-24);
+      const history = (_getHistory?.() || []).slice(-24);
       const extractPrompt = [
         `The user wants to push the project file structure from this conversation into GitHub repo "${owner}/${repo}".`,
         `Look through the conversation and find the file structure or project files that were discussed.`,
