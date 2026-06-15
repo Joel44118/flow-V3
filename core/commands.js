@@ -149,8 +149,7 @@ export async function parseSearchGoalCommand(text) {
         `[{ "path": "relative/path/file.ext", "content": "complete file content here" }]`,
         `Rules: all file contents must be complete and working (no TODOs), max 15 files, relative paths only.`,
         `If the conversation described a structure but not the contents, generate sensible working content based on the project context.`,
-      ].join("
-");
+      ].join("\n");
       try {
         const res = await fetch("/api/chat", {
           method: "POST",
