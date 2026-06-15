@@ -16,7 +16,8 @@ import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.
 import {
   setNotepad, setSpeakFn, setVision, setSearchHandlers,
   parseCommand, parseVisionCommand, parseSearchGoalCommand,
-  handleRepoCommand, getTime, getDate
+  handleRepoCommand, handleScaffoldCommand, handlePushCommand,
+  checkPendingPush, getTime, getDate
 } from "./core/commands.js";
 
 import { Chat }        from "./ui/chat.js";
@@ -82,9 +83,16 @@ async function handleSlashCmd(cmd, prompt) {
       await parseSearchGoalCommand(p.startsWith("http") ? p : "search github " + p);
       break;
     case "/repo":
-      if (!p) { Chat.add("Name the repo: e.g. /repo my-project\nOptionally add a description after the name.", "bot"); return; }
-      // Pass directly to handleRepoCommand — bypasses regex ambiguity
+      if (!p) { Chat.add("Name the repo: e.g. /repo my-project  A short description", "bot"); return; }
       await handleRepoCommand(p);
+      break;
+    case "/scaffold":
+      if (!p) { Chat.add("Usage: /scaffold owner/repo  description\nExample: /scaffold Joel44118/Flowpay A payment API with Express and Stripe", "bot"); return; }
+      await handleScaffoldCommand(p);
+      break;
+    case "/push":
+      if (!p) { Chat.add("Usage: /push owner/repo path/to/file.js\nThen paste the file content as your next message.", "bot"); return; }
+      await handlePushCommand(p);
       break;
     case "/intel": {
       const focus = p || "general";
@@ -135,6 +143,9 @@ initProjects(Chat, (t) => sendToAI(t));
 async function flowSend(text) {
   if (!text?.trim()) return;
   text = text.trim();
+
+  // Intercept pending file push (set by /push command)
+  if (await checkPendingPush(text)) return;
 
   // Knowledge base
   if (/open\s+knowledge(\s+base)?|knowledge\s+base|my\s+knowledge/i.test(text)) {
