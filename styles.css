@@ -74,8 +74,8 @@ body { overflow:hidden; background:var(--deep); font-family:var(--fb); color:#ff
 .mright .mlabel { color:var(--cyan); }
 
 .mbubble {
-  padding:12px 16px; border-radius:16px; font-size:14px; font-weight:600;
-  line-height:1.58; backdrop-filter:blur(14px); max-width:100%;
+  padding:12px 16px; border-radius:16px; font-size:16px; font-weight:600;
+  line-height:1.62; backdrop-filter:blur(14px); max-width:100%;
   word-break:break-word; animation:fadeUp .25s ease forwards;
 }
 .muser  { background:rgba(56,189,248,.11); border:1px solid rgba(56,189,248,.26); border-bottom-right-radius:3px; }
