@@ -134,3 +134,40 @@ export function formatSearchResults(data, query) {
   }
   return out;
 }
+
+// ── Create a new GitHub repository ───────────────────────────────────────
+export async function createRepo(name, description = "", isPrivate = false) {
+  const r = await fetch(`${BASE}?mode=create-repo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description, private: isPrivate }),
+  });
+  if (!r.ok) throw new Error((await r.json()).error || "Repo creation failed");
+  return r.json(); // { url, clone_url, full_name }
+}
+
+// ── Create or update a file in a repo ────────────────────────────────────
+export async function createOrUpdateFile(owner, repo, path, content, message, branch = "main") {
+  const r = await fetch(`${BASE}?mode=put-file`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, repo, path, content, message, branch }),
+  });
+  if (!r.ok) throw new Error((await r.json()).error || "File write failed");
+  return r.json();
+}
+
+// ── Batch create files in a new repo ─────────────────────────────────────
+// files: [{ path, content }]
+export async function scaffoldRepo(owner, repo, files, commitMsg = "Initial scaffold by Flow") {
+  const results = [];
+  for (const f of files) {
+    try {
+      const res = await createOrUpdateFile(owner, repo, f.path, f.content, commitMsg);
+      results.push({ path: f.path, ok: true, url: res.url });
+    } catch(e) {
+      results.push({ path: f.path, ok: false, error: e.message });
+    }
+  }
+  return results;
+}
