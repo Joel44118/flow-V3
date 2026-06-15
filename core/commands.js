@@ -270,3 +270,22 @@ export async function parseSearchGoalCommand(text) {
 
   return false;
 }
+
+// ── Repo creation — called directly from app.js /repo slash command ───────
+export async function handleRepoCommand(rawInput) {
+  const parts    = rawInput.trim().split(/\s+/);
+  const repoName = parts[0].replace(/[^\w._-]/g, "");
+  const repoDesc = parts.slice(1).join(" ").trim();
+  if (!repoName) { _chatAdd?.("Give me a repo name — e.g. /repo my-project", "bot"); return; }
+  _chatAdd?.(`Creating GitHub repo "${repoName}"...`, "bot");
+  try {
+    const result = await createRepo(repoName, repoDesc);
+    _searchSend?.(
+      `I just created a GitHub repository for Joel.\n` +
+      `Name: ${result.full_name}\nURL: ${result.url}\nClone: ${result.clone_url}\n\n` +
+      `Tell Joel the repo is live, give him the exact URL. Then ask if he wants you to scaffold the folder structure and push initial files.`
+    );
+  } catch(e) {
+    _chatAdd?.(`❌ Repo creation failed: ${e.message}`, "bot");
+  }
+}
