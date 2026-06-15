@@ -16,7 +16,7 @@ import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.
 import {
   setNotepad, setSpeakFn, setVision, setSearchHandlers,
   parseCommand, parseVisionCommand, parseSearchGoalCommand,
-  getTime, getDate
+  handleRepoCommand, getTime, getDate
 } from "./core/commands.js";
 
 import { Chat }        from "./ui/chat.js";
@@ -82,9 +82,9 @@ async function handleSlashCmd(cmd, prompt) {
       await parseSearchGoalCommand(p.startsWith("http") ? p : "search github " + p);
       break;
     case "/repo":
-      if (!p) { Chat.add("What should I name the repo? e.g. /repo my-project  A short description", "bot"); return; }
-      // Route directly to parseSearchGoalCommand — repoTrigger regex handles it
-      await parseSearchGoalCommand("create repo " + p);
+      if (!p) { Chat.add("Name the repo: e.g. /repo my-project\nOptionally add a description after the name.", "bot"); return; }
+      // Pass directly to handleRepoCommand — bypasses regex ambiguity
+      await handleRepoCommand(p);
       break;
     case "/intel": {
       const focus = p || "general";
