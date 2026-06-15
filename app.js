@@ -79,8 +79,12 @@ async function handleSlashCmd(cmd, prompt) {
     case "/yolo":    sendMessage("start yolo");     break;
     case "/github":
       if (!p) { Chat.add("Paste a GitHub repo URL or say what to search for. e.g. /github https://github.com/owner/repo", "bot"); return; }
-      // Route through parseSearchGoalCommand which handles github URLs
       await parseSearchGoalCommand(p.startsWith("http") ? p : "search github " + p);
+      break;
+    case "/repo":
+      if (!p) { Chat.add("What should I name the repo? e.g. /repo my-project  A short description", "bot"); return; }
+      // Route directly to parseSearchGoalCommand — repoTrigger regex handles it
+      await parseSearchGoalCommand("create repo " + p);
       break;
     case "/intel": {
       const focus = p || "general";
