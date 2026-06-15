@@ -7,7 +7,7 @@ import { Storage }         from "./storage.js";
 import { CONFIG }          from "./config.js";
 import { webSearch, deepResearch, smartSearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
-import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults } from "./github.js";
+import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults, createRepo, scaffoldRepo } from "./github.js";
 
 // ── Injected refs (set at boot to avoid circular imports) ──
 let _notepad = null;
@@ -127,6 +127,22 @@ export async function parseVisionCommand(text) {
 // ── Search + Goals commands ────────────────
 export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
+
+
+  // ── Create GitHub repository ───────────────────────────────────────────
+  const createRepoMatch = text.match(/create\s+(a\s+)?(?:new\s+)?(?:github\s+)?(?:repo|repository)\s+(?:called|named|for)?\s*["']?([\w._-]+)["']?(?:\s+(.+))?/i);
+  if (createRepoMatch) {
+    const repoName = createRepoMatch[2].trim();
+    const repoDesc = createRepoMatch[3]?.trim() || "";
+    _chatAdd?.(`Creating GitHub repo "${repoName}"...`, "bot");
+    try {
+      const result = await createRepo(repoName, repoDesc);
+      _searchSend?.(`I just created a GitHub repository. Here are the details:\n\nName: ${result.full_name}\nURL: ${result.url}\nClone: ${result.clone_url}\n\nTell Joel the repo is live and share the URL. If he gave you a structure to scaffold, ask if he wants you to push the initial files now.`);
+    } catch(e) {
+      _searchSend?.(`I tried to create the repo "${repoName}" but hit an error: ${e.message}. Tell Joel what went wrong.`);
+    }
+    return null;
+  }
 
   // ── Smart web search (news, research, general) ───────────────────────────
   // Triggers: search/news/latest/look up/tell me about + any topic
