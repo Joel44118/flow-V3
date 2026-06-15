@@ -235,15 +235,13 @@ function draw() {
 
     // ── Continent name labels ─────────────────────────────────────────────
     ctx.save();
-    ctx.font        = "700 10px monospace";
-    ctx.textAlign   = "center";
-    ctx.letterSpacing = "0.18em";
+    ctx.font         = "700 10px monospace";
+    ctx.textAlign    = "center";
+    ctx.shadowColor  = "rgba(52,211,153,0.8)";
+    ctx.shadowBlur   = 8;
+    ctx.fillStyle    = "rgba(52,211,153,0.65)";
     CONTINENTS.forEach(cont => {
       if (!cont.lx) return;
-      // Glow
-      ctx.shadowColor  = "rgba(52,211,153,0.8)";
-      ctx.shadowBlur   = 8;
-      ctx.fillStyle    = "rgba(52,211,153,0.65)";
       ctx.fillText(cont.name, cont.lx, cont.ly);
     });
     ctx.restore();
