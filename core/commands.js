@@ -4,10 +4,11 @@
 import { Weather }         from "./weather.js";
 import { Alarms, normaliseTime } from "./alarms.js";
 import { Storage }         from "./storage.js";
+import { Memory }          from "./memory.js";
 import { CONFIG }          from "./config.js";
 import { webSearch, deepResearch, smartSearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
-import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults, createRepo, scaffoldRepo } from "./github.js";
+import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults, createRepo, createOrUpdateFile, scaffoldRepo } from "./github.js";
 
 // ── Injected refs (set at boot to avoid circular imports) ──
 let _notepad = null;
@@ -129,6 +130,78 @@ export async function parseVisionCommand(text) {
 export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
+  // ── Push structure from conversation history ─────────────────────────────────
+  // "push that to X/Y", "create the flowpay structure in the flowpay repo",
+  // "push the structure you created into Joel44118/myrepo", "scaffold that into X"
+  const pushStructureRx = /(?:push|create|scaffold|commit|upload|add)\s+(?:that|the[\s\w]+?)?\s*(?:structure|files?|scaffold|code)?\s*(?:into|to|in)\s+(?:the\s+)?(?:repo\s+)?/i;
+  if (pushStructureRx.test(t) && !/create\s+(a\s+)?(?:new\s+)?(?:github\s+)?repo/i.test(t)) {
+    let owner = "Joel44118", repo = "";
+    const fullRepoM = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
+    const bareRepoM = t.match(/(?:into|to|in)\s+(?:the\s+)?(?:repo\s+)?["']?([a-z0-9_.-]+)["']?\s*(?:repo)?(?:\s|$)/i);
+    if (fullRepoM) { owner = fullRepoM[1]; repo = fullRepoM[2]; }
+    else if (bareRepoM) { repo = bareRepoM[1]; }
+    if (repo) {
+      _chatAdd?.(`Re-generating file structure for ${owner}/${repo} from our conversation...`, "bot");
+      const history = Memory.forAPI().slice(-24);
+      const extractPrompt = [
+        `The user wants to push the project file structure from this conversation into GitHub repo "${owner}/${repo}".`,
+        `Look through the conversation and find the file structure or project files that were discussed.`,
+        `Respond ONLY with a valid JSON array — no markdown, no backticks, no preamble. Format:`,
+        `[{ "path": "relative/path/file.ext", "content": "complete file content here" }]`,
+        `Rules: all file contents must be complete and working (no TODOs), max 15 files, relative paths only.`,
+        `If the conversation described a structure but not the contents, generate sensible working content based on the project context.`,
+      ].join("
+");
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: [...history, { role: "user", content: extractPrompt }] }),
+        });
+        if (!res.ok) throw new Error("AI error " + res.status);
+        const data = await res.json();
+        let raw = data.reply || data.content || data.choices?.[0]?.message?.content || "";
+        raw = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
+        let files;
+        try { files = JSON.parse(raw); }
+        catch (_) {
+          const m = raw.match(/\[[\s\S]+\]/);
+          if (!m) throw new Error("Couldn\'t parse file list. Try /scaffold owner/repo description instead.");
+          files = JSON.parse(m[0]);
+        }
+        if (!Array.isArray(files) || !files.length) throw new Error("AI returned no files.");
+        _chatAdd?.(`Pushing ${files.length} files to ${owner}/${repo}...`, "bot");
+        const results = [];
+        for (const f of files) {
+          if (!f.path || f.content === undefined) continue;
+          try {
+            await createOrUpdateFile(owner, repo, f.path, f.content, "add " + f.path);
+            results.push({ path: f.path, ok: true });
+            _chatAdd?.("✅ " + f.path, "bot");
+          } catch (e) {
+            results.push({ path: f.path, ok: false, error: e.message });
+            _chatAdd?.("❌ " + f.path + " — " + e.message, "bot");
+          }
+        }
+        const ok = results.filter(r => r.ok).length;
+        const fail = results.filter(r => !r.ok).length;
+        _searchSend?.(
+          "I pushed " + ok + " file(s) to " + owner + "/" + repo + (fail ? ", " + fail + " failed" : "") + ".
+" +
+          "Files:
+" + results.map(r => (r.ok ? "✅" : "❌") + " " + r.path).join("
+") + "
+
+" +
+          "Repo: https://github.com/" + owner + "/" + repo + "
+
+" +
+          "Tell Joel the files are live, list what was pushed, and give him the link. Concise and smooth."
+        );
+      } catch (e) { _chatAdd?.("❌ " + e.message, "bot"); }
+      return null;
+    }
+  }
 
   // ── Create GitHub repository ───────────────────────────────────────────
   // Triggers: /repo my-project, "create repo called X", "create repository named X for Y"
