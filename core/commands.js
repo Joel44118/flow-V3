@@ -13,15 +13,13 @@ import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickReleva
 let _notepad = null;
 let _speak   = null;
 let _vision  = null;
-let _searchSend  = null;
-let _chatAdd     = null;
-let _getHistory  = null;
+let _searchSend = null;
+let _chatAdd    = null;
 
 export function setNotepad(n)          { _notepad    = n; }
 export function setSpeakFn(fn)         { _speak      = fn; }
 export function setVision(v)           { _vision     = v; }
 export function setSearchHandlers(s,c) { _searchSend = s; _chatAdd = c; }
-export function setHistoryFn(fn)       { _getHistory = fn; }
 
 // ── Site open map ──────────────────────────
 const SITES = [
