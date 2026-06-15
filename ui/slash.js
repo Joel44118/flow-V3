@@ -17,6 +17,7 @@ const SKILLS = [
   { cmd:"/url",          icon:"🌐", label:"Inspect Website",  desc:"Analyse a website — features, tech stack, purpose", ph:"https://example.com",                               group:"Search"       },
   { cmd:"/intel",    icon:"🌍", label:"World Intel",    desc:"Live news, markets, conflicts & tech — what to act on today", ph:"tech trends  or  markets  or  Nigeria  or leave blank for full brief", group:"Search"       },
   { cmd:"/github", icon:"🐙", label:"GitHub Repo",     desc:"Extract code from any GitHub repo or search repos",  ph:"https://github.com/owner/repo  or  YOLO browser implementation", group:"Code" },
+  { cmd:"/repo",   icon:"📦", label:"Create Repo",     desc:"Create a new GitHub repository right from chat",        ph:"my-new-project  A cool project description",                    group:"Code" },
   { cmd:"/code",         icon:"💻", label:"Write Code",       desc:"Write or fix code in any language",                 ph:"a JavaScript debounce function",                    group:"Code"         },
   { cmd:"/project", icon:"📁", label:"Projects",       desc:"View, create and manage your project workspaces",   ph:"Flow V3  or  show my projects  or  add project MyApp", group:"Productivity" },
   { cmd:"/alarm",        icon:"⏰", label:"Set Alarm",        desc:"Set a timed reminder",                              ph:"meeting at 3pm",                                    group:"Productivity" },
