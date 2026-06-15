@@ -114,7 +114,64 @@ export default async function handler(req, res) {
       });
     }
 
-    return res.status(400).json({ error: "Unknown mode. Use: tree | file | files | search" });
+    // ── CREATE-REPO ──────────────────────────────────────────────────────
+    if (mode === "create-repo") {
+      if (req.method !== "POST") return res.status(405).json({ error: "POST required" });
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      const { name, description = "", private: isPrivate = false } = body || {};
+      if (!name) return res.status(400).json({ error: "name required" });
+
+      const r = await fetch("https://api.github.com/user/repos", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description, private: isPrivate, auto_init: true }),
+      });
+      if (!r.ok) return res.status(r.status).json({ error: (await r.json()).message });
+      const d = await r.json();
+      return res.status(200).json({
+        full_name: d.full_name,
+        url:       d.html_url,
+        clone_url: d.clone_url,
+        private:   d.private,
+      });
+    }
+
+    // ── PUT-FILE: create or update a file in a repo ───────────────────────
+    if (mode === "put-file") {
+      if (req.method !== "POST") return res.status(405).json({ error: "POST required" });
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      const { owner: fOwner, repo: fRepo, path: fPath, content, message, branch = "main" } = body || {};
+      if (!fOwner || !fRepo || !fPath || content === undefined || !message)
+        return res.status(400).json({ error: "owner, repo, path, content, message required" });
+
+      // Check if file already exists (need SHA to update)
+      let sha;
+      try {
+        const existing = await fetch(
+          `https://api.github.com/repos/${fOwner}/${fRepo}/contents/${fPath}`,
+          { headers }
+        );
+        if (existing.ok) { const ed = await existing.json(); sha = ed.sha; }
+      } catch(_) {}
+
+      const encoded = Buffer.from(content, "utf-8").toString("base64");
+      const payload = { message, content: encoded, branch };
+      if (sha) payload.sha = sha;
+
+      const r = await fetch(
+        `https://api.github.com/repos/${fOwner}/${fRepo}/contents/${fPath}`,
+        { method: "PUT", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(payload) }
+      );
+      if (!r.ok) return res.status(r.status).json({ error: (await r.json()).message });
+      const d = await r.json();
+      return res.status(200).json({
+        path: fPath,
+        url:  d.content?.html_url,
+        sha:  d.content?.sha,
+      });
+    }
+
+    return res.status(400).json({ error: "Unknown mode" });
 
   } catch (err) {
     return res.status(500).json({ error: err.message });
