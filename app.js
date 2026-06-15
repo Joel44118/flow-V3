@@ -14,7 +14,7 @@ import { startWakeListener, startCommandListen, init as initWake } from "./core/
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
 import {
-  setNotepad, setSpeakFn, setVision, setSearchHandlers, setHistoryFn,
+  setNotepad, setSpeakFn, setVision, setSearchHandlers,
   parseCommand, parseVisionCommand, parseSearchGoalCommand,
   handleRepoCommand, handleScaffoldCommand, handlePushCommand,
   checkPendingPush, getTime, getDate
@@ -129,7 +129,6 @@ const visionObj = { Camera, ScreenVision, YOLO };
 initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
 setSearchHandlers((t) => sendToAI(t), (t, w) => Chat.add(t, w));
-setHistoryFn(() => Memory.forAPI());
 
 // Init slash palette
 const _inputEl = document.getElementById("user-input");
