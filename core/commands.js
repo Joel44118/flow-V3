@@ -290,3 +290,144 @@ export async function handleRepoCommand(rawInput) {
     _chatAdd?.(`❌ Repo creation failed: ${e.message}`, "bot");
   }
 }
+
+// ── Scaffold repo (/scaffold owner/repo <project description>) ───────────
+// Calls AI to generate file tree + contents as JSON, then pushes each file
+export async function handleScaffoldCommand(rawInput) {
+  const trimmed  = rawInput.trim();
+  const spaceIdx = trimmed.search(/\s/);
+  if (spaceIdx === -1) {
+    _chatAdd?.("Usage: /scaffold owner/repo-name  description of the project\nExample: /scaffold Joel44118/Flowpay A payment API with Express and Stripe", "bot");
+    return;
+  }
+  const repoFull    = trimmed.slice(0, spaceIdx);
+  const projectDesc = trimmed.slice(spaceIdx + 1).trim();
+  const slashIdx    = repoFull.indexOf("/");
+  if (slashIdx === -1) {
+    _chatAdd?.(`Format must be owner/repo — got "${repoFull}"`, "bot");
+    return;
+  }
+  const owner = repoFull.slice(0, slashIdx);
+  const repo  = repoFull.slice(slashIdx + 1);
+
+  _chatAdd?.(`Generating file structure for ${owner}/${repo}...`, "bot");
+
+  const aiPrompt = `You are a senior software engineer. Generate a complete starter project scaffold for:
+
+Project: ${projectDesc}
+Repo: ${owner}/${repo}
+
+Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation — just the raw JSON.
+Each element: { "path": "relative/path/to/file.ext", "content": "complete file content" }
+
+Rules:
+- All file contents must be complete and working — no placeholders or TODOs
+- Include: README.md, entry point, config files, folder structure appropriate for the stack
+- Max 12 files — practical and clean
+- Relative paths only (no leading slash)
+- README.md must describe the project clearly`;
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: aiPrompt }] }),
+    });
+    if (!res.ok) throw new Error(`AI call failed (${res.status})`);
+    const data = await res.json();
+
+    // Extract AI text — handle both OpenRouter and Groq response shapes
+    let raw = data.content || data.choices?.[0]?.message?.content || "";
+    raw = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
+
+    let files;
+    try {
+      files = JSON.parse(raw);
+    } catch (_) {
+      const match = raw.match(/\[[\s\S]+\]/);
+      if (!match) throw new Error("AI didn't return valid JSON. Try rephrasing the project description.");
+      files = JSON.parse(match[0]);
+    }
+
+    if (!Array.isArray(files) || !files.length) throw new Error("AI returned an empty file list.");
+
+    _chatAdd?.(`Pushing ${files.length} files to ${owner}/${repo}...`, "bot");
+
+    const results = [];
+    for (const f of files) {
+      if (!f.path || f.content === undefined) continue;
+      try {
+        await createOrUpdateFile(owner, repo, f.path, f.content, `scaffold: add ${f.path}`);
+        results.push({ path: f.path, ok: true });
+        _chatAdd?.(`✅ ${f.path}`, "bot");
+      } catch (e) {
+        results.push({ path: f.path, ok: false, error: e.message });
+        _chatAdd?.(`❌ ${f.path} — ${e.message}`, "bot");
+      }
+    }
+
+    const ok   = results.filter(r => r.ok).length;
+    const fail = results.filter(r => !r.ok).length;
+    _searchSend?.(
+      `Scaffold complete for ${owner}/${repo}.\n` +
+      `${ok} file(s) pushed${fail ? `, ${fail} failed` : ""}:\n` +
+      results.map(r => `${r.ok ? "✅" : "❌"} ${r.path}`).join("\n") + "\n\n" +
+      `Repo URL: https://github.com/${owner}/${repo}\n\n` +
+      `Tell Joel the scaffold is done. List what was created, give him the repo link, and mention he can now clone and run it. Be smooth and concise — no filler.`
+    );
+  } catch (e) {
+    _chatAdd?.(`❌ Scaffold failed: ${e.message}`, "bot");
+  }
+}
+
+// ── Push a single file (/push owner/repo path/to/file.js) ─────────────────
+// If content follows inline after the path, push immediately.
+// If not, set a pending state and push on next message.
+export async function handlePushCommand(rawInput) {
+  const tokens = rawInput.trim().split(/\s+/);
+  if (tokens.length < 2) {
+    _chatAdd?.("Usage: /push owner/repo path/to/file.js\nThen paste your code as the next message.", "bot");
+    return;
+  }
+  const repoFull    = tokens[0];
+  const filePath    = tokens[1];
+  const inlineContent = tokens.slice(2).join(" ").trim();
+  const slashIdx    = repoFull.indexOf("/");
+  if (slashIdx === -1) {
+    _chatAdd?.(`Format must be owner/repo — got "${repoFull}"`, "bot");
+    return;
+  }
+  const owner = repoFull.slice(0, slashIdx);
+  const repo  = repoFull.slice(slashIdx + 1);
+
+  if (inlineContent) {
+    await _doPush(owner, repo, filePath, inlineContent);
+  } else {
+    window._flowPendingPush = { owner, repo, filePath };
+    _chatAdd?.(`Ready. Paste the content for \`${filePath}\` in \`${owner}/${repo}\` and send it.`, "bot");
+  }
+}
+
+// ── Internal: do the actual file push ────────────────────────────────────
+async function _doPush(owner, repo, filePath, content) {
+  _chatAdd?.(`Pushing \`${filePath}\` → \`${owner}/${repo}\`...`, "bot");
+  try {
+    const result = await createOrUpdateFile(owner, repo, filePath, content, `update ${filePath}`);
+    _searchSend?.(
+      `I pushed ${filePath} to ${owner}/${repo}.\nFile URL: ${result.url}\n\n` +
+      `Tell Joel the file is live and give him the direct GitHub link. One sentence.`
+    );
+  } catch (e) {
+    _chatAdd?.(`❌ Push failed: ${e.message}`, "bot");
+  }
+}
+
+// ── Intercept pending push before sending to AI ──────────────────────────
+// Call this at the top of flowSend(). Returns true if consumed.
+export async function checkPendingPush(text) {
+  if (!window._flowPendingPush) return false;
+  const { owner, repo, filePath } = window._flowPendingPush;
+  window._flowPendingPush = null;
+  await _doPush(owner, repo, filePath, text);
+  return true;
+}
