@@ -4,195 +4,258 @@
 
 const canvas = document.getElementById("bg-canvas");
 const ctx    = canvas.getContext("2d");
-
 let W, H;
 function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
 resize(); window.addEventListener("resize", resize);
 
-// ── World map mode state ──────────────────────────────────────────────────
+// ── World map state ───────────────────────────────────────────────────────
 let _globeMode  = false;
-let _lerpAmt    = 0;   // 0 = neural web, 1 = world map
+let _lerpAmt    = 0;
 let _lerpTarget = 0;
 
-// ── Actual world city/landmark coordinates (lat/lon) ─────────────────────
-// 110 points spread across all continents — dense enough to form recognizable shapes
-const WORLD_POINTS = [
-  // North America
-  [49, -123], [47, -122], [44, -79], [40, -74], [37, -122], [34, -118],
-  [41, -87],  [29, -95],  [32, -96], [25, -80], [19, -99],  [51, -114],
-  [43, -80],  [45, -73],  [61, -150],[64, -147],[21, -157], [18, -66],
-  // South America
-  [-34, -58], [-23, -43], [-12, -77], [-3, -60], [10, -67], [4, -74],
-  [-33, -70], [-16, -68], [-1, -78], [-25, -49], [-8, -35], [11, -15],
-  // Europe
-  [51, 0],    [48, 2],    [52, 13],  [55, 37],  [59, 18],  [60, 25],
-  [41, 29],   [53, -8],   [43, -8],  [41, 12],  [37, 15],  [47, 8],
-  [48, 16],   [50, 14],   [54, 18],  [56, 24],  [64, -22], [64, 26],
-  // Africa
-  [30, 31],   [6, 3],     [-26, 28], [33, -7],  [-4, 15],  [15, 38],
-  [-18, 47],  [0, 37],    [12, 15],  [9, 38],   [-33, 18], [3, 36],
-  [24, 32],   [-13, -12], [18, -16], [10, -13], [4, 9],    [-11, 17],
-  // Asia
-  [55, 37],   [39, 116],  [35, 139], [22, 114], [1, 104],  [13, 100],
-  [28, 77],   [23, 90],   [31, 121], [37, 127], [33, 44],  [25, 51],
-  [24, 46],   [41, 29],   [59, 57],  [43, 77],  [56, 93],  [52, 104],
-  [62, 130],  [47, 142],  [69, 33],  [64, 100], [35, 51],  [32, 53],
-  // Australia + Oceania
-  [-33, 151], [-37, 145], [-27, 153], [-31, 116], [-12, 130],
-  [-43, 172], [-36, 174], [-9, 147],  [-18, 178], [-13, -172],
-  // Antarctica (sparse)
-  [-85, 0],   [-80, 90],  [-75, -45],
-  // More Africa fill
-  [-4, 22],   [0, 15],    [7, 21],   [13, 23],  [20, 17],
+// ── Simplified continent OUTLINE points (lat, lon) connected in order ─────
+// These trace the coastlines so they visually form continent shapes
+const CONTINENTS = [
+  {
+    name: "North America",
+    color: "52,211,153",
+    // Clockwise outline of North America
+    pts: [
+      [72,-141],[70,-130],[60,-142],[58,-137],[54,-133],[49,-124],[47,-122],
+      [42,-124],[37,-122],[32,-117],[28,-110],[22,-105],[15,-90],[10,-83],
+      [8,-77],[9,-79],[11,-74],[23,-81],[25,-80],[31,-81],[35,-75],
+      [41,-70],[45,-66],[47,-53],[52,-56],[58,-65],[62,-64],[66,-61],
+      [70,-67],[72,-78],[72,-95],[70,-130],[72,-141],
+    ]
+  },
+  {
+    name: "South America",
+    color: "52,211,153",
+    pts: [
+      [11,-73],[8,-77],[4,-77],[0,-80],[-4,-81],[-7,-78],[-14,-76],
+      [-18,-71],[-23,-70],[-30,-71],[-37,-73],[-41,-72],[-45,-66],
+      [-52,-68],[-55,-68],[-55,-64],[-52,-58],[-46,-65],[-40,-62],
+      [-34,-58],[-30,-50],[-23,-43],[-13,-39],[-8,-35],[-2,-40],
+      [3,-50],[7,-60],[8,-63],[10,-62],[11,-63],[11,-73],
+    ]
+  },
+  {
+    name: "Europe",
+    color: "52,211,153",
+    pts: [
+      [71,28],[69,18],[65,14],[58,5],[51,2],[48,0],[43,-9],[36,-6],
+      [37,0],[38,15],[40,18],[37,15],[38,23],[41,29],[42,28],[43,28],
+      [47,24],[48,16],[52,14],[54,10],[57,10],[59,18],[64,26],[69,18],
+      [71,25],[71,28],
+    ]
+  },
+  {
+    name: "Africa",
+    color: "52,211,153",
+    pts: [
+      [37,10],[34,-5],[30,-10],[22,-16],[15,-17],[10,-15],[4,-6],
+      [0,8],[-5,10],[-10,14],[-15,12],[-18,11],[-22,14],[-26,15],
+      [-30,17],[-33,18],[-35,20],[-33,27],[-28,32],[-24,35],
+      [-18,36],[-11,40],[-1,41],[5,41],[11,42],[12,44],[11,43],
+      [15,41],[20,37],[22,37],[30,32],[31,32],[30,33],[32,25],
+      [30,20],[30,15],[32,12],[33,12],[37,10],
+    ]
+  },
+  {
+    name: "Asia",
+    color: "52,211,153",
+    pts: [
+      [70,30],[66,60],[62,60],[55,60],[50,58],[42,50],[36,50],
+      [22,56],[12,44],[11,43],[15,41],[20,37],[22,37],[26,32],
+      [23,22],[31,28],[28,34],[22,38],[12,44],[8,77],[0,100],
+      [1,104],[10,105],[20,110],[22,114],[32,122],[38,120],[42,130],
+      [48,142],[54,142],[60,150],[64,150],[68,162],[66,170],
+      [70,175],[70,162],[68,141],[64,173],[72,147],[74,130],
+      [74,110],[72,100],[76,80],[74,60],[72,52],[70,30],
+    ]
+  },
+  {
+    name: "Australia",
+    color: "52,211,153",
+    pts: [
+      [-13,130],[-15,129],[-16,124],[-22,114],[-27,114],[-32,116],
+      [-35,117],[-38,146],[-38,147],[-35,150],[-33,151],[-29,153],
+      [-23,151],[-18,147],[-14,144],[-12,137],[-12,131],[-13,130],
+    ]
+  },
 ];
 
-// Convert lat/lon to screen x/y using equirectangular projection
-function ll2screen(lat, lon) {
-  const x = (lon + 180) / 360 * W;
-  const y = (90 - lat)  / 180 * H;
-  return { x, y };
+// Flatten all continent points into a single array for particle animation
+const ALL_POINTS = [];
+CONTINENTS.forEach(cont => {
+  cont.pts.forEach(pt => ALL_POINTS.push({ lat: pt[0], lon: pt[1], cont: cont.name }));
+});
+
+// Total points — pad with random extras to reach ~110
+while (ALL_POINTS.length < 100) {
+  ALL_POINTS.push({ lat: Math.random()*160-80, lon: Math.random()*360-180, cont: null });
 }
 
-// ── Particles: store both random pos and world map target ─────────────────
-const pts = Array.from({ length: 110 }, (_, i) => {
+// ── Convert lat/lon → screen ──────────────────────────────────────────────
+function ll2s(lat, lon) {
+  return {
+    x: (lon + 180) / 360 * W,
+    y: (90 - lat) / 180 * H,
+  };
+}
+
+// ── Particles ─────────────────────────────────────────────────────────────
+const N = ALL_POINTS.length;
+const pts = Array.from({ length: N }, (_, i) => {
   const rx = Math.random() * (window.innerWidth  || 1200);
   const ry = Math.random() * (window.innerHeight || 800);
-  const wp = WORLD_POINTS[i] || [Math.random()*180-90, Math.random()*360-180];
-  const ms = ll2screen(wp[0], wp[1]);
   return {
-    x: rx, y: ry,       // current position (animates)
-    rx, ry,              // random neural-web home
-    mx: ms.x, my: ms.y, // world map target
+    x: rx, y: ry,
+    rx, ry,
+    mx: 0, my: 0,  // world map target — set after first resize
     vx: (Math.random()-.5)*0.36,
     vy: (Math.random()-.5)*0.36,
-    r: Math.random()*1.2 + 0.6,
+    r: Math.random()*1.1 + 0.5,
   };
 });
 
-// Update map targets on resize
 function updateMapTargets() {
-  WORLD_POINTS.forEach((wp, i) => {
+  ALL_POINTS.forEach((wp, i) => {
     if (!pts[i]) return;
-    const ms   = ll2screen(wp[0], wp[1]);
-    pts[i].mx  = ms.x;
-    pts[i].my  = ms.y;
+    const s    = ll2s(wp.lat, wp.lon);
+    pts[i].mx  = s.x;
+    pts[i].my  = s.y;
   });
 }
+updateMapTargets();
 window.addEventListener("resize", () => { resize(); updateMapTargets(); });
 
-// Continent outline connections: pairs of point indices that form coastlines
-// Connect points that are geographically adjacent (same continent, nearby)
-function shouldConnect(i, j, lerpAmt) {
-  if (lerpAmt < 0.3) {
-    // Neural web mode: connect by distance
-    const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y;
-    return Math.sqrt(dx*dx + dy*dy) < 155;
-  }
-  // World map mode: connect only same-continent nearby points
-  const wi = WORLD_POINTS[i] || [0,0];
-  const wj = WORLD_POINTS[j] || [0,0];
-  const dLat = wi[0]-wj[0], dLon = wi[1]-wj[1];
-  const geo  = Math.sqrt(dLat*dLat + dLon*dLon);
-  // Must be geographically close AND same rough region (longitude difference < 50°)
-  return geo < 22 && Math.abs(dLon) < 50;
-}
-
+// ── Draw ──────────────────────────────────────────────────────────────────
 function draw() {
   ctx.clearRect(0, 0, W, H);
 
   // Animate lerp
-  _lerpAmt += (_lerpTarget - _lerpAmt) * 0.022;
+  _lerpAmt += (_lerpTarget - _lerpAmt) * 0.025;
 
-  // Move each particle: lerp between random drift and map position
+  // Move particles
   pts.forEach(p => {
-    if (_lerpAmt < 0.98) {
-      // Random drift (scaled by 1-lerp)
-      p.rx += p.vx;
-      p.ry += p.vy;
-      if (p.rx < 0 || p.rx > W) p.vx *= -1;
-      if (p.ry < 0 || p.ry > H) p.vy *= -1;
-    }
-    // Interpolate between random home and map target
+    p.rx += p.vx;
+    p.ry += p.vy;
+    if (p.rx < 0 || p.rx > W) p.vx *= -1;
+    if (p.ry < 0 || p.ry > H) p.vy *= -1;
     p.x = p.rx + (p.mx - p.rx) * _lerpAmt;
     p.y = p.ry + (p.my - p.ry) * _lerpAmt;
   });
 
-  // Draw connections
-  const globeGreen = "52,211,153";
-  const neuralBlue = "56,189,248";
-  const col        = _lerpAmt > 0.5 ? globeGreen : neuralBlue;
-  // Crossfade color
-  const blueWeight  = Math.max(0, 1 - _lerpAmt * 2);
-  const greenWeight = Math.max(0, _lerpAmt * 2 - 1);
+  if (_lerpAmt < 0.05) {
+    // ── Pure neural web ───────────────────────────────────────────────────
+    for (let i = 0; i < N; i++) for (let j = i+1; j < N; j++) {
+      const dx = pts[i].x-pts[j].x, dy = pts[i].y-pts[j].y;
+      const d  = Math.sqrt(dx*dx+dy*dy);
+      if (d < 155) {
+        ctx.beginPath(); ctx.moveTo(pts[i].x,pts[i].y); ctx.lineTo(pts[j].x,pts[j].y);
+        ctx.strokeStyle = `rgba(56,189,248,${((1-d/155)*0.1).toFixed(3)})`;
+        ctx.lineWidth = 0.6; ctx.stroke();
+      }
+    }
+    pts.forEach(p => {
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+      ctx.fillStyle = "rgba(56,189,248,0.5)"; ctx.fill();
+    });
 
-  for (let i = 0; i < pts.length; i++) {
-    for (let j = i + 1; j < pts.length; j++) {
-      const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y;
-      const d  = Math.sqrt(dx*dx + dy*dy);
+  } else if (_lerpAmt > 0.95) {
+    // ── Pure world map ────────────────────────────────────────────────────
+    // Draw each continent outline as a connected polyline
+    let ptIdx = 0;
+    CONTINENTS.forEach(cont => {
+      const cPts = cont.pts;
+      ctx.beginPath();
+      cPts.forEach((_, k) => {
+        const idx = ptIdx + k;
+        if (idx >= pts.length) return;
+        const p = pts[idx];
+        if (k === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.strokeStyle = `rgba(52,211,153,0.65)`;
+      ctx.lineWidth   = 1.4;
+      ctx.stroke();
+      ptIdx += cPts.length;
+    });
 
-      if (_lerpAmt < 0.5) {
-        // Neural web — distance-based
-        if (d < 155) {
-          const alpha = (1 - d/155) * 0.1 * (1 - _lerpAmt * 1.5);
-          if (alpha <= 0) continue;
-          ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[j].x, pts[j].y);
-          ctx.strokeStyle = `rgba(56,189,248,${alpha.toFixed(3)})`;
-          ctx.lineWidth   = 0.6; ctx.stroke();
-        }
-      } else {
-        // World map — geographic connections only
-        const wi = WORLD_POINTS[i] || [0,0];
-        const wj = WORLD_POINTS[j] || [0,0];
-        const dLat = wi[0]-wj[0], dLon = wi[1]-wj[1];
-        const geo  = Math.sqrt(dLat*dLat + dLon*dLon);
-        if (geo < 18 && Math.abs(dLon) < 45) {
-          const alpha = ((1 - geo/18) * 0.55 * (_lerpAmt * 2 - 1)).toFixed(3);
-          if (alpha <= 0) continue;
-          ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[j].x, pts[j].y);
-          ctx.strokeStyle = `rgba(52,211,153,${alpha})`;
-          ctx.lineWidth   = 0.9; ctx.stroke();
+    // Dots
+    pts.forEach((p, i) => {
+      const wp  = ALL_POINTS[i];
+      const big = wp?.cont !== null;
+      ctx.beginPath(); ctx.arc(p.x, p.y, big ? 2.2 : 1.0, 0, Math.PI*2);
+      ctx.fillStyle = big ? "rgba(52,211,153,0.8)" : "rgba(52,211,153,0.2)";
+      ctx.fill();
+    });
+
+    // Grid lines
+    ctx.save();
+    ctx.strokeStyle = "rgba(52,211,153,0.08)";
+    ctx.lineWidth   = 0.5;
+    ctx.setLineDash([4,10]);
+    // Equator
+    const ey = ll2s(0,0).y;
+    ctx.beginPath(); ctx.moveTo(0,ey); ctx.lineTo(W,ey); ctx.stroke();
+    // Prime meridian
+    const pm = ll2s(0,0).x;
+    ctx.beginPath(); ctx.moveTo(pm,0); ctx.lineTo(pm,H); ctx.stroke();
+    ctx.setLineDash([]);
+    // Label
+    ctx.globalAlpha  = 0.65;
+    ctx.font         = "700 10px monospace";
+    ctx.fillStyle    = "rgba(52,211,153,0.7)";
+    ctx.textAlign    = "right";
+    ctx.fillText("◉ WORLD INTEL", W-20, 24);
+    ctx.restore();
+
+  } else {
+    // ── Crossfade: blend both ─────────────────────────────────────────────
+    const t  = _lerpAmt;
+    const wt = Math.max(0, 1 - t*2.5);   // neural web fades out
+    const mt = Math.max(0, t*2.5 - 1);   // map fades in
+
+    // Neural web (fading)
+    if (wt > 0.01) {
+      for (let i=0; i<N; i++) for (let j=i+1; j<N; j++) {
+        const dx=pts[i].x-pts[j].x, dy=pts[i].y-pts[j].y;
+        const d=Math.sqrt(dx*dx+dy*dy);
+        if (d<155) {
+          ctx.beginPath(); ctx.moveTo(pts[i].x,pts[i].y); ctx.lineTo(pts[j].x,pts[j].y);
+          ctx.strokeStyle=`rgba(56,189,248,${((1-d/155)*0.1*wt).toFixed(3)})`;
+          ctx.lineWidth=0.6; ctx.stroke();
         }
       }
     }
-  }
 
-  // Draw dots
-  pts.forEach((p, i) => {
-    const isLand    = _lerpAmt > 0.5 && i < WORLD_POINTS.length;
-    const dotColor  = _lerpAmt < 0.5 ? `rgba(56,189,248,0.5)` : `rgba(52,211,153,${(0.3 + _lerpAmt * 0.5).toFixed(2)})`;
-    const dotRadius = isLand ? p.r * 1.4 : p.r;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, dotRadius, 0, Math.PI*2);
-    ctx.fillStyle = dotColor;
-    ctx.fill();
-  });
-
-  // World map mode: draw equator and prime meridian as subtle guides
-  if (_lerpAmt > 0.4) {
-    const a = Math.min(0.12, (_lerpAmt - 0.4) / 0.6 * 0.12);
-    ctx.save();
-    ctx.strokeStyle = `rgba(52,211,153,${a.toFixed(3)})`;
-    ctx.lineWidth   = 0.5;
-    ctx.setLineDash([4, 8]);
-    // Equator
-    const ey = ll2screen(0, 0).y;
-    ctx.beginPath(); ctx.moveTo(0, ey); ctx.lineTo(W, ey); ctx.stroke();
-    // Prime meridian
-    const px = ll2screen(0, 0).x;
-    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, H); ctx.stroke();
-    ctx.setLineDash([]);
-
-    // "WORLD INTEL" label in top-right area
-    const labelAlpha = Math.min(1, (_lerpAmt - 0.6) / 0.4);
-    if (labelAlpha > 0) {
-      ctx.globalAlpha = labelAlpha;
-      ctx.font        = `700 10px monospace`;
-      ctx.fillStyle   = "rgba(52,211,153,0.6)";
-      ctx.textAlign   = "right";
-      ctx.fillText("◉ WORLD INTEL", W - 24, 28);
-      ctx.textAlign   = "left";
+    // Continent outlines (fading in)
+    if (mt > 0.01) {
+      let ptIdx = 0;
+      CONTINENTS.forEach(cont => {
+        ctx.beginPath();
+        cont.pts.forEach((_,k) => {
+          const idx = ptIdx+k;
+          if (idx >= pts.length) return;
+          const p = pts[idx];
+          if (k===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y);
+        });
+        ctx.strokeStyle = `rgba(52,211,153,${(0.65*mt).toFixed(3)})`;
+        ctx.lineWidth=1.4; ctx.stroke();
+        ptIdx += cont.pts.length;
+      });
     }
-    ctx.restore();
+
+    // Dots (color crossfade)
+    pts.forEach((p,i) => {
+      const isMap = ALL_POINTS[i]?.cont !== null;
+      const col   = isMap && t > 0.5 ? "52,211,153" : "56,189,248";
+      const alpha = 0.5;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+      ctx.fillStyle = `rgba(${col},${alpha})`; ctx.fill();
+    });
   }
 
   requestAnimationFrame(draw);
