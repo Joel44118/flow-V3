@@ -130,13 +130,24 @@ export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
   // ── Push structure from conversation history ───────────────────
-  const pushStructureRx = /(?:push|create|scaffold|commit|upload|add)\s+(?:that|the[\s\w]+?)?\s*(?:structure|files?|scaffold|code)?\s*(?:into|to|in)\s+(?:the\s+)?(?:repo\s+)?/i;
-  if (pushStructureRx.test(t) && !/create\s+(a\s+)?(?:new\s+)?(?:github\s+)?repo/i.test(t)) {
+  // Push/scaffold structure from conversation — catches natural phrases like:
+  // "push the flowpay structure to the flowpay repo"
+  // "create the flowpay structure into the flowpay repo"
+  // "scaffold that into Joel44118/myapp"
+  const _pushRx1 = /(?:push|scaffold|commit|upload)\s+.{0,50}(?:structure|files?|code|that)/i;
+  const _pushRx2 = /(?:create|add)\s+(?:the|that)\s+\w+\s+(?:structure|files?|code)/i;
+  const _pushExclude = /create\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?repo/i;
+  if ((_pushRx1.test(t) || _pushRx2.test(t)) && !_pushExclude.test(t)) {
     let owner = "Joel44118", repo = "";
+    // 1. Explicit owner/repo: "Joel44118/Flowpay"
     const fullRepoM = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
-    const bareRepoM = t.match(/(?:into|to|in)\s+(?:the\s+)?(?:repo\s+)?["']?([a-z0-9_.-]+)["']?\s*(?:repo)?(?:\s|$)/i);
+    // 2. Word immediately before "repo": "flowpay repo" -> "flowpay"
+    const beforeRepo = t.match(/(\w+)\s+repo\b/i);
+    // 3. Word after preposition, skipping stopwords
+    const afterPrep  = t.match(/(?:into|to|in)\s+(?:(?:the|he|a)\s+)?(?:repo\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+repo)?/i);
     if (fullRepoM) { owner = fullRepoM[1]; repo = fullRepoM[2]; }
-    else if (bareRepoM) { repo = bareRepoM[1]; }
+    else if (beforeRepo && beforeRepo[1].length > 2) { repo = beforeRepo[1]; }
+    else if (afterPrep) { repo = afterPrep[1]; }
     if (repo) {
       _chatAdd?.("Re-generating file structure for " + owner + "/" + repo + " from our conversation...", "bot");
       const history = (_getHistory?.() || []).slice(-24);
