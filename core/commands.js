@@ -130,16 +130,21 @@ export async function parseSearchGoalCommand(text) {
 
 
   // ── Create GitHub repository ───────────────────────────────────────────
-  const createRepoMatch = text.match(/create\s+(a\s+)?(?:new\s+)?(?:github\s+)?(?:repo|repository)\s+(?:called|named|for)?\s*["']?([\w._-]+)["']?(?:\s+(.+))?/i);
-  if (createRepoMatch) {
-    const repoName = createRepoMatch[2].trim();
-    const repoDesc = createRepoMatch[3]?.trim() || "";
+  // Triggers: /repo my-project, "create repo called X", "create repository named X for Y"
+  const repoTrigger = /(?:create|make|init|new)\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?(?:repo(?:sitory)?)\s+(?:called|named|for)?\s*/i;
+  if (repoTrigger.test(t)) {
+    const afterCmd = text.replace(repoTrigger, "").trim();
+    // Split on first space — first word is the repo name, rest is optional description
+    const spaceIdx = afterCmd.search(/\s/);
+    const repoName = (spaceIdx === -1 ? afterCmd : afterCmd.slice(0, spaceIdx)).replace(/[^\w._-]/g, "");
+    const repoDesc = spaceIdx === -1 ? "" : afterCmd.slice(spaceIdx + 1).trim();
+    if (!repoName) return false;
     _chatAdd?.(`Creating GitHub repo "${repoName}"...`, "bot");
     try {
       const result = await createRepo(repoName, repoDesc);
-      _searchSend?.(`I just created a GitHub repository. Here are the details:\n\nName: ${result.full_name}\nURL: ${result.url}\nClone: ${result.clone_url}\n\nTell Joel the repo is live and share the URL. If he gave you a structure to scaffold, ask if he wants you to push the initial files now.`);
+      _searchSend?.(`I just created a new GitHub repository. Here are the details:\n\nFull name: ${result.full_name}\nURL: ${result.url}\nClone URL: ${result.clone_url}\n\nTell Joel the repo is live, give him the URL, and ask if he wants to scaffold any files into it now.`);
     } catch(e) {
-      _searchSend?.(`I tried to create the repo "${repoName}" but hit an error: ${e.message}. Tell Joel what went wrong.`);
+      _searchSend?.(`I tried to create the GitHub repo "${repoName}" but got this error: ${e.message}. Tell Joel what went wrong concisely.`);
     }
     return null;
   }
