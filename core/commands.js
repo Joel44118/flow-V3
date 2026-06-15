@@ -129,9 +129,7 @@ export async function parseVisionCommand(text) {
 export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
-  // ── Push structure from conversation history ─────────────────────────────────
-  // "push that to X/Y", "create the flowpay structure in the flowpay repo",
-  // "push the structure you created into Joel44118/myrepo", "scaffold that into X"
+  // ── Push structure from conversation history ───────────────────
   const pushStructureRx = /(?:push|create|scaffold|commit|upload|add)\s+(?:that|the[\s\w]+?)?\s*(?:structure|files?|scaffold|code)?\s*(?:into|to|in)\s+(?:the\s+)?(?:repo\s+)?/i;
   if (pushStructureRx.test(t) && !/create\s+(a\s+)?(?:new\s+)?(?:github\s+)?repo/i.test(t)) {
     let owner = "Joel44118", repo = "";
@@ -140,16 +138,14 @@ export async function parseSearchGoalCommand(text) {
     if (fullRepoM) { owner = fullRepoM[1]; repo = fullRepoM[2]; }
     else if (bareRepoM) { repo = bareRepoM[1]; }
     if (repo) {
-      _chatAdd?.(`Re-generating file structure for ${owner}/${repo} from our conversation...`, "bot");
+      _chatAdd?.("Re-generating file structure for " + owner + "/" + repo + " from our conversation...", "bot");
       const history = (_getHistory?.() || []).slice(-24);
-      const extractPrompt = [
-        `The user wants to push the project file structure from this conversation into GitHub repo "${owner}/${repo}".`,
-        `Look through the conversation and find the file structure or project files that were discussed.`,
-        `Respond ONLY with a valid JSON array — no markdown, no backticks, no preamble. Format:`,
-        `[{ "path": "relative/path/file.ext", "content": "complete file content here" }]`,
-        `Rules: all file contents must be complete and working (no TODOs), max 15 files, relative paths only.`,
-        `If the conversation described a structure but not the contents, generate sensible working content based on the project context.`,
-      ].join("\n");
+      const extractPrompt = "The user wants to push the project file structure from this conversation into GitHub repo \"" + owner + "/" + repo + "\". " +
+        "Look through the conversation and find the file structure or project files discussed. " +
+        "Respond ONLY with a valid JSON array, no markdown, no backticks, no preamble. " +
+        "Format: [{ \"path\": \"relative/path/file.ext\", \"content\": \"complete file content\" }] " +
+        "Rules: all file contents complete and working (no TODOs), max 15 files, relative paths only. " +
+        "If the conversation described a structure but not contents, generate sensible working content based on the project context.";
       try {
         const res = await fetch("/api/chat", {
           method: "POST",
@@ -158,17 +154,17 @@ export async function parseSearchGoalCommand(text) {
         });
         if (!res.ok) throw new Error("AI error " + res.status);
         const data = await res.json();
-        let raw = data.reply || data.content || data.choices?.[0]?.message?.content || "";
+        let raw = data.reply || data.content || (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
         raw = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
         let files;
         try { files = JSON.parse(raw); }
         catch (_) {
           const m = raw.match(/\[[\s\S]+\]/);
-          if (!m) throw new Error("Couldn\'t parse file list. Try /scaffold owner/repo description instead.");
+          if (!m) throw new Error("Couldn't parse file list. Try /scaffold owner/repo description instead.");
           files = JSON.parse(m[0]);
         }
         if (!Array.isArray(files) || !files.length) throw new Error("AI returned no files.");
-        _chatAdd?.(`Pushing ${files.length} files to ${owner}/${repo}...`, "bot");
+        _chatAdd?.(files.length + " files ready, pushing to " + owner + "/" + repo + "...", "bot");
         const results = [];
         for (const f of files) {
           if (!f.path || f.content === undefined) continue;
@@ -181,44 +177,18 @@ export async function parseSearchGoalCommand(text) {
             _chatAdd?.("❌ " + f.path + " — " + e.message, "bot");
           }
         }
-        const ok = results.filter(r => r.ok).length;
+        const ok   = results.filter(r => r.ok).length;
         const fail = results.filter(r => !r.ok).length;
+        const summary = results.map(r => (r.ok ? "✅" : "❌") + " " + r.path).join(", ");
         _searchSend?.(
-          "I pushed " + ok + " file(s) to " + owner + "/" + repo + (fail ? ", " + fail + " failed" : "") + ".
-" +
-          "Files:
-" + results.map(r => (r.ok ? "✅" : "❌") + " " + r.path).join("
-") + "
-
-" +
-          "Repo: https://github.com/" + owner + "/" + repo + "
-
-" +
-          "Tell Joel the files are live, list what was pushed, and give him the link. Concise and smooth."
+          "I pushed " + ok + " file(s) to " + owner + "/" + repo + (fail ? ", " + fail + " failed" : "") + ". " +
+          "Files: " + summary + ". " +
+          "Repo: https://github.com/" + owner + "/" + repo + ". " +
+          "Tell Joel what was pushed and give him the repo link. Concise and smooth."
         );
       } catch (e) { _chatAdd?.("❌ " + e.message, "bot"); }
       return null;
     }
-  }
-
-  // ── Create GitHub repository ───────────────────────────────────────────
-  // Triggers: /repo my-project, "create repo called X", "create repository named X for Y"
-  const repoTrigger = /(?:create|make|init|new)\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?(?:repo(?:sitory)?)\s+(?:called|named|for)?\s*/i;
-  if (repoTrigger.test(t)) {
-    const afterCmd = text.replace(repoTrigger, "").trim();
-    // Split on first space — first word is the repo name, rest is optional description
-    const spaceIdx = afterCmd.search(/\s/);
-    const repoName = (spaceIdx === -1 ? afterCmd : afterCmd.slice(0, spaceIdx)).replace(/[^\w._-]/g, "");
-    const repoDesc = spaceIdx === -1 ? "" : afterCmd.slice(spaceIdx + 1).trim();
-    if (!repoName) return false;
-    _chatAdd?.(`Creating GitHub repo "${repoName}"...`, "bot");
-    try {
-      const result = await createRepo(repoName, repoDesc);
-      _searchSend?.(`I just created a new GitHub repository. Here are the details:\n\nFull name: ${result.full_name}\nURL: ${result.url}\nClone URL: ${result.clone_url}\n\nTell Joel the repo is live, give him the URL, and ask if he wants to scaffold any files into it now.`);
-    } catch(e) {
-      _searchSend?.(`I tried to create the GitHub repo "${repoName}" but got this error: ${e.message}. Tell Joel what went wrong concisely.`);
-    }
-    return null;
   }
 
   // ── Smart web search (news, research, general) ───────────────────────────
