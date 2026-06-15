@@ -50,6 +50,7 @@ const SITES = [
   { rx:/open\s+twitch/i,             url:"https://twitch.tv" },
   { rx:/open\s+vercel/i,             url:"https://vercel.com/dashboard" },
   { rx:/open\s+stackover/i,          url:"https://stackoverflow.com" },
+   { rx:/open\s+fiverr/i,             url:"https://fiverr.com" },
   { rx:/open\s+mdn/i,                url:"https://developer.mozilla.org" },
   { rx:/open\s+(https?:\/\/\S+)/i,   fn: m => m[1] },
   { rx:/open\s+(\w[\w.-]+\.\w{2,})/i,fn: m => `https://${m[1]}` },
