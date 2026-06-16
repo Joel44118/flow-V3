@@ -10,6 +10,7 @@ import { Alarms }        from "./core/alarms.js";
 import { Speech }        from "./core/speech.js";
 import { sendMessage, sendToAI, setUI } from "./core/ai.js";
 import { initSlash, getSlashState, clearSlash } from "./ui/slash.js";
+import { activateAgent, deactivateAgent, getActiveAgent, onAgentChange, AGENTS } from "./core/agent.js";
 import { startWakeListener, startCommandListen, init as initWake } from "./core/wakeword.js";
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
@@ -94,6 +95,23 @@ async function handleSlashCmd(cmd, prompt) {
       if (!p) { Chat.add("Usage: /push owner/repo path/to/file.js\nThen paste the file content as your next message.", "bot"); return; }
       await handlePushCommand(p);
       break;
+    case "/agent": {
+      if (!p || p === "exit" || p === "off") {
+        const was = getActiveAgent();
+        deactivateAgent();
+        Chat.add((was ? was.icon + " " + was.name : "Agent mode") + " deactivated.", "bot");
+      } else {
+        const id = p.toLowerCase().trim();
+        if (AGENTS[id]) {
+          activateAgent(id).then(agent => {
+            if (agent) Chat.add(agent.icon + " " + agent.name + " activated. I'm in full " + agent.id + " specialist mode.", "bot");
+          });
+        } else {
+          Chat.add("Available agents: coding, research, content, business\n/agent coding — /agent research — /agent content — /agent business\n/agent exit — to deactivate", "bot");
+        }
+      }
+      break;
+    }
     case "/intel": {
       const focus = p || "general";
       Chat.add("Pulling world intelligence" + (p ? ` (focus: ${p})` : "") + "...", "bot");
@@ -129,6 +147,19 @@ const visionObj = { Camera, ScreenVision, YOLO };
 initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
 setSearchHandlers((t) => sendToAI(t), (t, w) => Chat.add(t, w));
+
+// Agent mode badge — updates orb area label when agent activates/deactivates
+onAgentChange(agent => {
+  const badge = document.getElementById("agent-badge");
+  if (!badge) return;
+  if (agent) {
+    badge.textContent = agent.icon + " " + agent.name;
+    badge.style.display = "block";
+    badge.style.color   = agent.color;
+  } else {
+    badge.style.display = "none";
+  }
+});
 
 // Init slash palette
 const _inputEl = document.getElementById("user-input");
