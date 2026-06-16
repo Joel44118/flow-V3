@@ -8,6 +8,7 @@ import { CONFIG }          from "./config.js";
 import { webSearch, deepResearch, smartSearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
 import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults, createRepo, createOrUpdateFile, scaffoldRepo } from "./github.js";
+import { parseAgentCommand, activateAgent, deactivateAgent, getActiveAgent, AGENTS } from "./agent.js";
 
 // ── Injected refs (set at boot to avoid circular imports) ──
 let _notepad = null;
@@ -200,6 +201,22 @@ export async function parseSearchGoalCommand(text) {
       } catch (e) { _chatAdd?.("❌ " + e.message, "bot"); }
       return null;
     }
+  }
+
+  // ── Agent mode activation / deactivation ───────────────────────────
+  const agentCmd = parseAgentCommand(text);
+  if (agentCmd.action === "activate") {
+    const agent = await activateAgent(agentCmd.id);
+    if (agent) {
+      _chatAdd?.(agent.icon + " " + agent.name + " activated, Boss. Every response is now in full " + agent.id + " specialist mode until you say exit agent.", "bot");
+    }
+    return null;
+  }
+  if (agentCmd.action === "deactivate") {
+    const was = getActiveAgent();
+    deactivateAgent();
+    _chatAdd?.((was ? was.icon + " " + was.name : "Agent mode") + " deactivated. Back to standard Flow.", "bot");
+    return null;
   }
 
   // ── Smart web search (news, research, general) ───────────────────────────
