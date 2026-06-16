@@ -794,3 +794,22 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
   border-color: rgba(251,191,36,0.4);
   color: #fbbf24;
 }
+
+/* ── Agent mode badge ──────────────────────────────────────────────── */
+#agent-badge {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font: 700 11px/1 monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  padding: 5px 14px;
+  border-radius: 20px;
+  background: rgba(0,0,0,.55);
+  border: 1px solid currentColor;
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  pointer-events: none;
+  opacity: .88;
+}
