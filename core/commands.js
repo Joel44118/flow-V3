@@ -135,7 +135,7 @@ export async function parseSearchGoalCommand(text) {
   // "push the flowpay structure to the flowpay repo"
   // "create the flowpay structure into the flowpay repo"
   // "scaffold that into Joel44118/myapp"
-  const _pushRx1 = /(?:push|scaffold|commit|upload)\s+.{0,50}(?:structure|files?|code|that)/i;
+  const _pushRx1 = /(?:push|scaffold|commit|upload)\s+(?:it|them|everything|all|this)?\s*(?:to|into|in)?\s*(?:the\s+)?(?:[a-z0-9_.-]+\s+)?(?:repo|github|structure|files?|code|that)?/i;
   const _pushRx2 = /(?:create|add)\s+(?:the|that)\s+\w+\s+(?:structure|files?|code)/i;
   const _pushExclude = /create\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?repo/i;
   if ((_pushRx1.test(t) || _pushRx2.test(t)) && !_pushExclude.test(t)) {
@@ -143,7 +143,7 @@ export async function parseSearchGoalCommand(text) {
     // 1. Explicit owner/repo: "Joel44118/Flowpay"
     const fullRepoM = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
     // 2. Word immediately before "repo": "flowpay repo" -> "flowpay"
-    const beforeRepo = t.match(/(\w+)\s+repo\b/i);
+    const beforeRepo = t.match(/(\b(?!github\b|the\b|my\b|a\b)\w{3,})\s+repo\b/i);
     // 3. Word after preposition, skipping stopwords
     const afterPrep  = t.match(/(?:into|to|in)\s+(?:(?:the|he|a)\s+)?(?:repo\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+repo)?/i);
     if (fullRepoM) { owner = fullRepoM[1]; repo = fullRepoM[2]; }
