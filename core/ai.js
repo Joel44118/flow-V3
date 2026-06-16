@@ -16,11 +16,15 @@ import { RAG }           from "./rag.js";
 import { getSkillContext } from "./skills.js";
 import { getExtractedMemoryContext } from "./memextract.js";
 import { Projects } from "./projects.js";
+import { getAgentContext, restoreAgent } from "./agent.js";
 
 // UI refs injected at init (avoids circular imports)
 let _chat = null;
 let _orb  = null;
 export function setUI(chat, orb) { _chat = chat; _orb = orb; }
+
+// Restore persisted agent on boot
+restoreAgent();
 
 function buildPrompt(weather, ragContext, skillContext, extractedMemory) {
   const p = Memory.getProfile();
@@ -37,14 +41,19 @@ function buildPrompt(weather, ragContext, skillContext, extractedMemory) {
     ? `\n${projectsCtx}\n`
     : "";
 
-  const skillBlock = skillContext
+  const agentCtx   = getAgentContext();
+  const agentBlock  = agentCtx
+    ? `\nAGENT MODE ACTIVE — ${agentCtx.icon} ${agentCtx.name.toUpperCase()}:\n${agentCtx.content}\n`
+    : "";
+
+  const skillBlock = !agentCtx && skillContext
     ? `\nSKILL CONTEXT — you are acting as a ${skillContext.name} specialist for this response:\n${skillContext.content}\n`
     : "";
 
   return `${CONFIG.PERSONALITY}
 
 ${selfKnowledgeBlock()}
-${ragBlock}${skillBlock}${extractedBlock}${projectsBlock}
+${ragBlock}${agentBlock}${skillBlock}${extractedBlock}${projectsBlock}
 LIVE CONTEXT:
 Time: ${getTime()}
 Date: ${getDate()}
