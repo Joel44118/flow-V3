@@ -30,13 +30,13 @@ RULES — never break:
   MAX_TOKENS:    400,  // per-request default (api/chat.js overrides per intent)
   HISTORY_LIMIT: 12,   // keep last 12 exchanges in API call (trimmed further in api/chat.js)
   MEMORY_LIMIT:  50,
-  WAKE_REGEX:    /\b(hey\s+fl[aeiou]?\w{0,3}|flow\b)/i,
+  WAKE_REGEX:    /\bhey\s+fl[aeiou]?\w{0,3}\b/i,
   WEATHER_TTL:   10 * 60 * 1000,
 
   ORB: {
     RADIUS:       90,
     NET_RADIUS:   135,
     NODE_COUNT:   48,
-    SMOKE_LAYERS: 6,
+    SMOKE_LAYERS: 3,
   },
 };
