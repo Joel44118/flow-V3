@@ -1,14 +1,15 @@
 // ═══════════════════════════════════════════════════════════════
 // api/chat.js — Multi-Provider AI Chain
 //
-// Provider order: OpenRouter → Groq → HuggingFace
+// Provider order: MiniMax → OpenRouter → Groq → HuggingFace
 //
-// Each provider now has a FULL model chain per intent:
-//   OpenRouter: best free models per task, tries each on 404/fail
-//   Groq:       fast chain — big model first, instant model fallback
-//   HuggingFace: warm models, no stop tokens
+// MiniMax: 1M token context, best for coding + long conversations
+// OpenRouter: free frontier models per intent
+// Groq: ultra-fast fallback
+// HuggingFace: last resort
 //
 // ENV VARS (Vercel Dashboard → Settings → Environment Variables):
+//   MINIMAX_API_KEY     platform.minimaxi.com → API Keys
 //   OPENROUTER_API_KEY  openrouter.ai/keys
 //   GROQ_API_KEY        console.groq.com → API Keys (free)
 //   HF_TOKEN            huggingface.co/settings/tokens → Read
@@ -16,7 +17,7 @@
 
 function detectIntent(text) {
   const t = text.toLowerCase();
-  if (/\b(write|create|build|fix|debug|code|function|script|html|css|javascript|typescript|python|react|component|api|endpoint)\b/.test(t)) return "code";
+  if (/\b(write|create|build|fix|debug|code|function|script|html|css|javascript|typescript|python|react|component|api|endpoint|error|bug)\b/.test(t)) return "code";
   if (/\b(research|explain|summarise|summarize|how does|what is|history of|deep dive|analyse|analyze)\b/.test(t)) return "research";
   if (/\b(pdf|document|extract|read this file)\b/.test(t)) return "pdf";
   if (/\b(image|generate|draw|create.*image|picture of)\b/.test(t)) return "creative";
@@ -25,13 +26,13 @@ function detectIntent(text) {
 
 function trimMessages(messages) {
   const system  = messages.find(m => m.role === "system");
-  const history = messages.filter(m => m.role !== "system").slice(-12);
+  const history = messages.filter(m => m.role !== "system").slice(-14);
   if (!system) return history;
   let sys = system.content;
-  if (sys.length > 4000) sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:)/s, "");
-  if (sys.length > 3000) sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow)/s,
-    "I am Flow V3, Joel's personal AI — voice, vision, code, search, alarms, goals, images.\n");
-  if (sys.length > 2500) sys = sys.slice(0, 2500) + "\n[trimmed]";
+  if (sys.length > 6000) sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:)/s, "");
+  if (sys.length > 4000) sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow)/s,
+    "I am Flow V3, Joel\'s personal AI — voice, vision, code, search, alarms, goals, images.\n");
+  if (sys.length > 3000) sys = sys.slice(0, 3000) + "\n[trimmed]";
   return [{ role: "system", content: sys }, ...history];
 }
 
@@ -45,11 +46,42 @@ function cleanReply(text) {
     .trim();
 }
 
-// Exactly 4 stop tokens — Groq's hard limit, safe for all providers
 const STOP4 = ["</s>", "<|eot_id|>", "Human:", "User:"];
 
+// ── MINIMAX ───────────────────────────────────────────────────────────────────
+// MiniMax-Text-01: 1M token context, strong at code and long conversations
+// Use for: coding (deep context), chat (full history), research
+const MM_TOKENS = { code: 4000, research: 2000, creative: 1000, pdf: 1500, chat: 800 };
+
+async function tryMiniMax(messages, intent, key) {
+  const maxTokens = MM_TOKENS[intent] || 800;
+  const ctrl = new AbortController();
+  const t    = setTimeout(() => ctrl.abort(), 9000);
+  try {
+    const r = await fetch("https://api.minimax.chat/v1/text/chatcompletion_v2", {
+      method:  "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type":  "application/json",
+      },
+      body: JSON.stringify({
+        model:      "MiniMax-Text-01",
+        max_tokens: maxTokens,
+        messages,
+      }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    const data = await r.json();
+    if (!r.ok || !data.choices?.length) throw new Error(data.base_resp?.status_msg || data.error?.message || `HTTP ${r.status}`);
+    return { reply: cleanReply(data.choices[0].message.content), model: "MiniMax:MiniMax-Text-01" };
+  } catch (e) {
+    clearTimeout(t);
+    throw e;
+  }
+}
+
 // ── OPENROUTER ────────────────────────────────────────────────────────────────
-// Each intent has an ordered list — tries each model, moves on if 404/fail
 const OR_MODELS = {
   code:     [
     "qwen/qwen-2.5-coder-32b-instruct:free",
@@ -80,7 +112,6 @@ const OR_TOKENS = { code: 2500, research: 1200, creative: 800, pdf: 1000, chat: 
 async function tryOpenRouter(messages, intent, key) {
   const models    = OR_MODELS[intent] || OR_MODELS.chat;
   const maxTokens = OR_TOKENS[intent] || 500;
-
   for (const model of models) {
     const ctrl = new AbortController();
     const t    = setTimeout(() => ctrl.abort(), 8500);
@@ -98,14 +129,10 @@ async function tryOpenRouter(messages, intent, key) {
       });
       clearTimeout(t);
       const data = await r.json();
-
       if (data.error?.message?.includes("Prompt tokens limit")) throw new Error("token_limit");
       if (r.status === 429)  throw new Error("rate_limit");
-      if (r.status === 404 || data.error?.code === 404) {
-        console.warn(`[Flow] OR 404: ${model}`); continue;
-      }
+      if (r.status === 404 || data.error?.code === 404) { console.warn(`[Flow] OR 404: ${model}`); continue; }
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-
       return { reply: cleanReply(data.choices[0].message.content), model: `OR:${model}` };
     } catch (e) {
       clearTimeout(t);
@@ -116,51 +143,35 @@ async function tryOpenRouter(messages, intent, key) {
   throw new Error("OpenRouter: all models failed");
 }
 
-// ── GROQ — Full model chain per intent ───────────────────────────────────────
-//
-// Groq free models (June 2026):
-//   llama-3.3-70b-versatile  — best quality, 128k ctx, 6000 req/day
-//   llama-3.1-70b-versatile  — strong fallback, 128k ctx
-//   llama-3.1-8b-instant     — fastest, good for chat, 128k ctx
-//   gemma2-9b-it             — Google Gemma, good all-rounder
-//   mixtral-8x7b-32768       — Mistral MoE, great for code + research
-//
-// Strategy:
-//   code     → Mixtral (great at code) → Llama 70B → Llama 8B instant
-//   research → Llama 3.3 70B (best reasoning) → Llama 3.1 70B → Gemma2
-//   creative → Llama 3.3 70B → Gemma2
-//   pdf      → Llama 8B instant (fast, enough for extraction) → Gemma2
-//   chat     → Llama 8B instant (sub-second) → Gemma2 → Mixtral
-
+// ── GROQ ──────────────────────────────────────────────────────────────────────
 const GROQ_MODELS = {
   code:     [
-    { model: "mixtral-8x7b-32768",       maxTokens: 3000 },
-    { model: "llama-3.3-70b-versatile",  maxTokens: 2500 },
-    { model: "llama-3.1-8b-instant",     maxTokens: 2000 },
+    { model: "mixtral-8x7b-32768",      maxTokens: 3000 },
+    { model: "llama-3.3-70b-versatile", maxTokens: 2500 },
+    { model: "llama-3.1-8b-instant",    maxTokens: 2000 },
   ],
   research: [
-    { model: "llama-3.3-70b-versatile",  maxTokens: 1500 },
-    { model: "llama-3.1-70b-versatile",  maxTokens: 1500 },
-    { model: "gemma2-9b-it",             maxTokens: 1200 },
+    { model: "llama-3.3-70b-versatile", maxTokens: 1500 },
+    { model: "llama-3.1-70b-versatile", maxTokens: 1500 },
+    { model: "gemma2-9b-it",            maxTokens: 1200 },
   ],
   creative: [
-    { model: "llama-3.3-70b-versatile",  maxTokens: 1000 },
-    { model: "gemma2-9b-it",             maxTokens: 800  },
+    { model: "llama-3.3-70b-versatile", maxTokens: 1000 },
+    { model: "gemma2-9b-it",            maxTokens: 800  },
   ],
   pdf:      [
-    { model: "llama-3.1-8b-instant",     maxTokens: 1200 },
-    { model: "gemma2-9b-it",             maxTokens: 1000 },
+    { model: "llama-3.1-8b-instant",    maxTokens: 1200 },
+    { model: "gemma2-9b-it",            maxTokens: 1000 },
   ],
   chat:     [
-    { model: "llama-3.1-8b-instant",     maxTokens: 600  },
-    { model: "gemma2-9b-it",             maxTokens: 600  },
-    { model: "mixtral-8x7b-32768",       maxTokens: 600  },
+    { model: "llama-3.1-8b-instant",    maxTokens: 600  },
+    { model: "gemma2-9b-it",            maxTokens: 600  },
+    { model: "mixtral-8x7b-32768",      maxTokens: 600  },
   ],
 };
 
 async function tryGroq(messages, intent, key) {
   const chain = GROQ_MODELS[intent] || GROQ_MODELS.chat;
-
   for (const { model, maxTokens } of chain) {
     const ctrl = new AbortController();
     const t    = setTimeout(() => ctrl.abort(), 8500);
@@ -173,22 +184,13 @@ async function tryGroq(messages, intent, key) {
       });
       clearTimeout(t);
       const data = await r.json();
-
-      // Model not found on Groq — try next in chain
-      if (r.status === 404 || data.error?.code === "model_not_found") {
-        console.warn(`[Flow] Groq 404: ${model}`); continue;
-      }
-      // Rate limit on this model — try next (different model, different limit)
-      if (r.status === 429) {
-        console.warn(`[Flow] Groq rate limit: ${model}`); continue;
-      }
+      if (r.status === 404 || data.error?.code === "model_not_found") { console.warn(`[Flow] Groq 404: ${model}`); continue; }
+      if (r.status === 429) { console.warn(`[Flow] Groq rate limit: ${model}`); continue; }
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-
       return { reply: cleanReply(data.choices[0].message.content), model: `Groq:${model}` };
     } catch (e) {
       clearTimeout(t);
       console.warn(`[Flow] Groq ${model}: ${e.message}`);
-      // Don't break the chain on timeout — next model might respond faster
     }
   }
   throw new Error("Groq: all models failed");
@@ -202,7 +204,6 @@ const HF_MODELS = [
 
 async function tryHuggingFace(messages, intent, token) {
   const maxTokens = intent === "code" ? 1200 : 350;
-
   for (const model of HF_MODELS) {
     const ctrl = new AbortController();
     const t    = setTimeout(() => ctrl.abort(), 7000);
@@ -234,12 +235,13 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST")    return res.status(405).json({ error: "POST only" });
 
+  const MM_KEY = process.env.MINIMAX_API_KEY;
   const OR_KEY = process.env.OPENROUTER_API_KEY;
   const GR_KEY = process.env.GROQ_API_KEY;
   const HF_KEY = process.env.HF_TOKEN;
 
-  if (!OR_KEY && !GR_KEY && !HF_KEY) {
-    return res.status(500).json({ error: "No AI provider configured. Add OPENROUTER_API_KEY, GROQ_API_KEY, or HF_TOKEN in Vercel → Settings → Environment Variables" });
+  if (!MM_KEY && !OR_KEY && !GR_KEY && !HF_KEY) {
+    return res.status(500).json({ error: "No AI provider configured. Add MINIMAX_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, or HF_TOKEN in Vercel → Settings → Environment Variables" });
   }
 
   const { messages } = req.body || {};
@@ -249,10 +251,15 @@ export default async function handler(req, res) {
   const lastUser = [...trimmed].reverse().find(m => m.role === "user")?.content || "";
   const intent   = detectIntent(lastUser);
 
-  console.log(`[Flow] intent=${intent} | OR=${!!OR_KEY} Groq=${!!GR_KEY} HF=${!!HF_KEY}`);
+  console.log(`[Flow] intent=${intent} | MM=${!!MM_KEY} OR=${!!OR_KEY} Groq=${!!GR_KEY} HF=${!!HF_KEY}`);
 
   const errors = [];
 
+  // MiniMax first — best for coding (4K tokens) and long conversations (1M context)
+  if (MM_KEY) {
+    try   { const r = await tryMiniMax(trimmed, intent, MM_KEY); return res.status(200).json({ ...r, intent }); }
+    catch (e) { errors.push(`MiniMax: ${e.message}`); }
+  }
   if (OR_KEY) {
     try   { const r = await tryOpenRouter(trimmed, intent, OR_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`OpenRouter: ${e.message}`); }
@@ -266,8 +273,7 @@ export default async function handler(req, res) {
     catch (e) { errors.push(`HF: ${e.message}`); }
   }
 
-  const missing = [!OR_KEY && "OPENROUTER_API_KEY", !GR_KEY && "GROQ_API_KEY", !HF_KEY && "HF_TOKEN"].filter(Boolean);
   return res.status(502).json({
-    error: `All providers failed: ${errors.join(" | ")}${missing.length ? ` | Missing keys: ${missing.join(", ")}` : ""}`,
+    error: `All providers failed: ${errors.join(" | ")}`,
   });
 }
