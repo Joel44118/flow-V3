@@ -62,7 +62,15 @@ Weather: ${weather}
 Alarms: ${Alarms.list()}
 Facts about Joel: ${Memory.factsString()}
 Note: ${Storage.get("notes","").slice(0,120) || "none"}
-Goals today: ${goalsSummary()}`;
+Goals today: ${goalsSummary()}
+
+CAPABILITY FILTER — CRITICAL:
+Before responding, check if Joel is asking you to DO something (not just explain it).
+If it is something Flow CAN do (listed in WHAT I CAN DO above), respond as Flow doing it.
+If it is something Flow CANNOT do, say exactly what you can't do and offer the closest thing you CAN do.
+NEVER pretend to do something you haven't actually done. NEVER say "done" or "pushed" or "created" unless Flow's code actually executed it.
+Example: if asked to "push files to GitHub" — do NOT say "pushed!" — the push happens through Flow's GitHub functions, not through text.
+Stay in character as Flow. Never break the fourth wall.`;
 }
 
 export async function sendMessage(overrideText) {
