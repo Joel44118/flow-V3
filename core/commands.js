@@ -208,7 +208,7 @@ export async function parseSearchGoalCommand(text) {
   if (agentCmd.action === "activate") {
     const agent = await activateAgent(agentCmd.id);
     if (agent) {
-      _chatAdd?.(agent.icon + " " + agent.name + " activated, Boss. Every response is now in full " + agent.id + " specialist mode until you say exit agent.", "bot");
+      _chatAdd?.(agent.icon + " " + agent.name + " is live, Boss. Just talk to me naturally — no commands needed. Every response is now fully optimised for " + agent.id + " work. Say exit agent when you're done.", "bot");
     }
     return null;
   }
