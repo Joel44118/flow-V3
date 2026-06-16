@@ -99,20 +99,20 @@ async function handleSlashCmd(cmd, prompt) {
       if (!p || p === "exit" || p === "off") {
         const was = getActiveAgent();
         deactivateAgent();
-        Chat.add((was ? was.icon + " " + was.name : "Agent mode") + " deactivated.", "bot");
+        Chat.add((was ? was.icon + " " + was.name : "Agent mode") + " deactivated. Back to standard Flow.", "bot");
       } else {
-        const id = p.toLowerCase().trim();
+        const id = p.toLowerCase().trim().split(/\s/)[0];
         if (AGENTS[id]) {
           activateAgent(id).then(agent => {
-            if (agent) Chat.add(agent.icon + " " + agent.name + " activated. I'm in full " + agent.id + " specialist mode.", "bot");
+            if (agent) Chat.add(agent.icon + " " + agent.name + " is live, Boss. Just talk to me naturally — no commands or patterns needed.", "bot");
           });
         } else {
-          Chat.add("Available agents: coding, research, content, business\n/agent coding — /agent research — /agent content — /agent business\n/agent exit — to deactivate", "bot");
+          Chat.add("Which agent?\n💻 /agent coding\n🔬 /agent research\n✍️ /agent content\n📈 /agent business\n\nOr just say: \"enter coding agent\" anytime.", "bot");
         }
       }
       break;
     }
-    case "/intel": {
+        case "/intel": {
       const focus = p || "general";
       Chat.add("Pulling world intelligence" + (p ? ` (focus: ${p})` : "") + "...", "bot");
       setGlobeBackground(true);   // transform background to world map
