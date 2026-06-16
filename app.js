@@ -197,6 +197,10 @@ async function flowSend(text) {
   const local = await parseCommand(text);
   if (local !== false) { if (local !== null) { Chat.add(local,"bot"); Speech.speak(local); } return; }
 
+  // Search, GitHub, goals, agents, push/scaffold
+  const search = await parseSearchGoalCommand(text);
+  if (search !== false) { if (search !== null) { Chat.add(search,"bot"); Speech.speak(search); } return; }
+
   // AI
   await sendMessage(text);
   setGlobeBackground(false);  // reset world map after response
