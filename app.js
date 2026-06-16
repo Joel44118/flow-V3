@@ -88,12 +88,14 @@ async function handleSlashCmd(cmd, prompt) {
       await handleRepoCommand(p);
       break;
     case "/scaffold":
-      if (!p) { Chat.add("Usage: /scaffold owner/repo  description\nExample: /scaffold Joel44118/Flowpay A payment API with Express and Stripe", "bot"); return; }
-      await handleScaffoldCommand(p);
+      // Free-form: /scaffold <anything> — e.g. "flowpay repo" or "Joel44118/flowpay a payment app"
+      if (!p) { Chat.add("Tell me what to scaffold. e.g.:\n/scaffold flowpay\n/scaffold Joel44118/myapp  A REST API with Express", "bot"); return; }
+      await parseSearchGoalCommand("create a structure for " + p);
       break;
     case "/push":
-      if (!p) { Chat.add("Usage: /push owner/repo path/to/file.js\nThen paste the file content as your next message.", "bot"); return; }
-      await handlePushCommand(p);
+      // Free-form: /push <anything> — e.g. "it to flowpay" or "the files to Joel44118/myapp"
+      if (!p) { Chat.add("Tell me what to push. e.g.:\n/push it to flowpay\n/push the structure to Joel44118/myapp", "bot"); return; }
+      await parseSearchGoalCommand("push " + p);
       break;
     case "/agent": {
       if (!p || p === "exit" || p === "off") {
