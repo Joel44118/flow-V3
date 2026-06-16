@@ -226,12 +226,13 @@ export async function parseSearchGoalCommand(text) {
 
       const ok   = results.filter(r => r.ok).length;
       const fail = results.filter(r => !r.ok).length;
-      _searchSend?.(
-        "Pushed " + ok + " file(s) to " + owner + "/" + repo + (fail ? ", " + fail + " failed" : "") + ".\n" +
-        "Files: " + results.map(r => (r.ok ? "✅" : "❌") + " " + r.path).join(", ") + "\n" +
-        "Repo: https://github.com/" + owner + "/" + repo + "\n\n" +
-        "Tell Joel what was pushed and give him the repo link. Be concise. " +
-        "Then ask: Want me to write the code for any specific file now?"
+      const repoUrl = "https://github.com/" + owner + "/" + repo;
+      _chatAdd?.(
+        ok + " file" + (ok !== 1 ? "s" : "") + " pushed to " + owner + "/" + repo +
+        (fail ? ", " + fail + " failed" : "") + ":\n" +
+        results.map(r => (r.ok ? "\u2705" : "\u274c") + " " + r.path).join("\n") +
+        "\n\n\uD83D\uDD17 " + repoUrl,
+        "bot"
       );
     } catch (e) {
       _chatAdd?.("❌ " + e.message, "bot");
@@ -386,10 +387,12 @@ export async function handleRepoCommand(rawInput) {
   _chatAdd?.(`Creating GitHub repo "${repoName}"...`, "bot");
   try {
     const result = await createRepo(repoName, repoDesc);
-    _searchSend?.(
-      `I just created a GitHub repository for Joel.\n` +
-      `Name: ${result.full_name}\nURL: ${result.url}\nClone: ${result.clone_url}\n\n` +
-      `Tell Joel the repo is live, give him the exact URL. Then ask if he wants you to scaffold the folder structure and push initial files.`
+    _chatAdd?.(
+      "\u2705 Repo created: " + result.full_name + "\n" +
+      "\uD83D\uDD17 " + result.url + "\n" +
+      "Clone: " + result.clone_url + "\n\n" +
+      "Say \"create a structure for " + repoName + "\" and I\'ll scaffold and push the files.",
+      "bot"
     );
   } catch(e) {
     _chatAdd?.(`❌ Repo creation failed: ${e.message}`, "bot");
@@ -473,12 +476,12 @@ Rules:
 
     const ok   = results.filter(r => r.ok).length;
     const fail = results.filter(r => !r.ok).length;
-    _searchSend?.(
-      `Scaffold complete for ${owner}/${repo}.\n` +
-      `${ok} file(s) pushed${fail ? `, ${fail} failed` : ""}:\n` +
-      results.map(r => `${r.ok ? "✅" : "❌"} ${r.path}`).join("\n") + "\n\n" +
-      `Repo URL: https://github.com/${owner}/${repo}\n\n` +
-      `Tell Joel the scaffold is done. List what was created, give him the repo link, and mention he can now clone and run it. Be smooth and concise — no filler.`
+    _chatAdd?.(
+      ok + " file" + (ok !== 1 ? "s" : "") + " pushed to " + owner + "/" + repo +
+      (fail ? ", " + fail + " failed" : "") + ":\n" +
+      results.map(r => (r.ok ? "\u2705" : "\u274c") + " " + r.path).join("\n") +
+      "\n\n\uD83D\uDD17 https://github.com/" + owner + "/" + repo,
+      "bot"
     );
   } catch (e) {
     _chatAdd?.(`❌ Scaffold failed: ${e.message}`, "bot");
@@ -518,9 +521,9 @@ async function _doPush(owner, repo, filePath, content) {
   _chatAdd?.(`Pushing \`${filePath}\` → \`${owner}/${repo}\`...`, "bot");
   try {
     const result = await createOrUpdateFile(owner, repo, filePath, content, `update ${filePath}`);
-    _searchSend?.(
-      `I pushed ${filePath} to ${owner}/${repo}.\nFile URL: ${result.url}\n\n` +
-      `Tell Joel the file is live and give him the direct GitHub link. One sentence.`
+    _chatAdd?.(
+      "\u2705 Pushed: " + filePath + "\n\uD83D\uDD17 " + (result.url || "https://github.com/" + owner + "/" + repo + "/blob/main/" + filePath),
+      "bot"
     );
   } catch (e) {
     _chatAdd?.(`❌ Push failed: ${e.message}`, "bot");
