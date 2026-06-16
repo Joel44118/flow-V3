@@ -10,6 +10,11 @@
 // ═══════════════════════════════════════════
 
 const SKILLS = [
+  { cmd:"/agent",    icon:"🤖", label:"Agent Mode",     desc:"Activate a specialist agent — coding, research, content, business", ph:"coding  or  research  or  content  or  business  or  exit",  group:"Agents" },
+  { cmd:"/agent coding",   icon:"💻", label:"Coding Agent",   desc:"Full coding specialist — production code, architecture, debugging", ph:"",                                                             group:"Agents" },
+  { cmd:"/agent research", icon:"🔬", label:"Research Agent", desc:"Deep analyst mode — structured findings, actionable insights",     ph:"",                                                             group:"Agents" },
+  { cmd:"/agent content",  icon:"✍️",  label:"Content Agent",  desc:"Copywriter mode — hooks, threads, captions, ad copy",             ph:"",                                                             group:"Agents" },
+  { cmd:"/agent business", icon:"📈", label:"Business Agent", desc:"Strategy mode — pricing, growth, positioning for Joelflowstack",  ph:"",                                                             group:"Agents" },
   { cmd:"/image-flux",   icon:"🌄", label:"Photo / Art",      desc:"Realistic or artistic image via FLUX",              ph:"a futuristic Lagos skyline at night, cinematic",    group:"Images"       },
   { cmd:"/image-design", icon:"🎨", label:"Graphic Design",   desc:"Banner, poster, social post with text",             ph:'"Joelflowstack" Twitter promo, dark minimal style',  group:"Images"       },
   { cmd:"/search",       icon:"🔍", label:"Quick Search",     desc:"Search the web for current info",                   ph:"latest AI news in Nigeria 2025",                    group:"Search"       },
