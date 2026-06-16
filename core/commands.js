@@ -131,76 +131,112 @@ export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
   // ── Push structure from conversation history ───────────────────
-  // Push/scaffold structure from conversation — catches natural phrases like:
-  // "push the flowpay structure to the flowpay repo"
-  // "create the flowpay structure into the flowpay repo"
-  // "scaffold that into Joel44118/myapp"
+  // ── Repo structure: create OR push ────────────────────────────────────
+  // Catches: "create a structure for flowpay", "push it to flowpay repo",
+  //          "push the files to flowpay", "scaffold myapp repo", etc.
+  const _structureCreateRx = /(?:create|build|generate|make|set up|setup)\s+(?:a\s+)?(?:(?:folder|file|project|repo)\s+)?structure\s+(?:for\s+)?/i;
   const _pushRx1 = /(?:push|scaffold|commit|upload)\s+(?:it|them|everything|all|this)?\s*(?:to|into|in)?\s*(?:the\s+)?(?:[a-z0-9_.-]+\s+)?(?:repo|github|structure|files?|code|that)?/i;
   const _pushRx2 = /(?:create|add)\s+(?:the|that)\s+\w+\s+(?:structure|files?|code)/i;
-  const _pushExclude = /create\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?repo/i;
-  if ((_pushRx1.test(t) || _pushRx2.test(t)) && !_pushExclude.test(t)) {
+  const _pushExclude = /create\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?repo(?!\s+structure)/i;
+
+  const _isStructureCreate = _structureCreateRx.test(t);
+  const _isPush = (_pushRx1.test(t) || _pushRx2.test(t)) && !_pushExclude.test(t);
+
+  if (_isStructureCreate || _isPush) {
+    // Extract target repo — owner/repo, or word before "repo", or word after preposition
     let owner = "Joel44118", repo = "";
-    // 1. Explicit owner/repo: "Joel44118/Flowpay"
-    const fullRepoM = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
-    // 2. Word immediately before "repo": "flowpay repo" -> "flowpay"
-    const beforeRepo = t.match(/(\b(?!github\b|the\b|my\b|a\b)\w{3,})\s+repo\b/i);
-    // 3. Word after preposition, skipping stopwords
-    const afterPrep  = t.match(/(?:into|to|in)\s+(?:(?:the|he|a)\s+)?(?:repo\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+repo)?/i);
-    if (fullRepoM) { owner = fullRepoM[1]; repo = fullRepoM[2]; }
-    else if (beforeRepo && beforeRepo[1].length > 2) { repo = beforeRepo[1]; }
-    else if (afterPrep) { repo = afterPrep[1]; }
-    if (repo) {
-      _chatAdd?.("Re-generating file structure for " + owner + "/" + repo + " from our conversation...", "bot");
-      const history = (_getHistory?.() || []).slice(-24);
-      const extractPrompt = "The user wants to push the project file structure from this conversation into GitHub repo \"" + owner + "/" + repo + "\". " +
-        "Look through the conversation and find the file structure or project files discussed. " +
-        "Respond ONLY with a valid JSON array, no markdown, no backticks, no preamble. " +
-        "Format: [{ \"path\": \"relative/path/file.ext\", \"content\": \"complete file content\" }] " +
-        "Rules: all file contents complete and working (no TODOs), max 15 files, relative paths only. " +
-        "If the conversation described a structure but not contents, generate sensible working content based on the project context.";
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: [...history, { role: "user", content: extractPrompt }] }),
-        });
-        if (!res.ok) throw new Error("AI error " + res.status);
-        const data = await res.json();
-        let raw = data.reply || data.content || (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
-        raw = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
-        let files;
-        try { files = JSON.parse(raw); }
-        catch (_) {
-          const m = raw.match(/\[[\s\S]+\]/);
-          if (!m) throw new Error("Couldn't parse file list. Try /scaffold owner/repo description instead.");
-          files = JSON.parse(m[0]);
-        }
-        if (!Array.isArray(files) || !files.length) throw new Error("AI returned no files.");
-        _chatAdd?.(files.length + " files ready, pushing to " + owner + "/" + repo + "...", "bot");
-        const results = [];
-        for (const f of files) {
-          if (!f.path || f.content === undefined) continue;
-          try {
-            await createOrUpdateFile(owner, repo, f.path, f.content, "add " + f.path);
-            results.push({ path: f.path, ok: true });
-            _chatAdd?.("✅ " + f.path, "bot");
-          } catch (e) {
-            results.push({ path: f.path, ok: false, error: e.message });
-            _chatAdd?.("❌ " + f.path + " — " + e.message, "bot");
-          }
-        }
-        const ok   = results.filter(r => r.ok).length;
-        const fail = results.filter(r => !r.ok).length;
-        const summary = results.map(r => (r.ok ? "✅" : "❌") + " " + r.path).join(", ");
-        _searchSend?.(
-          "I pushed " + ok + " file(s) to " + owner + "/" + repo + (fail ? ", " + fail + " failed" : "") + ". " +
-          "Files: " + summary + ". " +
-          "Repo: https://github.com/" + owner + "/" + repo + ". " +
-          "Tell Joel what was pushed and give him the repo link. Concise and smooth."
-        );
-      } catch (e) { _chatAdd?.("❌ " + e.message, "bot"); }
-      return null;
+    const _fullRepoM = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
+    const _beforeRepo = t.match(/(\b(?!github\b|the\b|my\b|a\b)\w{3,})\s+repo\b/i);
+    const _afterPrep  = t.match(/(?:for|into|to|in)\s+(?:(?:the|he|a)\s+)?(?:repo\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+repo)?/i);
+    if (_fullRepoM) { owner = _fullRepoM[1]; repo = _fullRepoM[2]; }
+    else if (_beforeRepo) { repo = _beforeRepo[1]; }
+    else if (_afterPrep && _afterPrep[1] !== "github") { repo = _afterPrep[1]; }
+
+    if (!repo) return false; // can't determine repo — let AI handle it
+
+    // Build the AI prompt based on intent
+    const history = (_getHistory?.() || []).slice(-24);
+    let aiPrompt;
+
+    if (_isStructureCreate) {
+      // Fresh structure creation — Joel is asking Flow to design AND push the structure
+      const projectHint = t.replace(_structureCreateRx, "").replace(/\s*repo\s*/i, "").trim() || repo;
+      aiPrompt =
+        "Create a complete project folder structure for: " + projectHint + "\n" +
+        "Repo: " + owner + "/" + repo + "\n\n" +
+        "Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation. Format:\n" +
+        '[{ "path": "relative/path/file.ext", "content": "file content here" }]\n\n' +
+        "Rules:\n" +
+        "- Every file must have real, working content (no TODOs, no placeholders)\n" +
+        "- README.md must describe the project\n" +
+        "- Max 12 files\n" +
+        "- Relative paths, no leading slash\n" +
+        "- Pick the right tech stack from the project name and description";
+    } else {
+      // Push — re-extract structure from conversation history
+      aiPrompt =
+        "The user wants to push the project structure from this conversation to GitHub repo " + owner + "/" + repo + ".\n" +
+        "Look through the conversation history and find the file structure or code that was discussed.\n" +
+        "Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation. Format:\n" +
+        '[{ "path": "relative/path/file.ext", "content": "complete file content" }]\n\n' +
+        "Rules: all file contents complete and working, max 15 files, relative paths only.";
     }
+
+    _chatAdd?.(_isStructureCreate
+      ? "Creating project structure for " + owner + "/" + repo + "..."
+      : "Preparing files for " + owner + "/" + repo + "...", "bot");
+
+    try {
+      const res = await fetch("/api/chat", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          messages: [...history, { role: "user", content: aiPrompt }]
+        }),
+      });
+      if (!res.ok) throw new Error("AI error " + res.status);
+      const data = await res.json();
+      let raw = data.reply || data.content || (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+      raw = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
+
+      let files;
+      try { files = JSON.parse(raw); }
+      catch (_) {
+        const m = raw.match(/\[[\s\S]+\]/);
+        if (!m) throw new Error("AI didn't return a valid file list. Try: /scaffold " + owner + "/" + repo + " <description>");
+        files = JSON.parse(m[0]);
+      }
+
+      if (!Array.isArray(files) || !files.length) throw new Error("AI returned no files.");
+
+      _chatAdd?.("Pushing " + files.length + " files to " + owner + "/" + repo + "...", "bot");
+
+      const results = [];
+      for (const f of files) {
+        if (!f.path || f.content === undefined) continue;
+        try {
+          await createOrUpdateFile(owner, repo, f.path, f.content, (_isStructureCreate ? "scaffold: " : "update: ") + f.path);
+          results.push({ path: f.path, ok: true });
+          _chatAdd?.("✅ " + f.path, "bot");
+        } catch (e) {
+          results.push({ path: f.path, ok: false, error: e.message });
+          _chatAdd?.("❌ " + f.path + " — " + e.message, "bot");
+        }
+      }
+
+      const ok   = results.filter(r => r.ok).length;
+      const fail = results.filter(r => !r.ok).length;
+      _searchSend?.(
+        "Pushed " + ok + " file(s) to " + owner + "/" + repo + (fail ? ", " + fail + " failed" : "") + ".\n" +
+        "Files: " + results.map(r => (r.ok ? "✅" : "❌") + " " + r.path).join(", ") + "\n" +
+        "Repo: https://github.com/" + owner + "/" + repo + "\n\n" +
+        "Tell Joel what was pushed and give him the repo link. Be concise. " +
+        "Then ask: Want me to write the code for any specific file now?"
+      );
+    } catch (e) {
+      _chatAdd?.("❌ " + e.message, "bot");
+    }
+    return null;
   }
 
   // ── Agent mode activation / deactivation ───────────────────────────
