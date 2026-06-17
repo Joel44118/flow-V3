@@ -37,6 +37,6 @@ RULES — never break:
     RADIUS:       90,
     NET_RADIUS:   135,
     NODE_COUNT:   48,
-    SMOKE_LAYERS: 3,
+    SMOKE_LAYERS: 6,
   },
 };
