@@ -7,7 +7,7 @@ import { Storage }         from "./storage.js";
 import { CONFIG }          from "./config.js";
 import { webSearch, deepResearch, smartSearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
-import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults, createRepo, createOrUpdateFile, scaffoldRepo } from "./github.js";
+import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults, createRepo, createOrUpdateFile, scaffoldRepo, createBranch, deleteFile, createPR, listBranches } from "./github.js";
 import { parseAgentCommand, activateAgent, deactivateAgent, getActiveAgent, AGENTS } from "./agent.js";
 
 // ── Injected refs (set at boot to avoid circular imports) ──
@@ -131,6 +131,75 @@ export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
   // ── Push structure from conversation history ───────────────────
+  // ── Phase 5: GitHub write operations (branch/delete/PR/branches) ───────
+
+  // ── List branches ──
+  if (/\b(list|show|what).{0,20}branches?.{0,20}\b([a-z][a-z0-9_.-]{2,})\b/i.test(t) || /\bbranches?\s+(of|in|for)\s+([a-z][a-z0-9_.-]{2,})/i.test(t)) {
+    const _bm = t.match(/\b(?:of|in|for|repo)?\s*([a-z][a-z0-9_.-]{3,})\b/i);
+    const _bo = "Joel44118", _br = _bm ? _bm[1] : "";
+    if (_br && !["list","show","what","the","my","branches","branch"].includes(_br)) {
+      try {
+        const _bd = await listBranches(_bo, _br);
+        _chatAdd?.(_br + " branches: " + _bd.branches.join(", "), "bot");
+      } catch (_e) { _chatAdd?.("\u274c " + _e.message, "bot"); }
+      return null;
+    }
+  }
+
+  // ── Create branch ──
+  if (/(?:create|make|add)\s+(a\s+)?(?:new\s+)?branch/i.test(t)) {
+    const _nm = t.match(/branch\s+(?:called|named)?\s*["']?([a-z][a-z0-9_/-]{1,39})["']?/i);
+    const _rm = t.match(/(?:in|on|for|repo)?\s+(?:the\s+)?([a-z][a-z0-9_.-]{2,})\s+repo/i) ||
+               t.match(/(?:in|on|for)\s+(?:the\s+)?([a-z][a-z0-9_.-]{2,})/i);
+    const _fm = t.match(/(?:from|off)\s+([a-z][a-z0-9_/-]{1,39})/i);
+    const _bname = _nm ? _nm[1] : "";
+    const _brepo = _rm ? _rm[1] : "";
+    const _bfrom = _fm ? _fm[1] : "main";
+    if (_bname && _brepo && !["create","make","add","branch","new","the","for"].includes(_brepo)) {
+      _chatAdd?.("Creating branch \"" + _bname + "\" in " + _brepo + "...", "bot");
+      try {
+        const _bd = await createBranch("Joel44118", _brepo, _bname, _bfrom);
+        _chatAdd?.("\u2705 Branch \"" + _bname + "\" created.\n\uD83D\uDD17 " + _bd.url, "bot");
+      } catch (_e) { _chatAdd?.("\u274c " + _e.message, "bot"); }
+      return null;
+    }
+  }
+
+  // ── Delete file ──
+  if (/(?:delete|remove)\s+.{0,40}\.(js|ts|css|html|md|json|py|txt|env)/i.test(t)) {
+    const _pm = t.match(/(?:delete|remove)\s+(?:the\s+)?(?:file\s+)?([\w./\-]+\.\w+)/i);
+    const _rm = t.match(/(?:from|in)\s+(?:the\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+repo)?/i);
+    const _fp = _pm ? _pm[1] : "", _fr = _rm ? _rm[1] : "";
+    if (_fp && _fr && !["from","the","in"].includes(_fr)) {
+      _chatAdd?.("Deleting " + _fp + " from " + _fr + "...", "bot");
+      try {
+        await deleteFile("Joel44118", _fr, _fp, "delete " + _fp);
+        _chatAdd?.("\u2705 Deleted: " + _fp + " from Joel44118/" + _fr, "bot");
+      } catch (_e) { _chatAdd?.("\u274c " + _e.message, "bot"); }
+      return null;
+    }
+  }
+
+  // ── Create PR ──
+  if (/(?:create|open|make)\s+(a\s+)?(?:pull.?request|pr)/i.test(t)) {
+    const _hm = t.match(/(?:from|merge)\s+([a-z][a-z0-9_/-]{1,39})\s+(?:to|into)/i);
+    const _bm = t.match(/(?:to|into)\s+([a-z][a-z0-9_/-]{1,39})/i);
+    const _rm = t.match(/(?:in|on|for)\s+(?:the\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+repo)?/i);
+    const _tm = t.match(/(?:title|called|named)\s+["']?([^"']+?)["']?(?:\s|$)/i);
+    const _head = _hm ? _hm[1] : "dev";
+    const _base = _bm ? _bm[1] : "main";
+    const _prepo = _rm ? _rm[1] : "";
+    const _title = _tm ? _tm[1] : "Merge " + _head + " into " + _base;
+    if (_prepo && !["create","open","make","the","for","in"].includes(_prepo)) {
+      _chatAdd?.("Creating PR: " + _head + " \u2192 " + _base + " in " + _prepo + "...", "bot");
+      try {
+        const _pd = await createPR("Joel44118", _prepo, _title, _head, _base);
+        _chatAdd?.("\u2705 PR #" + _pd.number + " created.\n\uD83D\uDD17 " + _pd.url, "bot");
+      } catch (_e) { _chatAdd?.("\u274c " + _e.message, "bot"); }
+      return null;
+    }
+  }
+
   // ── Repo structure: create OR push ─────────────────────────────────
   // "create a structure for flowpay", "push it to flowpay repo", "scaffold myapp"
   const _structureRx = /(?:create|build|make|scaffold|push|commit|upload)\s+.{0,60}(?:structure|files?|code|scaffold|it|them|everything)?.{0,30}(?:repo|github|[a-z]{3,})/i;
