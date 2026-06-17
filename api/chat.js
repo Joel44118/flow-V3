@@ -27,13 +27,25 @@ function detectIntent(text) {
 function trimMessages(messages) {
   const system  = messages.find(m => m.role === "system");
   const history = messages.filter(m => m.role !== "system").slice(-14);
-  if (!system) return history;
+  if (!system) return trimUserMessages(history);
   let sys = system.content;
   if (sys.length > 6000) sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:)/s, "");
   if (sys.length > 4000) sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow)/s,
     "I am Flow V3, Joel\'s personal AI — voice, vision, code, search, alarms, goals, images.\n");
   if (sys.length > 3000) sys = sys.slice(0, 3000) + "\n[trimmed]";
-  return [{ role: "system", content: sys }, ...history];
+  return [{ role: "system", content: sys }, ...trimUserMessages(history)];
+}
+
+// Trim oversized user/assistant messages (e.g. huge repo dumps, long code pastes)
+// Keeps the last 12000 chars of any message that exceeds the limit
+function trimUserMessages(messages) {
+  const MAX_MSG = 12000; // chars per message — well within all provider limits
+  return messages.map(m => {
+    if (typeof m.content !== "string" || m.content.length <= MAX_MSG) return m;
+    // For repo content: keep the first 2000 (context/intent) + last 10000 (most relevant files)
+    const trimmed = m.content.slice(0, 2000) + "\n\n[... content trimmed for length ...]\n\n" + m.content.slice(-10000);
+    return { ...m, content: trimmed };
+  });
 }
 
 function cleanReply(text) {
@@ -256,9 +268,10 @@ export default async function handler(req, res) {
   const errors = [];
 
   // MiniMax first — best for coding (4K tokens) and long conversations (1M context)
-  if (MM_KEY) {
+  // Get MINIMAX_API_KEY from platform.minimaxi.com → API Keys (JWT token format)
+  if (MM_KEY && MM_KEY.length > 10) {
     try   { const r = await tryMiniMax(trimmed, intent, MM_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(`MiniMax: ${e.message}`); }
+    catch (e) { errors.push(`MiniMax: ${e.message}`); console.warn("[Flow] MiniMax failed:", e.message); }
   }
   if (OR_KEY) {
     try   { const r = await tryOpenRouter(trimmed, intent, OR_KEY); return res.status(200).json({ ...r, intent }); }
