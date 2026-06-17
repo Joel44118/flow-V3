@@ -171,3 +171,40 @@ export async function scaffoldRepo(owner, repo, files, commitMsg = "Initial scaf
   }
   return results;
 }
+
+// ── Create a branch ─────────────────────────────────────────────────────
+export async function createBranch(owner, repo, branch, from = "main") {
+  const r = await fetch(`${BASE}?mode=create-branch`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, repo, branch, from }),
+  });
+  if (!r.ok) throw new Error((await r.json()).error || "Branch creation failed");
+  return r.json();
+}
+
+// ── Delete a file ────────────────────────────────────────────────────────
+export async function deleteFile(owner, repo, path, message = "delete file", branch = "main") {
+  const r = await fetch(`${BASE}?mode=delete-file`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, repo, path, message, branch }),
+  });
+  if (!r.ok) throw new Error((await r.json()).error || "Delete failed");
+  return r.json();
+}
+
+// ── Create a pull request ─────────────────────────────────────────────────
+export async function createPR(owner, repo, title, head, base = "main", body = "") {
+  const r = await fetch(`${BASE}?mode=create-pr`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, repo, title, head, base, body }),
+  });
+  if (!r.ok) throw new Error((await r.json()).error || "PR creation failed");
+  return r.json();
+}
+
+// ── List branches ────────────────────────────────────────────────────────
+export async function listBranches(owner, repo) {
+  const r = await fetch(`${BASE}?mode=list-branches&owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`);
+  if (!r.ok) throw new Error((await r.json()).error || "Failed to list branches");
+  return r.json();
+}
