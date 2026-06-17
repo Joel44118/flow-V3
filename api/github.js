@@ -174,6 +174,64 @@ export default async function handler(req, res) {
       });
     }
 
+    // ── CREATE-BRANCH ──────────────────────────────────────────────────────
+    if (mode === "create-branch") {
+      const body  = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      const { owner: bo, repo: br, branch, from = "main" } = body || {};
+      if (!bo || !br || !branch) return res.status(400).json({ error: "owner, repo, branch required" });
+      // Get SHA of base branch
+      const baseRes = await fetch(`https://api.github.com/repos/${bo}/${br}/git/refs/heads/${from}`, { headers });
+      if (!baseRes.ok) return res.status(baseRes.status).json({ error: `Base branch "${from}" not found` });
+      const baseData = await baseRes.json();
+      const sha = baseData.object?.sha;
+      const r = await fetch(`https://api.github.com/repos/${bo}/${br}/git/refs`, {
+        method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ ref: `refs/heads/${branch}`, sha }),
+      });
+      if (!r.ok) return res.status(r.status).json({ error: (await r.json()).message });
+      return res.status(200).json({ branch, url: `https://github.com/${bo}/${br}/tree/${branch}` });
+    }
+
+    // ── DELETE-FILE ────────────────────────────────────────────────────────
+    if (mode === "delete-file") {
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      const { owner: do_, repo: dr, path: dp, message: dm = "delete file", branch: db = "main" } = body || {};
+      if (!do_ || !dr || !dp) return res.status(400).json({ error: "owner, repo, path required" });
+      // Get current SHA
+      const cur = await fetch(`https://api.github.com/repos/${do_}/${dr}/contents/${dp}`, { headers });
+      if (!cur.ok) return res.status(cur.status).json({ error: "File not found" });
+      const curData = await cur.json();
+      const r = await fetch(`https://api.github.com/repos/${do_}/${dr}/contents/${dp}`, {
+        method: "DELETE", headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ message: dm, sha: curData.sha, branch: db }),
+      });
+      if (!r.ok) return res.status(r.status).json({ error: (await r.json()).message });
+      return res.status(200).json({ deleted: dp });
+    }
+
+    // ── CREATE-PR ──────────────────────────────────────────────────────────
+    if (mode === "create-pr") {
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      const { owner: po, repo: pr, title, head, base = "main", body: prBody = "" } = body || {};
+      if (!po || !pr || !title || !head) return res.status(400).json({ error: "owner, repo, title, head required" });
+      const r = await fetch(`https://api.github.com/repos/${po}/${pr}/pulls`, {
+        method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ title, head, base, body: prBody }),
+      });
+      if (!r.ok) return res.status(r.status).json({ error: (await r.json()).message });
+      const d = await r.json();
+      return res.status(200).json({ url: d.html_url, number: d.number, title: d.title });
+    }
+
+    // ── LIST-BRANCHES ──────────────────────────────────────────────────────
+    if (mode === "list-branches") {
+      if (!owner || !repo) return res.status(400).json({ error: "owner and repo required" });
+      const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches?per_page=30`, { headers });
+      if (!r.ok) return res.status(r.status).json({ error: (await r.json()).message });
+      const d = await r.json();
+      return res.status(200).json({ branches: d.map(b => b.name) });
+    }
+
     return res.status(400).json({ error: "Unknown mode" });
 
   } catch (err) {
