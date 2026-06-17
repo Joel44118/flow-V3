@@ -14,13 +14,15 @@ import { parseAgentCommand, activateAgent, deactivateAgent, getActiveAgent, AGEN
 let _notepad = null;
 let _speak   = null;
 let _vision  = null;
-let _searchSend = null;
-let _chatAdd    = null;
+let _searchSend  = null;
+let _chatAdd     = null;
+let _getHistory  = null;
 
 export function setNotepad(n)          { _notepad    = n; }
 export function setSpeakFn(fn)         { _speak      = fn; }
 export function setVision(v)           { _vision     = v; }
 export function setSearchHandlers(s,c) { _searchSend = s; _chatAdd = c; }
+export function setHistoryFn(fn)       { _getHistory = fn; }
 
 // ── Site open map ──────────────────────────
 const SITES = [
@@ -196,6 +198,73 @@ export async function parseSearchGoalCommand(text) {
         const _pd = await createPR("Joel44118", _prepo, _title, _head, _base);
         _chatAdd?.("\u2705 PR #" + _pd.number + " created.\n\uD83D\uDD17 " + _pd.url, "bot");
       } catch (_e) { _chatAdd?.("\u274c " + _e.message, "bot"); }
+      return null;
+    }
+  }
+
+  // ── Targeted push: "push those files", "push what you just wrote" ────────
+  // Catches when Joel wants to push exactly what Flow just generated
+  const _targetedPushRx = /push\s+(?:those|these|the(?:se)?\s+(?:\d+\s+)?|what\s+you|them|the\s+code|the\s+files?\s+(?:you|above|below)|(?:all\s+)?(?:\d+\s+)?files?\s+(?:you|above)|that\s+code)/i;
+  if (_targetedPushRx.test(t)) {
+    // Extract repo from the message
+    let _to = "Joel44118", _tr = "";
+    const _tfull = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
+    const _tbr   = t.match(/(\b(?!github\b|the\b|my\b|a\b|to\b|it\b|those\b|these\b|them\b|push\b|files?\b)\w{3,})\s+repo\b/i);
+    const _tap   = t.match(/(?:to|into|in)\s+(?:the\s+|a\s+)?(?:repo\s+)?(?:github\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+repo)?/i);
+    const _tpj   = t.match(/\b([a-z][a-z0-9_-]*(?:pay|app|bot|api|web|site|shop|store|flow)[a-z0-9_-]*)\b/i);
+    if (_tfull)                                                                    { _to = _tfull[1]; _tr = _tfull[2]; }
+    else if (_tbr && !["those","these","the","push","files"].includes(_tbr[1]))   { _tr = _tbr[1]; }
+    else if (_tap && !["github","those","these","push","files"].includes(_tap[1])){ _tr = _tap[1]; }
+    else if (_tpj)                                                                 { _tr = _tpj[1]; }
+
+    if (_tr) {
+      // Get the last AI message from history and extract code blocks from it
+      const _hist = (_getHistory?.() || []);
+      const _lastAI = [..._hist].reverse().find(m => m.role === "assistant");
+      if (!_lastAI || !_lastAI.content) {
+        _chatAdd?.("I don't have the files in memory yet. Tell me what to build first, then say push those to " + _tr + ".", "bot");
+        return null;
+      }
+
+      // Extract code blocks: ```lang\npath/file\ncontent\n```
+      // Also handle: // filename.js as first line of block
+      const _codeBlockRx = /```(?:[\w]*)?\n(?:\/\/\s*([^\n]+)\n)?([\s\S]*?)```/g;
+      const _files = [];
+      let _cbm;
+      while ((_cbm = _codeBlockRx.exec(_lastAI.content)) !== null) {
+        const _pathHint = _cbm[1]?.trim();
+        const _code     = _cbm[2]?.trim();
+        if (!_code) continue;
+        // Guess path from hint or generate one
+        let _path = _pathHint || "";
+        if (!_path || !_path.includes(".")) {
+          // Try to find path from surrounding text before the block
+          const _before = _lastAI.content.slice(Math.max(0, _cbm.index - 200), _cbm.index);
+          const _pathM  = _before.match(/[`'"\*]([\w./\-]+\.(?:js|ts|css|html|json|md|py|txt))[`'"\*]?\s*$/i);
+          _path = _pathM ? _pathM[1] : ("file_" + (_files.length + 1) + ".js");
+        }
+        _files.push({ path: _path, content: _code });
+      }
+
+      if (!_files.length) {
+        _chatAdd?.("I couldn't find code blocks in my last message. Show me the code first, then I'll push it.", "bot");
+        return null;
+      }
+
+      _chatAdd?.("Pushing " + _files.length + " file" + (_files.length !== 1 ? "s" : "") + " to " + _to + "/" + _tr + "...", "bot");
+      const _res = [];
+      for (const _f of _files) {
+        try {
+          await createOrUpdateFile(_to, _tr, _f.path, _f.content, "update " + _f.path);
+          _res.push({ path: _f.path, ok: true });
+          _chatAdd?.("\u2705 " + _f.path, "bot");
+        } catch (_pe) {
+          _res.push({ path: _f.path, ok: false });
+          _chatAdd?.("\u274c " + _f.path + " \u2014 " + _pe.message, "bot");
+        }
+      }
+      const _tok = _res.filter(r => r.ok).length;
+      _chatAdd?.("\n" + _tok + " file" + (_tok !== 1 ? "s" : "") + " pushed.\n\uD83D\uDD17 https://github.com/" + _to + "/" + _tr, "bot");
       return null;
     }
   }
