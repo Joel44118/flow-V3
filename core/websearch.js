@@ -42,10 +42,11 @@ export function formatResults(results, query) {
   if (!results?.length) return `No results found for "${query}".`;
   return results
     .filter(r => r.snippet?.length > 10 || r.title?.length > 5)
-    .slice(0, 8)
+    .slice(0, 4)
     .map((r, i) => {
-      const pub = r.pub ? ` [${new Date(r.pub).toLocaleDateString()}]` : "";
-      return `[${i+1}]${pub} ${r.title ? r.title + ": " : ""}${r.snippet || ""}`;
+      const pub     = r.pub ? ` [${new Date(r.pub).toLocaleDateString()}]` : "";
+      const snippet = (r.snippet || "").slice(0, 300); // cap each snippet
+      return `[${i+1}]${pub} ${r.title ? r.title + ": " : ""}${snippet}`;
     })
     .join("\n\n");
 }
