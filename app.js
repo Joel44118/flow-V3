@@ -18,7 +18,7 @@ import {
   setNotepad, setSpeakFn, setVision, setSearchHandlers,
   parseCommand, parseVisionCommand, parseSearchGoalCommand,
   handleRepoCommand, handleScaffoldCommand, handlePushCommand,
-  checkPendingPush, getTime, getDate
+  checkPendingPush, setHistoryFn, getTime, getDate
 } from "./core/commands.js";
 
 import { Chat }        from "./ui/chat.js";
@@ -165,6 +165,7 @@ const visionObj = { Camera, ScreenVision, YOLO };
 initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
 setSearchHandlers((t) => sendToAI(t), (t, w) => Chat.add(t, w));
+setHistoryFn(() => Memory.forAPI());
 
 // Agent mode badge — updates orb area label when agent activates/deactivates
 onAgentChange(agent => {
