@@ -83,6 +83,22 @@ async function handleSlashCmd(cmd, prompt) {
       if (!p) { Chat.add("Paste a GitHub repo URL or say what to search for. e.g. /github https://github.com/owner/repo", "bot"); return; }
       await parseSearchGoalCommand(p.startsWith("http") ? p : "search github " + p);
       break;
+    case "/branch":
+      if (!p) { Chat.add("Usage: create dev in flowpay\nor: create dev from main in flowpay", "bot"); return; }
+      await parseSearchGoalCommand("create a branch " + p);
+      break;
+    case "/pr":
+      if (!p) { Chat.add("Usage: dev to main in flowpay\nor: dev to main in flowpay title: My PR", "bot"); return; }
+      await parseSearchGoalCommand("create a pull request from " + p);
+      break;
+    case "/delete":
+      if (!p) { Chat.add("Usage: src/old.js from flowpay", "bot"); return; }
+      await parseSearchGoalCommand("delete " + p);
+      break;
+    case "/branches":
+      if (!p) { Chat.add("Which repo? e.g. /branches flowpay", "bot"); return; }
+      await parseSearchGoalCommand("list branches in " + p);
+      break;
     case "/repo":
       if (!p) { Chat.add("Name the repo: e.g. /repo my-project  A short description", "bot"); return; }
       await handleRepoCommand(p);
