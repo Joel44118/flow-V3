@@ -447,16 +447,16 @@ export async function parseSearchGoalCommand(text) {
 
       // Pick most relevant files based on intent
       const intent  = text.replace(/https?:\/\/\S+/g, "").trim();
-      const toFetch = pickRelevantFiles(tree.files, intent, isDeep ? 16 : 8, isDeep ? 80_000 : 40_000);
+      const toFetch = pickRelevantFiles(tree.files, intent, isDeep ? 5 : 3, 8000);
 
       _chatAdd?.(`Fetching ${toFetch.length} of ${tree.files.length} files...`, "bot");
       const fetched = await getFiles(owner, repo, toFetch.map(f => f.path));
-      const summary = formatRepoSummary(tree, fetched.files, intent);
+      let summary = formatRepoSummary(tree, fetched.files, intent);
+      if (summary.length > 5500) summary = summary.slice(0, 5500) + "\n\n[truncated]";
 
       const aiPrompt = isDeep
-        ? `Do a thorough analysis of this GitHub repo. Cover: what it does, how the code is structured, key design decisions, tech stack, and anything worth learning or reusing.\n\n${summary}`
-        : `Summarise this GitHub repo. What does it do, how is it structured, and what are the key files?\n\n${summary}`;
-
+        ? `Analyse this GitHub repo: what it does, code structure, tech stack, key decisions.\n\n${summary}`
+        : `Briefly summarise this repo: what it does and its key files.\n\n${summary}`;
       _searchSend?.(aiPrompt);
     } catch(e) { _chatAdd?.(`GitHub fetch failed: ${e.message}`, "bot"); }
     return null;
