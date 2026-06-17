@@ -186,7 +186,7 @@ async function tryGroq(messages, intent, key) {
   const chain = GROQ_MODELS[intent] || GROQ_MODELS.chat;
   for (const { model, maxTokens } of chain) {
     const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 8500);
+    const t    = setTimeout(() => ctrl.abort(), 6000);
     try {
       const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method:  "POST",
@@ -218,7 +218,7 @@ async function tryHuggingFace(messages, intent, token) {
   const maxTokens = intent === "code" ? 1200 : 350;
   for (const model of HF_MODELS) {
     const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 7000);
+    const t    = setTimeout(() => ctrl.abort(), 5000);
     try {
       const r = await fetch("https://api-inference.huggingface.co/v1/chat/completions", {
         method:  "POST",
@@ -262,6 +262,16 @@ export default async function handler(req, res) {
   const trimmed  = trimMessages(messages);
   const lastUser = [...trimmed].reverse().find(m => m.role === "user")?.content || "";
   const intent   = detectIntent(lastUser);
+
+  // Hard guard: if total payload is still massive after trimming, reject early with helpful message
+  const totalChars = trimmed.reduce((s, m) => s + (m.content?.length || 0), 0);
+  if (totalChars > 28000) {
+    return res.status(200).json({
+      reply: "That content is too large for me to process in one go, Boss. Try asking about a specific file or section instead of the whole thing.",
+      model: "Flow:size-guard",
+      intent,
+    });
+  }
 
   console.log(`[Flow] intent=${intent} | MM=${!!MM_KEY} OR=${!!OR_KEY} Groq=${!!GR_KEY} HF=${!!HF_KEY}`);
 
