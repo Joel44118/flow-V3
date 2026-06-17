@@ -26,24 +26,25 @@ function detectIntent(text) {
 
 function trimMessages(messages) {
   const system  = messages.find(m => m.role === "system");
-  const history = messages.filter(m => m.role !== "system").slice(-14);
+  const history = messages.filter(m => m.role !== "system").slice(-8); // max 8 turns
   if (!system) return trimUserMessages(history);
   let sys = system.content;
-  if (sys.length > 6000) sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:)/s, "");
-  if (sys.length > 4000) sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow)/s,
-    "I am Flow V3, Joel\'s personal AI — voice, vision, code, search, alarms, goals, images.\n");
-  if (sys.length > 3000) sys = sys.slice(0, 3000) + "\n[trimmed]";
+  // Aggressively strip large injected blocks — keep only personality + live context
+  sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:|\nAGENT|\nSKILL|$)/s, "");
+  sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow|\nLIVE CONTEXT:|$)/s, "");
+  sys = sys.replace(/HARD LIMITS[\s\S]*?(?=\nWHAT I|\nI am Flow|\nLIVE CONTEXT:|$)/s, "");
+  sys = sys.replace(/RAG KNOWLEDGE[\s\S]*?(?=\nLIVE CONTEXT:|\nAGENT|\nSKILL|$)/s, "");
+  sys = sys.replace(/PROJECT CONTEXT[\s\S]*?(?=\nLIVE CONTEXT:|$)/s, "");
+  sys = sys.replace(/EXTRACTED MEMORY[\s\S]*?(?=\nLIVE CONTEXT:|$)/s, "");
+  if (sys.length > 2000) sys = sys.slice(0, 2000) + "\n[trimmed]";
   return [{ role: "system", content: sys }, ...trimUserMessages(history)];
 }
 
-// Trim oversized user/assistant messages (e.g. huge repo dumps, long code pastes)
-// Keeps the last 12000 chars of any message that exceeds the limit
 function trimUserMessages(messages) {
-  const MAX_MSG = 12000; // chars per message — well within all provider limits
+  // Keep user messages under 4000 chars each — fits all free tier providers
   return messages.map(m => {
-    if (typeof m.content !== "string" || m.content.length <= MAX_MSG) return m;
-    // For repo content: keep the first 2000 (context/intent) + last 10000 (most relevant files)
-    const trimmed = m.content.slice(0, 2000) + "\n\n[... content trimmed for length ...]\n\n" + m.content.slice(-10000);
+    if (typeof m.content !== "string" || m.content.length <= 4000) return m;
+    const trimmed = m.content.slice(0, 1500) + "\n\n[... trimmed ...]\n\n" + m.content.slice(-2000);
     return { ...m, content: trimmed };
   });
 }
@@ -141,8 +142,8 @@ async function tryOpenRouter(messages, intent, key) {
       });
       clearTimeout(t);
       const data = await r.json();
-      if (data.error?.message?.includes("Prompt tokens limit")) throw new Error("token_limit");
-      if (r.status === 429)  throw new Error("rate_limit");
+      if (data.error?.message?.includes("Prompt tokens limit")) { console.warn("[Flow] OR token limit"); continue; }
+      if (r.status === 429)  { console.warn("[Flow] OR rate limit"); continue; }
       if (r.status === 404 || data.error?.code === 404) { console.warn(`[Flow] OR 404: ${model}`); continue; }
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
       return { reply: cleanReply(data.choices[0].message.content), model: `OR:${model}` };
@@ -265,7 +266,7 @@ export default async function handler(req, res) {
 
   // Hard guard: if total payload is still massive after trimming, reject early with helpful message
   const totalChars = trimmed.reduce((s, m) => s + (m.content?.length || 0), 0);
-  if (totalChars > 28000) {
+  if (totalChars > 8000) {
     return res.status(200).json({
       reply: "That content is too large for me to process in one go, Boss. Try asking about a specific file or section instead of the whole thing.",
       model: "Flow:size-guard",
