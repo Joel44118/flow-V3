@@ -226,23 +226,56 @@ export async function parseSearchGoalCommand(text) {
         return null;
       }
 
-      // Extract code blocks: ```lang\npath/file\ncontent\n```
-      // Also handle: // filename.js as first line of block
-      const _codeBlockRx = /```(?:[\w]*)?\n(?:\/\/\s*([^\n]+)\n)?([\s\S]*?)```/g;
+      // Extract code blocks from AI message
+      // Supports multiple filename patterns:
+      // 1. ```css\n/* styles.css */  (comment inside block)
+      // 2. ```css\n// styles.css     (comment inside block)
+      // 3. **styles.css**\n```css     (bold before block)
+      // 4. `styles.css`\n```css       (backtick before block)
+      // 5. styles.css\n```css         (plain text before block)
+      const _codeBlockRx = /```([\w]*)\n([\s\S]*?)```/g;
+      const _fileNameRx  = /([\w./\-]+\.(?:js|ts|jsx|tsx|css|html|json|md|py|txt|env|yml|yaml|sh))/i;
       const _files = [];
       let _cbm;
       while ((_cbm = _codeBlockRx.exec(_lastAI.content)) !== null) {
-        const _pathHint = _cbm[1]?.trim();
-        const _code     = _cbm[2]?.trim();
+        let _code = _cbm[2]?.trim();
         if (!_code) continue;
-        // Guess path from hint or generate one
-        let _path = _pathHint || "";
-        if (!_path || !_path.includes(".")) {
-          // Try to find path from surrounding text before the block
-          const _before = _lastAI.content.slice(Math.max(0, _cbm.index - 200), _cbm.index);
-          const _pathM  = _before.match(/[`'"\*]([\w./\-]+\.(?:js|ts|css|html|json|md|py|txt))[`'"\*]?\s*$/i);
-          _path = _pathM ? _pathM[1] : ("file_" + (_files.length + 1) + ".js");
+        let _path = "";
+
+        // Check first line of code block for filename in comment
+        const _firstLine = _code.split("\n")[0];
+        const _firstLineM = _firstLine.match(/(?:\/\/|\*|#|<!--)\s*([\w./\-]+\.(?:js|ts|jsx|tsx|css|html|json|md|py|txt|env|yml|yaml|sh))/i);
+        if (_firstLineM) {
+          _path = _firstLineM[1];
+          _code = _code.slice(_firstLine.length).trim(); // strip the comment line
         }
+
+        // If no inline comment, look in text BEFORE the block (up to 300 chars)
+        if (!_path) {
+          const _before = _lastAI.content.slice(Math.max(0, _cbm.index - 300), _cbm.index);
+          // Match last filename mention before the block
+          const _beforeMatches = [..._before.matchAll(/([\w./\-]+\.(?:js|ts|jsx|tsx|css|html|json|md|py|txt|env|yml|yaml|sh))/gi)];
+          if (_beforeMatches.length) _path = _beforeMatches[_beforeMatches.length - 1][1];
+        }
+
+        // Also check: user message might specify the filename (e.g. 'push styles.css')
+        if (!_path) {
+          const _userFileM = text.match(_fileNameRx);
+          if (_userFileM) _path = _userFileM[1];
+        }
+
+        // Last resort: use lang hint or numbered fallback
+        if (!_path) {
+          const _lang = _cbm[1];
+          const _ext  = _lang === "javascript" || _lang === "js" ? "js"
+                      : _lang === "css"        ? "css"
+                      : _lang === "html"       ? "html"
+                      : _lang === "python"     ? "py"
+                      : _lang === "typescript" ? "ts"
+                      : _lang || "js";
+          _path = "file_" + (_files.length + 1) + "." + _ext;
+        }
+
         _files.push({ path: _path, content: _code });
       }
 
