@@ -131,111 +131,78 @@ export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
   // ── Push structure from conversation history ───────────────────
-  // ── Repo structure: create OR push ────────────────────────────────────
-  // Catches: "create a structure for flowpay", "push it to flowpay repo",
-  //          "push the files to flowpay", "scaffold myapp repo", etc.
-  const _structureCreateRx = /(?:create|build|generate|make|set up|setup)\s+(?:a\s+)?(?:(?:folder|file|project|repo)\s+)?structure\s+(?:for\s+)?/i;
-  const _pushRx1 = /(?:push|scaffold|commit|upload)\s+(?:it|them|everything|all|this)?\s*(?:to|into|in)?\s*(?:the\s+)?(?:[a-z0-9_.-]+\s+)?(?:repo|github|structure|files?|code|that)?/i;
-  const _pushRx2 = /(?:create|add)\s+(?:the|that)\s+\w+\s+(?:structure|files?|code)/i;
-  const _pushExclude = /create\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?repo(?!\s+structure)/i;
+  // ── Repo structure: create OR push ─────────────────────────────────
+  // "create a structure for flowpay", "push it to flowpay repo", "scaffold myapp"
+  const _structureRx = /(?:create|build|make|scaffold|push|commit|upload)\s+.{0,60}(?:structure|files?|code|scaffold|it|them|everything)?.{0,30}(?:repo|github|[a-z]{3,})/i;
+  const _repoOnlyRx  = /(?:push|scaffold|commit)\s+(?:it|that|them|everything|all|this)\s+(?:to|into)\s+/i;
+  const _excludeRx   = /create\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?repo\b(?!.*structure)/i;
 
-  const _isStructureCreate = _structureCreateRx.test(t);
-  const _isPush = (_pushRx1.test(t) || _pushRx2.test(t)) && !_pushExclude.test(t);
-
-  if (_isStructureCreate || _isPush) {
-    // Extract target repo — owner/repo, or word before "repo", or word after preposition
+  if ((_structureRx.test(t) || _repoOnlyRx.test(t)) && !_excludeRx.test(t)) {
     let owner = "Joel44118", repo = "";
-    const _fullRepoM = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
-    const _beforeRepo = t.match(/(\b(?!github\b|the\b|my\b|a\b)\w{3,})\s+repo\b/i);
-    const _afterPrep  = t.match(/(?:for|into|to|in)\s+(?:(?:the|he|a)\s+)?(?:repo\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+repo)?/i);
-    if (_fullRepoM) { owner = _fullRepoM[1]; repo = _fullRepoM[2]; }
-    else if (_beforeRepo) { repo = _beforeRepo[1]; }
-    else if (_afterPrep && _afterPrep[1] !== "github") { repo = _afterPrep[1]; }
+    const _full       = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
+    const _beforeRepo = t.match(/(\b(?!github\b|the\b|my\b|a\b|to\b|it\b)\w{3,})\s+repo\b/i);
+    const _afterPrep  = t.match(/(?:for|into|to|in)\s+(?:the\s+|a\s+|he\s+)?(?:repo\s+)?(?:github\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+repo)?/i);
+    const _anyProject = t.match(/\b([a-z][a-z0-9_-]*(?:pay|app|bot|api|web|site|shop|store|flow)[a-z0-9_-]*)\b/i);
 
-    if (!repo) return false; // can't determine repo — let AI handle it
+    if (_full)                                                                    { owner = _full[1];       repo = _full[2]; }
+    else if (_beforeRepo && !["the","its","our","github"].includes(_beforeRepo[1])) { repo = _beforeRepo[1]; }
+    else if (_afterPrep  && !["github","the","that","this","it","push","create","make","build","scaffold"].includes(_afterPrep[1])) { repo = _afterPrep[1]; }
+    else if (_anyProject)                                                         { repo = _anyProject[1];  }
 
-    // Build the AI prompt based on intent
-    const history = (_getHistory?.() || []).slice(-24);
-    let aiPrompt;
+    if (!repo) return false;
 
-    if (_isStructureCreate) {
-      // Fresh structure creation — Joel is asking Flow to design AND push the structure
-      const projectHint = t.replace(_structureCreateRx, "").replace(/\s*repo\s*/i, "").trim() || repo;
-      aiPrompt =
-        "Create a complete project folder structure for: " + projectHint + "\n" +
-        "Repo: " + owner + "/" + repo + "\n\n" +
-        "Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation. Format:\n" +
-        '[{ "path": "relative/path/file.ext", "content": "file content here" }]\n\n' +
-        "Rules:\n" +
-        "- Every file must have real, working content (no TODOs, no placeholders)\n" +
-        "- README.md must describe the project\n" +
-        "- Max 12 files\n" +
-        "- Relative paths, no leading slash\n" +
-        "- Pick the right tech stack from the project name and description";
-    } else {
-      // Push — re-extract structure from conversation history
-      aiPrompt =
-        "The user wants to push the project structure from this conversation to GitHub repo " + owner + "/" + repo + ".\n" +
-        "Look through the conversation history and find the file structure or code that was discussed.\n" +
-        "Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation. Format:\n" +
-        '[{ "path": "relative/path/file.ext", "content": "complete file content" }]\n\n' +
-        "Rules: all file contents complete and working, max 15 files, relative paths only.";
-    }
+    const projectDesc = text
+      .replace(/create\s+(a\s+)?(?:folder\s+|file\s+|project\s+|repo\s+)?structure\s+(for\s+)?/i, "")
+      .replace(/(?:push|scaffold|commit|upload).{0,30}(?:to|into).{0,30}/i, "")
+      .replace(new RegExp(repo, "gi"), "").replace(/Joel44118/gi, "").trim() || repo;
 
-    _chatAdd?.(_isStructureCreate
-      ? "Creating project structure for " + owner + "/" + repo + "..."
-      : "Preparing files for " + owner + "/" + repo + "...", "bot");
+    _chatAdd?.("Creating structure for " + owner + "/" + repo + "...", "bot");
+
+    const _prompt =
+      "Generate a complete starter project for: " + projectDesc + "\n" +
+      "Target repo: " + owner + "/" + repo + "\n\n" +
+      "IMPORTANT: Respond ONLY with a raw JSON array. No text, no markdown, no backticks.\n" +
+      'Format: [{"path":"relative/path/file.ext","content":"complete file content"}]\n' +
+      "Rules: real working content in every file, no TODOs, max 10 files, relative paths only.";
 
     try {
-      const res = await fetch("/api/chat", {
+      const _res = await fetch("/api/chat", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({
-          messages: [...history, { role: "user", content: aiPrompt }]
-        }),
+        body:    JSON.stringify({ messages: [{ role: "user", content: _prompt }] }),
       });
-      if (!res.ok) throw new Error("AI error " + res.status);
-      const data = await res.json();
-      let raw = data.reply || data.content || (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
-      raw = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
+      if (!_res.ok) throw new Error("AI request failed: " + _res.status);
+      const _aiData = await _res.json();
+      let _raw = _aiData.reply || _aiData.content ||
+                 (_aiData.choices && _aiData.choices[0] && _aiData.choices[0].message && _aiData.choices[0].message.content) || "";
+      _raw = _raw.replace(/^```json\s*/im, "").replace(/^```\s*/im, "").replace(/\s*```\s*$/im, "").trim();
+      const _arr = _raw.match(/\[[\s\S]*\]/);
+      if (!_arr) throw new Error("AI did not return JSON. Got: " + _raw.slice(0, 100));
+      const _files = JSON.parse(_arr[0]);
+      if (!Array.isArray(_files) || !_files.length) throw new Error("Empty file list.");
 
-      let files;
-      try { files = JSON.parse(raw); }
-      catch (_) {
-        const m = raw.match(/\[[\s\S]+\]/);
-        if (!m) throw new Error("AI didn't return a valid file list. Try: /scaffold " + owner + "/" + repo + " <description>");
-        files = JSON.parse(m[0]);
-      }
-
-      if (!Array.isArray(files) || !files.length) throw new Error("AI returned no files.");
-
-      _chatAdd?.("Pushing " + files.length + " files to " + owner + "/" + repo + "...", "bot");
-
-      const results = [];
-      for (const f of files) {
-        if (!f.path || f.content === undefined) continue;
+      _chatAdd?.("Pushing " + _files.length + " files to " + owner + "/" + repo + "...", "bot");
+      const _results = [];
+      for (const _f of _files) {
+        if (!_f.path || _f.content === undefined) continue;
         try {
-          await createOrUpdateFile(owner, repo, f.path, f.content, (_isStructureCreate ? "scaffold: " : "update: ") + f.path);
-          results.push({ path: f.path, ok: true });
-          _chatAdd?.("✅ " + f.path, "bot");
-        } catch (e) {
-          results.push({ path: f.path, ok: false, error: e.message });
-          _chatAdd?.("❌ " + f.path + " — " + e.message, "bot");
+          await createOrUpdateFile(owner, repo, _f.path, _f.content, "scaffold: " + _f.path);
+          _results.push({ path: _f.path, ok: true });
+          _chatAdd?.("\u2705 " + _f.path, "bot");
+        } catch (_pe) {
+          _results.push({ path: _f.path, ok: false });
+          _chatAdd?.("\u274c " + _f.path + " \u2014 " + _pe.message, "bot");
         }
       }
-
-      const ok   = results.filter(r => r.ok).length;
-      const fail = results.filter(r => !r.ok).length;
-      const repoUrl = "https://github.com/" + owner + "/" + repo;
+      const _ok   = _results.filter(r => r.ok).length;
+      const _fail = _results.filter(r => !r.ok).length;
       _chatAdd?.(
-        ok + " file" + (ok !== 1 ? "s" : "") + " pushed to " + owner + "/" + repo +
-        (fail ? ", " + fail + " failed" : "") + ":\n" +
-        results.map(r => (r.ok ? "\u2705" : "\u274c") + " " + r.path).join("\n") +
-        "\n\n\uD83D\uDD17 " + repoUrl,
+        "\n" + _ok + " file" + (_ok !== 1 ? "s" : "") + " pushed" + (_fail ? ", " + _fail + " failed" : "") + ".\n" +
+        "\uD83D\uDD17 https://github.com/" + owner + "/" + repo,
         "bot"
       );
-    } catch (e) {
-      _chatAdd?.("❌ " + e.message, "bot");
+    } catch (_e) {
+      _chatAdd?.("\u274c " + _e.message, "bot");
     }
     return null;
   }
