@@ -53,7 +53,7 @@ export async function searchRepos(query) {
 // ── Smart file picker ─────────────────────────────────────────────────────
 // Given a tree + optional intent, picks the most relevant files to fetch
 // Priority: files matching intent keywords, then entry points, then small files
-export function pickRelevantFiles(files, intent = "", maxFiles = 12, maxBytes = 60_000) {
+export function pickRelevantFiles(files, intent = "", maxFiles = 5, maxBytes = 8000) {
   const t = intent.toLowerCase();
 
   // Keywords from the intent
