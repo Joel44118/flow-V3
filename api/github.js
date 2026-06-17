@@ -142,10 +142,24 @@ export default async function handler(req, res) {
     // ── PUT-FILE: create or update a file in a repo ───────────────────────
     if (mode === "put-file") {
       if (req.method !== "POST") return res.status(405).json({ error: "POST required" });
-      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      let body;
+      try {
+        body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      } catch (parseErr) {
+        // Body has control chars — try sanitizing before parse
+        const cleaned = (typeof req.body === "string" ? req.body : JSON.stringify(req.body))
+          .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+        try { body = JSON.parse(cleaned); } catch (_) {
+          return res.status(400).json({ error: "Request body contains invalid characters: " + parseErr.message });
+        }
+      }
       const { owner: fOwner, repo: fRepo, path: fPath, content, message, branch = "main" } = body || {};
       if (!fOwner || !fRepo || !fPath || content === undefined || !message)
         return res.status(400).json({ error: "owner, repo, path, content, message required" });
+      // Sanitize content — remove control chars that break base64/GitHub API
+      const safeContent = String(content)
+        .replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
 
       // Check if file already exists (need SHA to update)
       let sha;
@@ -157,7 +171,7 @@ export default async function handler(req, res) {
         if (existing.ok) { const ed = await existing.json(); sha = ed.sha; }
       } catch(_) {}
 
-      const encoded = Buffer.from(content, "utf-8").toString("base64");
+      const encoded = Buffer.from(safeContent, "utf-8").toString("base64");
       const payload = { message, content: encoded, branch };
       if (sha) payload.sha = sha;
 
