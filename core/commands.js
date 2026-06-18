@@ -147,6 +147,22 @@ export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
   // ── Push structure from conversation history ───────────────────
+  // ── Repo-aware development ────────────────────────────────────────────
+  // "develop the flowpay app", "add a login page to flowpay",
+  // "continue building flowpay", "what should i add next to flowpay"
+  const _devRx = /(?:develop|continue|build|add|improve|update|work on|next (?:step|feature)|what.{0,15}(?:add|build|develop)).{0,40}(?:the\s+)?(?:[a-z][a-z0-9_-]{2,})(?:\s+(?:app|repo|project|site|page))?/i;
+  const _devExclude = /(?:create|push|scaffold|delete|branch|pr|pull.?request)/i;
+  if (_devRx.test(t) && !_devExclude.test(t)) {
+    // Extract repo name
+    const _dm = t.match(/([a-z][a-z0-9_-]*(?:pay|app|bot|api|web|site|shop|store|flow|pay)[a-z0-9_-]*)(?:\s+(?:app|repo|project|site))?/i)
+             || t.match(/(?:on|for|to)\s+(?:the\s+)?([a-z][a-z0-9_.-]{2,})(?:\s+(?:app|repo|project))?/i);
+    const _drepo = _dm ? _dm[1].toLowerCase() : "";
+    if (_drepo && !["develop","continue","build","add","improve","update","work","next","step","feature","the","for","on","to","what","should"].includes(_drepo)) {
+      await _repoAwareDevelop("Joel44118", _drepo, text, _chatAdd, _searchSend, _getHistory);
+      return null;
+    }
+  }
+
   // ── Phase 5: GitHub write operations (branch/delete/PR/branches) ───────
 
   // ── List branches ──
@@ -528,6 +544,87 @@ export async function parseSearchGoalCommand(text) {
   }
 
   return false;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Repo-aware development — reads repo, shows progress, generates next code
+// ═══════════════════════════════════════════════════════════════
+async function _repoAwareDevelop(owner, repo, userRequest, chatAdd, searchSend, getHistory) {
+  chatAdd?.("\uD83D\uDD0D Scanning " + owner + "/" + repo + "...", "bot");
+
+  // 1. Get file tree
+  let tree;
+  try {
+    tree = await getRepoTree(owner, repo);
+  } catch (e) {
+    chatAdd?.("\u274c Couldn't read repo: " + e.message, "bot");
+    return;
+  }
+
+  const files = tree.files || [];
+  if (!files.length) {
+    chatAdd?.("Repo is empty. Tell me what to build and I'll create the structure.", "bot");
+    return;
+  }
+
+  // 2. Show live analysis progress — read key files one by one
+  const keyFiles = files
+    .filter(f => /\.(html|css|js|ts|json|md|py|jsx|tsx)$/i.test(f.path))
+    .slice(0, 6); // max 6 files to stay within token limits
+
+  const fileContents = [];
+  for (const f of keyFiles) {
+    chatAdd?.("\uD83D\uDCC4 Analysing " + f.path + "...", "bot");
+    try {
+      const fetched = await getFile(owner, repo, f.path);
+      // Cap each file at 800 chars to stay within limits
+      const preview = (fetched.content || "").slice(0, 800);
+      fileContents.push({ path: f.path, preview });
+    } catch (_) {
+      fileContents.push({ path: f.path, preview: "[could not read]" });
+    }
+  }
+
+  chatAdd?.("\uD83E\uDDE0 Thinking about what to develop next...", "bot");
+
+  // 3. Build a focused prompt — current state + what Joel wants
+  const repoSummary = fileContents
+    .map(f => "FILE: " + f.path + "\n" + f.preview)
+    .join("\n\n---\n\n");
+
+  const allPaths = files.map(f => f.path).join(", ");
+
+  const devPrompt =
+    "You are a senior developer working on the " + owner + "/" + repo + " project.\n" +
+    "Joel's request: \"" + userRequest + "\"\n\n" +
+    "ALL FILES IN REPO:\n" + allPaths + "\n\n" +
+    "KEY FILE CONTENTS:\n" + repoSummary + "\n\n" +
+    "Based on what exists, write the NEXT logical code addition or improvement.\n" +
+    "Rules:\n" +
+    "1. Only write code that builds on what already exists\n" +
+    "2. Start every code block with a comment on line 1: // filename.ext\n" +
+    "3. Write complete working code — no placeholders\n" +
+    "4. If you spot a bug or problem in existing code, say so and fix it\n" +
+    "5. Keep code blocks focused — one file per block\n" +
+    "6. After the code, explain in 1-2 sentences what changed and why";
+
+  // 4. Send to AI
+  try {
+    const res = await fetch("/api/chat", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ messages: [{ role: "user", content: devPrompt }] }),
+    });
+    if (!res.ok) throw new Error("AI error " + res.status);
+    const data = await res.json();
+    const reply = data.reply || data.content ||
+      (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+    if (!reply) throw new Error("Empty response from AI");
+    // Send reply to chat as a normal AI response (will render code blocks)
+    searchSend?.(reply);
+  } catch (e) {
+    chatAdd?.("\u274c Development step failed: " + e.message, "bot");
+  }
 }
 
 // ── Repo creation — called directly from app.js /repo slash command ───────
