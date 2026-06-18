@@ -128,41 +128,42 @@ function buildBlock(lang, src) {
   const wrap = document.createElement("div");
   wrap.className = "code-block";
 
-  // Header
-  const hdr  = document.createElement("div");
+  // ── Header ────────────────────────────────
+  const hdr = document.createElement("div");
   hdr.className = "code-header";
 
+  // Traffic light dots — red=collapse, yellow=copy, green=expand/contract
   const dots = document.createElement("div");
   dots.className = "code-dots";
-  dots.innerHTML = "<span></span><span></span><span></span>";
+  const dot1 = document.createElement("span"); // red   — collapse/close
+  const dot2 = document.createElement("span"); // yellow — copy
+  const dot3 = document.createElement("span"); // green  — fullscreen toggle
+  dot1.title = "Collapse"; dot2.title = "Copy"; dot3.title = "Expand";
+  dots.appendChild(dot1); dots.appendChild(dot2); dots.appendChild(dot3);
 
-  const lbl  = document.createElement("span");
+  const lbl = document.createElement("span");
   lbl.className   = "code-lang";
   lbl.textContent = lang.toUpperCase() || "CODE";
+
+  // Line count badge
+  const lines = src.trim().split("\n").length;
+  const badge = document.createElement("span");
+  badge.className   = "code-lines";
+  badge.textContent = lines + " lines";
 
   const copy = document.createElement("button");
   copy.className   = "code-copy";
   copy.textContent = "COPY";
-  copy.addEventListener("click", () => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(src).then(() => {
-        copy.textContent = "COPIED ✓";
-        setTimeout(() => { copy.textContent = "COPY"; }, 2000);
-      }).catch(() => fallbackCopy(src, copy));
-    } else {
-      fallbackCopy(src, copy);
-    }
-  });
 
   hdr.appendChild(dots);
   hdr.appendChild(lbl);
+  hdr.appendChild(badge);
   hdr.appendChild(copy);
 
-  // Code
+  // ── Code body ─────────────────────────────
   const pre    = document.createElement("pre");
   const codeEl = document.createElement("code");
-
-  const trimmed = src.replace(/\n$/, ""); // strip trailing newline
+  const trimmed = src.replace(/\n$/, "");
 
   if (window.hljs) {
     if (lang && window.hljs.getLanguage(lang)) {
@@ -181,6 +182,52 @@ function buildBlock(lang, src) {
   pre.appendChild(codeEl);
   wrap.appendChild(hdr);
   wrap.appendChild(pre);
+
+  // ── Dot behaviours ─────────────────────────
+  let collapsed = false;
+  let expanded  = false;
+
+  // Red — collapse/expand the code body
+  dot1.addEventListener("click", () => {
+    collapsed = !collapsed;
+    pre.style.display   = collapsed ? "none" : "";
+    badge.style.opacity = collapsed ? "1"    : "0.5";
+    dot1.style.opacity  = collapsed ? "0.5"  : "1";
+    wrap.classList.toggle("collapsed", collapsed);
+  });
+
+  // Yellow — copy code
+  dot2.addEventListener("click", () => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(src).then(() => {
+        dot2.style.background = "#28ca41";
+        setTimeout(() => { dot2.style.background = ""; }, 1200);
+      }).catch(() => fallbackCopy(src, copy));
+    } else { fallbackCopy(src, copy); }
+  });
+
+  // Green — toggle expanded (max-height none vs default)
+  dot3.addEventListener("click", () => {
+    expanded = !expanded;
+    pre.style.maxHeight = expanded ? "none" : "";
+    pre.style.overflow  = expanded ? "visible" : "";
+    dot3.style.opacity  = expanded ? "0.6" : "1";
+  });
+
+  // Header copy button
+  copy.addEventListener("click", () => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(src).then(() => {
+        copy.textContent = "COPIED ✓";
+        setTimeout(() => { copy.textContent = "COPY"; }, 2000);
+      }).catch(() => fallbackCopy(src, copy));
+    } else { fallbackCopy(src, copy); }
+  });
+
+  // Click header to collapse (convenience)
+  lbl.style.cursor = "pointer";
+  lbl.addEventListener("click", () => dot1.click());
+
   return wrap;
 }
 
