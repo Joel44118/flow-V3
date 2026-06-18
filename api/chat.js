@@ -250,11 +250,13 @@ export default async function handler(req, res) {
 
   const MM_KEY = process.env.MINIMAX_API_KEY;
   const OR_KEY = process.env.OPENROUTER_API_KEY;
+  const CB_KEY = process.env.CEREBRAS_API_KEY;
+  const TG_KEY = process.env.TOGETHER_API_KEY;
   const GR_KEY = process.env.GROQ_API_KEY;
   const HF_KEY = process.env.HF_TOKEN;
 
-  if (!MM_KEY && !OR_KEY && !GR_KEY && !HF_KEY) {
-    return res.status(500).json({ error: "No AI provider configured. Add MINIMAX_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, or HF_TOKEN in Vercel → Settings → Environment Variables" });
+  if (!MM_KEY && !OR_KEY && !CB_KEY && !TG_KEY && !GR_KEY && !HF_KEY) {
+    return res.status(500).json({ error: "No AI provider configured. Add GROQ_API_KEY, CEREBRAS_API_KEY, or OPENROUTER_API_KEY in Vercel → Settings → Environment Variables" });
   }
 
   const { messages } = req.body || {};
@@ -274,7 +276,7 @@ export default async function handler(req, res) {
     });
   }
 
-  console.log(`[Flow] intent=${intent} | MM=${!!MM_KEY} OR=${!!OR_KEY} Groq=${!!GR_KEY} HF=${!!HF_KEY}`);
+  console.log(`[Flow] intent=${intent} | MM=${!!MM_KEY} OR=${!!OR_KEY} CB=${!!CB_KEY} TG=${!!TG_KEY} Groq=${!!GR_KEY} HF=${!!HF_KEY}`);
 
   const errors = [];
 
@@ -287,6 +289,14 @@ export default async function handler(req, res) {
   if (OR_KEY) {
     try   { const r = await tryOpenRouter(trimmed, intent, OR_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`OpenRouter: ${e.message}`); }
+  }
+  if (CB_KEY) {
+    try   { const r = await tryCerebras(trimmed, intent, CB_KEY); return res.status(200).json({ ...r, intent }); }
+    catch (e) { errors.push(`Cerebras: ${e.message}`); console.warn("[Flow] Cerebras failed:", e.message); }
+  }
+  if (TG_KEY) {
+    try   { const r = await tryTogether(trimmed, intent, TG_KEY); return res.status(200).json({ ...r, intent }); }
+    catch (e) { errors.push(`Together: ${e.message}`); console.warn("[Flow] Together failed:", e.message); }
   }
   if (GR_KEY) {
     try   { const r = await tryGroq(trimmed, intent, GR_KEY); return res.status(200).json({ ...r, intent }); }
