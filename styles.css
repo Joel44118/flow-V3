@@ -546,6 +546,30 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
   background: transparent;
 }
 
+/* ── Code block enhancements ──────────────────────────────────────── */
+.code-lines {
+  font: 600 9px/1 monospace;
+  color: rgba(56,189,248,0.35);
+  letter-spacing: .06em;
+  margin-right: auto;
+  opacity: .5;
+}
+.code-block.collapsed pre { display: none !important; }
+.code-block pre {
+  max-height: 420px;
+  transition: max-height .2s ease;
+}
+.code-dots span {
+  cursor: pointer;
+  transition: opacity .15s, transform .1s;
+}
+.code-dots span:hover { transform: scale(1.25); }
+/* Collapsed state — header gets a subtle left border flash */
+.code-block.collapsed .code-header {
+  border-bottom: none;
+  border-left: 3px solid #ff5f57;
+}
+
 /* ═══════════════════════════════════════════
    IMAGE CARDS
    ═══════════════════════════════════════════ */
