@@ -25,6 +25,7 @@ import { Chat }        from "./ui/chat.js";
 import { Orb }         from "./ui/orb.js";
 import { Notepad }     from "./ui/notepad.js";
 import { handleFiles, initFileUpload } from "./ui/fileupload.js";
+import { initStagedFiles, stageFiles, clearStaged, getStagedFiles, hasStagedFiles } from "./ui/stagedfiles.js";
 import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
@@ -240,8 +241,18 @@ async function doSend() {
     await handleSlashCmd(slash.cmd, slash.prompt);
     return;
   }
-  // Plain text
   const text = getInput();
+
+  // Staged files present — process them together, with the typed text as context/instruction
+  if (hasStagedFiles()) {
+    const files = getStagedFiles();
+    clearInput();
+    clearStaged();
+    await handleFiles(files, text); // text passed as the instruction (e.g. "edit this image")
+    return;
+  }
+
+  // Plain text only
   if (!text) return;
   clearInput();
   flowSend(text);
@@ -277,9 +288,13 @@ document.getElementById("btn-face").addEventListener("click",   () => { Camera.s
 const fileBtn   = document.getElementById("file-btn");
 const fileInput = document.getElementById("file-input");
 fileBtn.addEventListener("click", () => fileInput.click());
-fileInput.addEventListener("change", e => { if (e.target.files.length) { handleFiles(e.target.files); e.target.value = ""; } });
+// Stage files instead of processing immediately — user can remove with X before sending
+fileInput.addEventListener("change", e => { if (e.target.files.length) { stageFiles(e.target.files); e.target.value = ""; } });
+initStagedFiles((count) => {
+  sendBtn.classList.toggle("has-staged", count > 0);
+});
 document.addEventListener("dragover", e => e.preventDefault());
-document.addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+document.addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer.files.length) stageFiles(e.dataTransfer.files); });
 
 // ── Notepad ───────────────────────────────────────────────────────────────
 document.getElementById("btn-clear").addEventListener("click",  () => Notepad.clear());
