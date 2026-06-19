@@ -78,19 +78,28 @@ function _buildDOM() {
   _palette.id = "slash-palette";
   document.body.appendChild(_palette);
 
-  // Reposition palette above input panel dynamically — handles tall/growing input
+  // Reposition palette + chip above input panel dynamically — handles tall/growing input
   function _repositionPalette() {
-    if (!_palette.classList.contains("open")) return;
     const panel = _input.closest(".input-panel");
     if (!panel) return;
     const rect = panel.getBoundingClientRect();
     const gap  = 8;
-    const maxH = Math.min(420, rect.top - 16);
-    _palette.style.position  = "fixed";
-    _palette.style.left      = "50%";
-    _palette.style.transform = "translateX(-50%)";
-    _palette.style.maxHeight = maxH + "px";
-    _palette.style.bottom    = (window.innerHeight - rect.top + gap) + "px";
+    const bottomPx = (window.innerHeight - rect.top + gap) + "px";
+
+    if (_palette.classList.contains("open")) {
+      const maxH = Math.min(420, rect.top - 16);
+      _palette.style.position  = "fixed";
+      _palette.style.left      = "50%";
+      _palette.style.transform = "translateX(-50%)";
+      _palette.style.maxHeight = maxH + "px";
+      _palette.style.bottom    = bottomPx;
+    }
+    if (_chip && _chip.style.display !== "none") {
+      _chip.style.position  = "fixed";
+      _chip.style.left      = "50%";
+      _chip.style.transform = "translateX(-50%)";
+      _chip.style.bottom    = bottomPx;
+    }
   }
   window.addEventListener("resize", _repositionPalette);
   setTimeout(() => {
@@ -211,6 +220,7 @@ function _showChip(skill) {
   document.getElementById("sc-label").textContent = skill.label;
   _chip.style.display = "flex";
   _chip.classList.add("visible");
+  _reposition?.();
 
   if (skill.ph) {
     _hint.textContent = "💡 e.g. " + skill.ph;
