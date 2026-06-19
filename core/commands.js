@@ -150,7 +150,10 @@ export async function parseSearchGoalCommand(text) {
   // ── Repo-aware development ────────────────────────────────────────────
   // "develop the flowpay app", "add a login page to flowpay",
   // "continue building flowpay", "what should i add next to flowpay"
-  const _devRx = /(?:develop|continue|build|add|improve|update|work on|next (?:step|feature)|what.{0,15}(?:add|build|develop)).{0,40}(?:the\s+)?(?:[a-z][a-z0-9_-]{2,})(?:\s+(?:app|repo|project|site|page))?/i;
+  // Requires an explicit repo signal: a project-like word (pay/app/bot/api/web/site/shop/store/flow)
+  // followed by app/repo/project, OR the word "repo"/"repository" itself, OR owner/repo format.
+  // This prevents generic phrases like "bot development" or "web development" from matching.
+  const _devRx = /(?:develop|continue|build|add|improve|update|work on|next (?:step|feature)).{0,30}\b([a-z][a-z0-9_-]*(?:pay|app|bot|api|web|site|shop|store|flow)[a-z0-9_-]*)\b\s*(?:app|repo|project|site)?\b|(?:develop|continue|build|add|improve|update|work on).{0,30}\b(?:repo|repository)\b/i;
   const _devExclude = /(?:create|push|scaffold|delete|branch|pr|pull.?request)/i;
   if (_devRx.test(t) && !_devExclude.test(t)) {
     // Extract repo name
