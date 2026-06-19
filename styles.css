@@ -837,3 +837,88 @@ body.drag-over { box-shadow:inset 0 0 0 3px rgba(56,189,248,0.4); }
   pointer-events: none;
   opacity: .88;
 }
+
+/* ── Staged files tray (above input panel) ───────────────────────── */
+#staged-tray {
+  display: none;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  margin: 0 auto 6px;
+  max-width: min(680px, 92vw);
+  background: rgba(3,7,28,0.85);
+  border: 1px solid rgba(56,189,248,0.18);
+  border-radius: 16px;
+  backdrop-filter: blur(16px);
+}
+.staged-card {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(56,189,248,0.08);
+  border: 1px solid rgba(56,189,248,0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.staged-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.staged-icon-wrap {
+  font-size: 24px;
+}
+.staged-badge {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  font-size: 10px;
+  background: rgba(0,0,0,0.6);
+  border-radius: 4px;
+  padding: 1px 3px;
+}
+.staged-name {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  font-size: 8px;
+  text-align: center;
+  background: linear-gradient(transparent, rgba(0,0,0,0.85));
+  color: #fff;
+  padding: 8px 2px 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.staged-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  border: none;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  transition: background .15s, transform .1s;
+}
+.staged-x:hover { background: #ff5f57; transform: scale(1.12); }
+
+/* Send button hint when files are staged */
+#send-btn.has-staged {
+  box-shadow: 0 0 0 2px rgba(56,189,248,0.5);
+}
