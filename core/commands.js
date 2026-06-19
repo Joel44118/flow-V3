@@ -426,17 +426,16 @@ export async function parseSearchGoalCommand(text) {
 
   // ── Smart web search (news, research, general) ───────────────────────────
   // Triggers: search/news/latest/look up/tell me about + any topic
-  const isSearch = /^(search|look up|find|tell me|what\'s|whats|latest|recent|news on|news about|update on|give me|show me)/i.test(t)
-    && !/github\.com/i.test(t);
+  const _searchGreetings = /^(what's\s+up|what's\s+good|what's\s+new|how's\s+it|sup\b|hey\b|hi\b|hello\b|good\s+(?:morning|evening|afternoon|night)|how\s+are\s+you|yo\b)/i;
+  const isSearch = /^(search|look up|find|tell me about|latest|recent|news on|news about|update on)/i.test(t)
+    && !/github\.com/i.test(t)
+    && !_searchGreetings.test(t);
 
   if (isSearch) {
     await smartSearch(text, _searchSend, _chatAdd);
     return null;
   }
 
-  // ── GitHub repo extraction ─────────────────────────────────────────────
-  // Triggers: github.com URL anywhere in text, or explicit "from github" phrasing
-  const ghUrl = parseGithubUrl(text);
   const isGhSearch = /search\s+github|find\s+(on|in)\s+github|github\s+repos?\s+for/i.test(t);
 
   if (isGhSearch) {
