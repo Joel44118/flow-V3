@@ -1,15 +1,14 @@
 // ═══════════════════════════════════════════════════════════════
 // api/chat.js — Multi-Provider AI Chain
 //
-// Provider order: MiniMax → OpenRouter → Groq → HuggingFace
-//
-// MiniMax: 1M token context, best for coding + long conversations
-// OpenRouter: free frontier models per intent
-// Groq: ultra-fast fallback
-// HuggingFace: last resort
+// CHAIN MODEL RULE (always follow this order):
+//   1. Cerebras    — free, fastest inference, llama3.1-70b/8b
+//   2. OpenRouter  — free frontier models per intent
+//   3. Groq        — ultra-fast free fallback
+//   4. HuggingFace — last resort
 //
 // ENV VARS (Vercel Dashboard → Settings → Environment Variables):
-//   MINIMAX_API_KEY     platform.minimaxi.com → API Keys
+//   CEREBRAS_API_KEY    cloud.cerebras.ai → API Keys (free)
 //   OPENROUTER_API_KEY  openrouter.ai/keys
 //   GROQ_API_KEY        console.groq.com → API Keys (free)
 //   HF_TOKEN            huggingface.co/settings/tokens → Read
@@ -26,25 +25,23 @@ function detectIntent(text) {
 
 function trimMessages(messages) {
   const system  = messages.find(m => m.role === "system");
-  const history = messages.filter(m => m.role !== "system").slice(-8); // max 8 turns
+  const history = messages.filter(m => m.role !== "system").slice(-6);
   if (!system) return trimUserMessages(history);
   let sys = system.content;
-  // Aggressively strip large injected blocks — keep only personality + live context
   sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:|\nAGENT|\nSKILL|$)/s, "");
   sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow|\nLIVE CONTEXT:|$)/s, "");
   sys = sys.replace(/HARD LIMITS[\s\S]*?(?=\nWHAT I|\nI am Flow|\nLIVE CONTEXT:|$)/s, "");
   sys = sys.replace(/RAG KNOWLEDGE[\s\S]*?(?=\nLIVE CONTEXT:|\nAGENT|\nSKILL|$)/s, "");
   sys = sys.replace(/PROJECT CONTEXT[\s\S]*?(?=\nLIVE CONTEXT:|$)/s, "");
   sys = sys.replace(/EXTRACTED MEMORY[\s\S]*?(?=\nLIVE CONTEXT:|$)/s, "");
-  if (sys.length > 2000) sys = sys.slice(0, 2000) + "\n[trimmed]";
+  if (sys.length > 1500) sys = sys.slice(0, 1500) + "\n[trimmed]";
   return [{ role: "system", content: sys }, ...trimUserMessages(history)];
 }
 
 function trimUserMessages(messages) {
-  // Keep user messages under 4000 chars each — fits all free tier providers
   return messages.map(m => {
-    if (typeof m.content !== "string" || m.content.length <= 4000) return m;
-    const trimmed = m.content.slice(0, 1500) + "\n\n[... trimmed ...]\n\n" + m.content.slice(-2000);
+    if (typeof m.content !== "string" || m.content.length <= 2500) return m;
+    const trimmed = m.content.slice(0, 1000) + "\n\n[... trimmed ...]\n\n" + m.content.slice(-1300);
     return { ...m, content: trimmed };
   });
 }
@@ -61,40 +58,41 @@ function cleanReply(text) {
 
 const STOP4 = ["</s>", "<|eot_id|>", "Human:", "User:"];
 
-// ── MINIMAX ───────────────────────────────────────────────────────────────────
-// MiniMax-Text-01: 1M token context, strong at code and long conversations
-// Use for: coding (deep context), chat (full history), research
-const MM_TOKENS = { code: 4000, research: 2000, creative: 1000, pdf: 1500, chat: 800 };
+// ── 1. CEREBRAS — free, fastest inference ──────────────────────────────────
+const CB_MODELS = {
+  code:     [{ model: "llama3.1-70b", maxTokens: 2048 }, { model: "llama3.1-8b", maxTokens: 1500 }],
+  research: [{ model: "llama3.1-70b", maxTokens: 1024 }],
+  chat:     [{ model: "llama3.1-8b",  maxTokens: 600  }],
+  creative: [{ model: "llama3.1-70b", maxTokens: 800  }],
+  pdf:      [{ model: "llama3.1-8b",  maxTokens: 1000 }],
+};
 
-async function tryMiniMax(messages, intent, key) {
-  const maxTokens = MM_TOKENS[intent] || 800;
-  const ctrl = new AbortController();
-  const t    = setTimeout(() => ctrl.abort(), 9000);
-  try {
-    const r = await fetch("https://api.minimax.chat/v1/text/chatcompletion_v2", {
-      method:  "POST",
-      headers: {
-        "Authorization": `Bearer ${key}`,
-        "Content-Type":  "application/json",
-      },
-      body: JSON.stringify({
-        model:      "MiniMax-Text-01",
-        max_tokens: maxTokens,
-        messages,
-      }),
-      signal: ctrl.signal,
-    });
-    clearTimeout(t);
-    const data = await r.json();
-    if (!r.ok || !data.choices?.length) throw new Error(data.base_resp?.status_msg || data.error?.message || `HTTP ${r.status}`);
-    return { reply: cleanReply(data.choices[0].message.content), model: "MiniMax:MiniMax-Text-01" };
-  } catch (e) {
-    clearTimeout(t);
-    throw e;
+async function tryCerebras(messages, intent, key) {
+  const chain = CB_MODELS[intent] || CB_MODELS.chat;
+  for (const { model, maxTokens } of chain) {
+    const ctrl = new AbortController();
+    const t    = setTimeout(() => ctrl.abort(), 6000);
+    try {
+      const r = await fetch("https://api.cerebras.ai/v1/chat/completions", {
+        method:  "POST",
+        headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+        body:    JSON.stringify({ model, max_tokens: maxTokens, messages }),
+        signal:  ctrl.signal,
+      });
+      clearTimeout(t);
+      if (r.status === 429) { console.warn(`[Flow] Cerebras rate limit: ${model}`); continue; }
+      const data = await r.json();
+      if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
+      return { reply: cleanReply(data.choices[0].message.content), model: `Cerebras:${model}` };
+    } catch (e) {
+      clearTimeout(t);
+      console.warn(`[Flow] Cerebras ${model}: ${e.message}`);
+    }
   }
+  throw new Error("Cerebras: all models failed");
 }
 
-// ── OPENROUTER ────────────────────────────────────────────────────────────────
+// ── 2. OPENROUTER ────────────────────────────────────────────────────────────
 const OR_MODELS = {
   code:     [
     "qwen/qwen-2.5-coder-32b-instruct:free",
@@ -127,7 +125,7 @@ async function tryOpenRouter(messages, intent, key) {
   const maxTokens = OR_TOKENS[intent] || 500;
   for (const model of models) {
     const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 8500);
+    const t    = setTimeout(() => ctrl.abort(), 6500);
     try {
       const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method:  "POST",
@@ -143,20 +141,19 @@ async function tryOpenRouter(messages, intent, key) {
       clearTimeout(t);
       const data = await r.json();
       if (data.error?.message?.includes("Prompt tokens limit")) { console.warn("[Flow] OR token limit"); continue; }
-      if (r.status === 429)  { console.warn("[Flow] OR rate limit"); continue; }
+      if (r.status === 429) { console.warn("[Flow] OR rate limit"); continue; }
       if (r.status === 404 || data.error?.code === 404) { console.warn(`[Flow] OR 404: ${model}`); continue; }
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
       return { reply: cleanReply(data.choices[0].message.content), model: `OR:${model}` };
     } catch (e) {
       clearTimeout(t);
-      if (e.message === "token_limit" || e.message === "rate_limit") throw e;
       console.warn(`[Flow] OR ${model}: ${e.message}`);
     }
   }
   throw new Error("OpenRouter: all models failed");
 }
 
-// ── GROQ ──────────────────────────────────────────────────────────────────────
+// ── 3. GROQ ──────────────────────────────────────────────────────────────────
 const GROQ_MODELS = {
   code:     [
     { model: "mixtral-8x7b-32768",      maxTokens: 3000 },
@@ -209,7 +206,7 @@ async function tryGroq(messages, intent, key) {
   throw new Error("Groq: all models failed");
 }
 
-// ── HUGGINGFACE ───────────────────────────────────────────────────────────────
+// ── 4. HUGGINGFACE ───────────────────────────────────────────────────────────
 const HF_MODELS = [
   "mistralai/Mistral-7B-Instruct-v0.3",
   "HuggingFaceH4/zephyr-7b-beta",
@@ -248,15 +245,13 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST")    return res.status(405).json({ error: "POST only" });
 
-  const MM_KEY = process.env.MINIMAX_API_KEY;
-  const OR_KEY = process.env.OPENROUTER_API_KEY;
   const CB_KEY = process.env.CEREBRAS_API_KEY;
-  const TG_KEY = process.env.TOGETHER_API_KEY;
+  const OR_KEY = process.env.OPENROUTER_API_KEY;
   const GR_KEY = process.env.GROQ_API_KEY;
   const HF_KEY = process.env.HF_TOKEN;
 
-  if (!MM_KEY && !OR_KEY && !CB_KEY && !TG_KEY && !GR_KEY && !HF_KEY) {
-    return res.status(500).json({ error: "No AI provider configured. Add GROQ_API_KEY, CEREBRAS_API_KEY, or OPENROUTER_API_KEY in Vercel → Settings → Environment Variables" });
+  if (!CB_KEY && !OR_KEY && !GR_KEY && !HF_KEY) {
+    return res.status(500).json({ error: "No AI provider configured. Add CEREBRAS_API_KEY or GROQ_API_KEY in Vercel → Settings → Environment Variables" });
   }
 
   const { messages } = req.body || {};
@@ -266,9 +261,8 @@ export default async function handler(req, res) {
   const lastUser = [...trimmed].reverse().find(m => m.role === "user")?.content || "";
   const intent   = detectIntent(lastUser);
 
-  // Hard guard: if total payload is still massive after trimming, reject early with helpful message
   const totalChars = trimmed.reduce((s, m) => s + (m.content?.length || 0), 0);
-  if (totalChars > 8000) {
+  if (totalChars > 16000) {
     return res.status(200).json({
       reply: "That content is too large for me to process in one go, Boss. Try asking about a specific file or section instead of the whole thing.",
       model: "Flow:size-guard",
@@ -276,27 +270,18 @@ export default async function handler(req, res) {
     });
   }
 
-  console.log(`[Flow] intent=${intent} | MM=${!!MM_KEY} OR=${!!OR_KEY} CB=${!!CB_KEY} TG=${!!TG_KEY} Groq=${!!GR_KEY} HF=${!!HF_KEY}`);
+  console.log(`[Flow] intent=${intent} | CB=${!!CB_KEY} OR=${!!OR_KEY} Groq=${!!GR_KEY} HF=${!!HF_KEY}`);
 
   const errors = [];
 
-  // MiniMax first — best for coding (4K tokens) and long conversations (1M context)
-  // Get MINIMAX_API_KEY from platform.minimaxi.com → API Keys (JWT token format)
-  if (MM_KEY && MM_KEY.length > 10) {
-    try   { const r = await tryMiniMax(trimmed, intent, MM_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(`MiniMax: ${e.message}`); console.warn("[Flow] MiniMax failed:", e.message); }
+  // CHAIN MODEL RULE — always try in this order: Cerebras → OpenRouter → Groq → HF
+  if (CB_KEY) {
+    try   { const r = await tryCerebras(trimmed, intent, CB_KEY); return res.status(200).json({ ...r, intent }); }
+    catch (e) { errors.push(`Cerebras: ${e.message}`); }
   }
   if (OR_KEY) {
     try   { const r = await tryOpenRouter(trimmed, intent, OR_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`OpenRouter: ${e.message}`); }
-  }
-  if (CB_KEY) {
-    try   { const r = await tryCerebras(trimmed, intent, CB_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(`Cerebras: ${e.message}`); console.warn("[Flow] Cerebras failed:", e.message); }
-  }
-  if (TG_KEY) {
-    try   { const r = await tryTogether(trimmed, intent, TG_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(`Together: ${e.message}`); console.warn("[Flow] Together failed:", e.message); }
   }
   if (GR_KEY) {
     try   { const r = await tryGroq(trimmed, intent, GR_KEY); return res.status(200).json({ ...r, intent }); }
