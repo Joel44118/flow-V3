@@ -44,6 +44,7 @@ const SKILLS = [
 let _input   = null;
 let _palette = null;
 let _chip    = null;   // fixed div on body
+let _reposition = null; // fn set by _buildDOM to reposition palette above input
 let _hint    = null;   // fixed div on body
 let _onNoArg = null;
 
@@ -76,6 +77,27 @@ function _buildDOM() {
   _palette = document.createElement("div");
   _palette.id = "slash-palette";
   document.body.appendChild(_palette);
+
+  // Reposition palette above input panel dynamically — handles tall/growing input
+  function _repositionPalette() {
+    if (!_palette.classList.contains("open")) return;
+    const panel = _input.closest(".input-panel");
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const gap  = 8;
+    const maxH = Math.min(420, rect.top - 16);
+    _palette.style.position  = "fixed";
+    _palette.style.left      = "50%";
+    _palette.style.transform = "translateX(-50%)";
+    _palette.style.maxHeight = maxH + "px";
+    _palette.style.bottom    = (window.innerHeight - rect.top + gap) + "px";
+  }
+  window.addEventListener("resize", _repositionPalette);
+  setTimeout(() => {
+    const panel = _input?.closest(".input-panel");
+    if (panel && window.ResizeObserver) new ResizeObserver(_repositionPalette).observe(panel);
+  }, 0);
+  _reposition = _repositionPalette;
 
   // Chip (hidden until a skill is selected)
   _chip = document.createElement("div");
@@ -131,6 +153,7 @@ function _onInput() {
     _activeIdx = _filtered.length ? 0 : -1;
     _renderPalette();
     _palette.classList.add("open");
+    _reposition?.();
   } else {
     _closePalette();
   }
