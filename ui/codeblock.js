@@ -184,8 +184,14 @@ function buildBlock(lang, src) {
   wrap.appendChild(pre);
 
   // ── Dot behaviours ─────────────────────────
-  let collapsed = false;
+  // Default state: COLLAPSED — tap red dot or header label to expand and view
+  let collapsed = true;
   let expanded  = false;
+
+  pre.style.display   = "none";
+  badge.style.opacity = "1";
+  dot1.style.opacity  = "0.5";
+  wrap.classList.add("collapsed");
 
   // Red — collapse/expand the code body
   dot1.addEventListener("click", () => {
