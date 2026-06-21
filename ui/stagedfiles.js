@@ -22,12 +22,53 @@ function _buildTray() {
   _tray.id = "staged-tray";
   _tray.style.display = "none";
 
+  // #staged-tray is position:fixed (see styles.css) — .input-panel is
+  // ALSO position:fixed, so inserting the tray as a normal-flow sibling
+  // would NOT make it sit next to the input bar (it would just render
+  // wherever it falls in the page's normal flow, i.e. up near the top).
+  // Append straight to body and let _reposition() pin it via JS instead.
+  document.body.appendChild(_tray);
+
+  _wireReposition();
+}
+
+// ── Keep the tray pinned just above the input bar, and stacked above ───────
+// the skill chip (#slash-chip from ui/slash.js) whenever it's also showing,
+// so the two never overlap. Uses plain DOM lookups (no import of slash.js)
+// to avoid introducing a cross-module dependency.
+function _reposition() {
+  if (!_tray) return;
   const panel = document.querySelector(".input-panel");
-  if (panel && panel.parentNode) {
-    panel.parentNode.insertBefore(_tray, panel);
-  } else {
-    document.body.appendChild(_tray);
+  if (!panel) return;
+
+  const gap  = 10;
+  const rect = panel.getBoundingClientRect();
+  let bottomPx = window.innerHeight - rect.top + gap;
+
+  const chip = document.getElementById("slash-chip");
+  if (chip && chip.style.display === "flex") {
+    bottomPx += chip.getBoundingClientRect().height + gap;
   }
+
+  _tray.style.bottom = bottomPx + "px";
+}
+
+function _wireReposition() {
+  window.addEventListener("resize", _reposition);
+
+  const panel = document.querySelector(".input-panel");
+  if (panel && window.ResizeObserver) {
+    new ResizeObserver(_reposition).observe(panel);
+  }
+
+  // The chip's own visibility toggles via inline style (set in ui/slash.js),
+  // so watch for that to re-stack the tray above/below it as needed.
+  const chip = document.getElementById("slash-chip");
+  if (chip && window.MutationObserver) {
+    new MutationObserver(_reposition).observe(chip, { attributes: true, attributeFilter: ["style"] });
+  }
+
+  _reposition();
 }
 
 // ── Classify a file ─────────────────────────────────────────────────────
@@ -96,6 +137,7 @@ function _render() {
   }
 
   _tray.style.display = "flex";
+  _reposition();
 
   for (const entry of _staged) {
     const card = document.createElement("div");
