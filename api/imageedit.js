@@ -39,9 +39,13 @@ export default async function handler(req, res) {
         "Content-Type":  "application/json",
       },
       body: JSON.stringify({
-        inputs: instruction,
+        // HF's image-to-image task takes the IMAGE as `inputs` and the
+        // text instruction as `parameters.prompt` — this used to be
+        // backwards (instruction as inputs, image buried in parameters),
+        // which is why every edit request failed.
+        inputs: image, // base64 input image
         parameters: {
-          image: image, // base64 input image
+          prompt: instruction,
         },
       }),
       signal: ctrl.signal,
