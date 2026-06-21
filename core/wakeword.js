@@ -16,6 +16,11 @@ let wakeRec    = null;
 let cmdRec     = null;
 let _wakeLock  = false;
 
+// Single source of truth for the wake pattern lives in CONFIG.WAKE_REGEX —
+// build a global version off the same source for stripping the phrase out
+// of a transcript to recover any inline command spoken in the same breath.
+const WAKE_STRIP_RX = new RegExp(CONFIG.WAKE_REGEX.source, "gi");
+
 // ── Audio ─────────────────────────────────────────────────────────────────
 let _audioCtx = null;
 function _ctx() {
@@ -45,9 +50,14 @@ export function startWakeListener() {
 
   wakeRec = new SR();
   wakeRec.continuous     = true;
-  wakeRec.interimResults = false;
+  // Listening to interim (not-yet-final) results too means the wake phrase
+  // is caught the instant the engine's first guess matches, instead of
+  // waiting for it to finish "endpointing" the whole utterance — faster
+  // AND more sensitive, since a quiet/distant "hey flow" sometimes never
+  // gets a confident final result at all.
+  wakeRec.interimResults = true;
   wakeRec.lang           = "en-US";
-  wakeRec.maxAlternatives = 5;
+  wakeRec.maxAlternatives = 8; // wider net of guesses to test the wake pattern against
 
   wakeRec.onresult = (e) => {
     if (Speech.isSpeaking()) return;
@@ -55,25 +65,27 @@ export function startWakeListener() {
 
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const res = e.results[i];
-      if (!res.isFinal) continue;
 
       let all = "";
       for (let a = 0; a < res.length; a++) all += " " + res[a].transcript.toLowerCase();
 
-      const isWake = /\bhey\s+fl[ao]w?\b|\bhey\s+flo\b/i.test(all)
-                  || CONFIG.WAKE_REGEX?.test(all);
+      const isWake = CONFIG.WAKE_REGEX?.test(all);
       if (!isWake) continue;
-
-      // Extract any inline command after the wake phrase
-      const inlineCmd = res[0].transcript.toLowerCase()
-        .replace(/\bhey\s+fl[aeiou]?\w{0,3}\b/gi, "")
-        .replace(/[.,!?]/g, "")
-        .trim();
 
       _wakeLock = true;
       document.getElementById("wake-indicator")?.classList.add("active");
       _orbFn?.("listening");
       playActivationBeep();  // instant feedback
+
+      // Only trust an inline command ("hey flow, what's the weather") off a
+      // FINAL result — interim text for the tail of the utterance is often
+      // still being revised and isn't reliable enough to act on yet.
+      const inlineCmd = res.isFinal
+        ? res[0].transcript.toLowerCase()
+            .replace(WAKE_STRIP_RX, "")
+            .replace(/[.,!?]/g, "")
+            .trim()
+        : "";
 
       if (inlineCmd.length > 3) {
         // Full command in same utterance — send immediately
@@ -84,10 +96,12 @@ export function startWakeListener() {
           _orbFn?.("idle");
         }, 400);
       } else {
-        // Just "Hey Flow" — open mic IMMEDIATELY, no wait
+        // Just "Hey Flow" (or wake caught early via interim) — open mic
+        // IMMEDIATELY, no wait, and let startCommandListen capture the rest
         _wakeLock = false;
         startCommandListen();
       }
+      return;
     }
   };
 
@@ -98,7 +112,11 @@ export function startWakeListener() {
   };
 
   wakeRec.onend = () => {
-    setTimeout(() => { try { wakeRec.start(); } catch(_){} }, 300);
+    // Restart as fast as the browser will allow — every millisecond the
+    // wake listener is down is a window where "Hey Flow" goes unheard.
+    // A short delay is still needed: calling start() while the previous
+    // session is still tearing down throws InvalidStateError in Chrome.
+    setTimeout(() => { try { wakeRec.start(); } catch(_){} }, 120);
   };
 
   try { wakeRec.start(); } catch(_){}
