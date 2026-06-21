@@ -30,7 +30,13 @@ RULES — never break:
   MAX_TOKENS:    400,  // per-request default (api/chat.js overrides per intent)
   HISTORY_LIMIT: 12,   // keep last 12 exchanges in API call (trimmed further in api/chat.js)
   MEMORY_LIMIT:  50,
-  WAKE_REGEX:    /\bhey\s+fl[aeiou]?\w{0,3}\b/i,
+  // Matches a greeting-ish prefix ("hey/hay/hi/yo/ay/okay/ok") + anything
+  // starting "fl" (flow/flo/floe/flaw/float/flown/flows/flowing/...).
+  // Broadened on purpose: at a distance, speech-to-text mishears both the
+  // greeting AND "flow" itself, so this trades a little false-positive risk
+  // (harmless — it just opens the mic and times out after 3s) for much
+  // better recall on quiet/far-away audio.
+  WAKE_REGEX:    /\b(?:hey|hay|hi|yo|ay|okay|ok|k)\b[\s,]{0,3}\bfl\w{0,5}\b/i,
   WEATHER_TTL:   10 * 60 * 1000,
 
   ORB: {
