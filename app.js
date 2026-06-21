@@ -195,34 +195,54 @@ async function flowSend(text) {
   if (!text?.trim()) return;
   text = text.trim();
 
-  // Intercept pending file push (set by /push command)
-  if (await checkPendingPush(text)) return;
+  // Echo the user's own message + record it to memory FIRST, before any
+  // local-command parsing runs. Previously this only happened deep inside
+  // sendMessage() in core/ai.js — so if any parser below it threw (more
+  // likely the longer a session ran and the bigger history/repo context
+  // got), the message never rendered at all and Flow looked dead. Now it
+  // always shows immediately, and a real error is surfaced if something
+  // downstream breaks instead of failing silently.
+  Chat.add(text, "user");
+  Memory.add("user", text);
 
-  // Knowledge base
-  if (/open\s+knowledge(\s+base)?|knowledge\s+base|my\s+knowledge/i.test(text)) {
-    Knowledge.open(); return;
+  try {
+    // Intercept pending file push (set by /push command)
+    if (await checkPendingPush(text)) return;
+
+    // Knowledge base
+    if (/open\s+knowledge(\s+base)?|knowledge\s+base|my\s+knowledge/i.test(text)) {
+      Knowledge.open(); return;
+    }
+
+    // Vision commands (camera, screen, yolo)
+    const vis = await parseVisionCommand(text);
+    if (vis !== false) { if (vis !== null) { Chat.add(vis,"bot"); Speech.speak(vis); } return; }
+
+    // Project workspace commands
+    const projCmd = Projects.parse(text);
+    if (projCmd) { handleProjectCommand(projCmd); return; }
+
+    // Local commands (time, weather, alarms, sites, notepad)
+    const local = await parseCommand(text);
+    if (local !== false) { if (local !== null) { Chat.add(local,"bot"); Speech.speak(local); } return; }
+
+    // Search, GitHub, goals, agents, push/scaffold
+    const search = await parseSearchGoalCommand(text);
+    if (search !== false) { if (search !== null) { Chat.add(search,"bot"); Speech.speak(search); } return; }
+
+    // AI — user bubble already echoed above, so skip the duplicate
+    await sendMessage(text, { skipEcho: true });
+    setGlobeBackground(false);  // reset world map after response
+    setTimeout(() => extractMemory(Memory.get()), 1500);
+  } catch (err) {
+    // Safety net — without this, any uncaught error in the parsers above
+    // (e.g. on a huge pasted error log / code block) silently killed the
+    // whole turn: no reply, no error, nothing. Now it always surfaces.
+    console.error("[Flow] flowSend error:", err);
+    Chat.hideTyping();
+    Chat.addError("Something broke handling that — " + (err?.message || "unknown error") + ". Try again or rephrase it.");
+    Orb.setState("idle");
   }
-
-  // Vision commands (camera, screen, yolo)
-  const vis = await parseVisionCommand(text);
-  if (vis !== false) { if (vis !== null) { Chat.add(vis,"bot"); Speech.speak(vis); } return; }
-
-  // Project workspace commands
-  const projCmd = Projects.parse(text);
-  if (projCmd) { handleProjectCommand(projCmd); return; }
-
-  // Local commands (time, weather, alarms, sites, notepad)
-  const local = await parseCommand(text);
-  if (local !== false) { if (local !== null) { Chat.add(local,"bot"); Speech.speak(local); } return; }
-
-  // Search, GitHub, goals, agents, push/scaffold
-  const search = await parseSearchGoalCommand(text);
-  if (search !== false) { if (search !== null) { Chat.add(search,"bot"); Speech.speak(search); } return; }
-
-  // AI
-  await sendMessage(text);
-  setGlobeBackground(false);  // reset world map after response
-  setTimeout(() => extractMemory(Memory.get()), 1500);
 }
 
 // ── Input wiring ──────────────────────────────────────────────────────────
@@ -255,7 +275,13 @@ async function doSend() {
   // Plain text only
   if (!text) return;
   clearInput();
-  flowSend(text);
+  flowSend(text).catch(err => {
+    // flowSend already has its own try/catch, but this is a last-resort
+    // net in case something throws before that (e.g. Memory.add itself).
+    console.error("[Flow] Unhandled send error:", err);
+    Chat.addError("Something went wrong sending that — " + (err?.message || "unknown error"));
+    Orb.setState("idle");
+  });
 }
 
 // Enter key — only fires if palette is NOT open
