@@ -23,7 +23,7 @@ export function initFileUpload(chat, sendFn, orbFn) {
   _orbFn  = orbFn;
 }
 
-const EDIT_INTENT_RX = /\b(edit|change|modify|remove|erase|delete|fix|recolou?r|recolor|brighten|darken|crop|resize|enhance|touch.?up|retouch|add.{0,15}to (?:it|this|the image)|make it|turn it|background)\b/i;
+const EDIT_INTENT_RX = /\b(edit|change|modify|remove|erase|delete|fix|recolou?r|recolor|brighten|darken|crop|resize|enhance|touch.?up|retouch|sharpen|blur|upscale|colorize|colourize|desaturate|grayscale|greyscale|invert|rotate|flip|filter|sketch|cartoon|paint(?:ing)?|style(?:ize)?|convert|increase|decrease|add.{0,15}to (?:it|this|the image)|make it|turn it|turn (?:this|that) into|background)\b/i;
 
 // ── Main entry — processes a batch of staged files + optional instruction ──
 export async function handleFiles(fileList, instruction = "") {
@@ -78,6 +78,10 @@ async function _processImages(images, instruction) {
     _renderImagePreview(dataUrl, img.name, "user");
   }
 
+  // Show what Joel actually typed as his own message — it was previously
+  // only ever folded silently into the AI prompt, never shown in chat.
+  if (instruction) _chat?.add(instruction, "user");
+
   window._lastUploadedBase64 = previews[0]?.b64; // for background-removal command compat
 
   const prompt = instruction
@@ -93,11 +97,11 @@ async function _processImages(images, instruction) {
       body:    JSON.stringify({ image: previews[0].b64, prompt }),
     });
     const data = await res.json();
-    if (data.description) {
+    if (res.ok && data.description) {
       _chat?.add(data.description, "bot");
       import("../core/speech.js").then(m => m.Speech.speak(data.description));
     } else {
-      _chat?.addError("Vision API couldn't read this image.");
+      _chat?.addError("Vision API couldn't read this image" + (data.error ? ": " + data.error : ".") );
     }
   } catch (e) {
     _chat?.addError("Image processing failed: " + e.message);
@@ -108,7 +112,8 @@ async function _processImages(images, instruction) {
 async function _editImage(file, instruction) {
   const dataUrl = await _toDataURL(file);
   _renderImagePreview(dataUrl, file.name, "user");
-  _chat?.add(`Editing "${file.name}": ${instruction}...`, "bot");
+  _chat?.add(instruction, "user");
+  _chat?.add(`Editing "${file.name}"...`, "bot");
 
   try {
     const res = await fetch("/api/imageedit", {
