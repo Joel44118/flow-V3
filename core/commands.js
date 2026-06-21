@@ -454,6 +454,8 @@ export async function parseSearchGoalCommand(text) {
     }
   }
 
+  // ── Direct GitHub URL pasted in conversation (e.g. "explain github.com/x/y") ──
+  const ghUrl = parseGithubUrl(text);
   if (ghUrl) {
     const { owner, repo, path } = ghUrl;
     const isDeep = /deep|full|entire|all files|everything|explain|analyse|analyze|how does|understand/i.test(t);
