@@ -99,6 +99,13 @@ export function stageFiles(fileList) {
         _render();
       };
       reader.readAsDataURL(file);
+    } else if (kind === "video") {
+      // Create the blob URL once, up front, and reuse it on every re-render.
+      // Previously this was created fresh inside _render() on every single
+      // staging change (adding/removing ANY file re-renders the whole tray)
+      // and the old URL was never revoked — each upload leaked another
+      // blob URL, and the UI got progressively laggier the more you staged.
+      entry.previewUrl = URL.createObjectURL(file);
     }
   }
   _render();
@@ -106,12 +113,17 @@ export function stageFiles(fileList) {
 
 // ── Remove a staged file by id ────────────────────────────────────────────
 function _remove(id) {
+  const entry = _staged.find(f => f.id === id);
+  if (entry?.kind === "video" && entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
   _staged = _staged.filter(f => f.id !== id);
   _render();
 }
 
 // ── Clear all staged files (called after send) ───────────────────────────
 export function clearStaged() {
+  for (const entry of _staged) {
+    if (entry.kind === "video" && entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+  }
   _staged = [];
   _render();
 }
@@ -157,7 +169,7 @@ function _render() {
       card.appendChild(img);
     } else if (entry.kind === "video") {
       const vid = document.createElement("video");
-      vid.src = URL.createObjectURL(entry.file);
+      vid.src = entry.previewUrl || "";
       vid.className = "staged-thumb";
       vid.muted = true;
       card.appendChild(vid);
