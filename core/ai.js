@@ -73,7 +73,7 @@ Example: if asked to "push files to GitHub" — do NOT say "pushed!" — the pus
 Stay in character as Flow. Never break the fourth wall.`;
 }
 
-export async function sendMessage(overrideText) {
+export async function sendMessage(overrideText, opts = {}) {
   // Always query DOM fresh — never cache
   const inputEl = document.getElementById("user-input");
   let text = "";
@@ -88,8 +88,13 @@ export async function sendMessage(overrideText) {
   if (inputEl) inputEl.textContent = "";
 
   console.log("[Flow] →", text);
-  _chat.add(text, "user");
-  Memory.add("user", text);
+  // skipEcho: caller (flowSend in app.js) already rendered the user bubble
+  // and recorded it to Memory before running its own local-command parsing,
+  // so the AI path here doesn't duplicate it.
+  if (!opts.skipEcho) {
+    _chat.add(text, "user");
+    Memory.add("user", text);
+  }
 
   // Local commands — no API needed
   const local = await parseCommand(text);
