@@ -28,13 +28,15 @@ function _sanitizeContent(str) {
 let _notepad = null;
 let _speak   = null;
 let _vision  = null;
+let _screenControl = null;
 let _searchSend  = null;
 let _chatAdd     = null;
 let _getHistory  = null;
 
-export function setNotepad(n)          { _notepad    = n; }
-export function setSpeakFn(fn)         { _speak      = fn; }
-export function setVision(v)           { _vision     = v; }
+export function setNotepad(n)          { _notepad       = n; }
+export function setSpeakFn(fn)         { _speak         = fn; }
+export function setVision(v)           { _vision        = v; }
+export function setScreenControl(sc)   { _screenControl = sc; }
 export function setSearchHandlers(s,c) { _searchSend = s; _chatAdd = c; }
 export function setHistoryFn(fn)       { _getHistory = fn; }
 
@@ -138,6 +140,14 @@ export async function parseVisionCommand(text) {
   }
   if (/what.s on my screen|read.*screen/i.test(t)) { _vision?.ScreenVision.look(text); return null; }
   if (/who is that|who am i/i.test(t))              { _vision?.Camera.look(text);       return null; }
+
+  // ── Screen control (scroll/click/type/read) ────────────────────────────
+  // Only attempt when screen is actively shared — avoids false positives on
+  // casual messages containing words like "scroll" or "click".
+  if (_screenControl && _vision?.ScreenVision._video) {
+    const handled = await _screenControl.parseScreenControl(text);
+    if (handled) return null;
+  }
 
   return false;
 }
