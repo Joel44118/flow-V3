@@ -1,60 +1,61 @@
 // ═══════════════════════════════════════════
-// ui/gesture.js — Hand Gesture Screen Control
+// ui/gesture.js — Hand Gesture Screen Control (v2)
 //
-// Uses MediaPipe Hands (CDN) on the camera feed.
-// Runs entirely in the browser — no server calls.
+// FIX 1 — Extension ID:
+//   Reuses sendToExtension() from screencontrol.js
+//   which already handles the ID correctly.
+//   No more direct chrome.runtime.sendMessage here.
+//
+// FIX 2 — Camera conflict:
+//   Previous version used `new window.Camera(videoEl)`
+//   from MediaPipe's camera_utils, which tried to
+//   reopen the camera stream Flow already holds.
+//   That made the video container jump/disappear.
+//   Now we drive MediaPipe via requestAnimationFrame
+//   on the EXISTING <video> element — no new stream,
+//   no conflict, camera box stays exactly where it is.
+//
+// FIX 3 — Skeleton freeze on 1 finger:
+//   cursor_move was firing 30x/sec, flooding the
+//   extension message channel. The backlog caused
+//   MediaPipe's result callback to stall.
+//   Now cursor_move is throttled to max 10/sec
+//   (one message per 100ms) so the channel stays clear.
 //
 // GESTURE MAP:
-//   1 finger (index up)      → move cursor
-//   2 fingers (index+middle) → scroll
-//   3 fingers                → click
-//   fist / 0 fingers         → pause / idle
-//
-// Works by sending commands through the same
-// chrome.runtime.sendMessage bridge as screencontrol.js
-// — so the extension must be installed.
-//
-// CURSOR MOVEMENT:
-//   The extension injects a floating dot cursor
-//   onto the target tab that mirrors your index
-//   fingertip position (mapped from camera space
-//   to screen space). When you switch to 3 fingers
-//   the cursor position is clicked. This means you
-//   never have to leave the target tab to control it.
-//
-// SCROLL:
-//   2-finger vertical movement → scroll up/down
-//   Speed scales with how fast you move your hand.
+//   1 finger  → move cursor on target tab
+//   2 fingers → scroll (hand Y position controls direction)
+//   3 fingers → click at cursor
+//   fist/0    → idle
 // ═══════════════════════════════════════════
 
-// MediaPipe Hands is loaded lazily from CDN on first gesture.start()
-// so it doesn't impact Flow's initial load time at all.
-const MP_HANDS_URL  = "https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js";
-const MP_CAMERA_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js";
-const MP_DRAW_URL   = "https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js";
+import { sendToExtension } from "./screencontrol.js";
+
+const MP_HANDS_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js";
+const MP_DRAW_URL  = "https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js";
 
 let _chat    = null;
 let _orb     = null;
 let _running = false;
 let _hands   = null;
-let _mpCam   = null;
+let _rafId   = null;   // requestAnimationFrame handle
 let _videoEl = null;
 let _canvas  = null;
 let _ctx     = null;
-let _overlay = null;
 
-// Smoothing — raw landmark coordinates are jittery; we EWA-smooth them
+// Smoothing
 let _smoothX = 0.5, _smoothY = 0.5;
-const SMOOTH  = 0.35; // lower = smoother but laggier
+const SMOOTH = 0.3;
 
-// Scroll state
-let _prevScrollY  = null;
-let _scrollCooldown = 0;
+// Throttle cursor_move — max 10 messages/sec
+let _lastCursorSend = 0;
+const CURSOR_INTERVAL = 100; // ms
 
-// Click state — debounce so one "3 fingers" doesn't fire 30 clicks
-let _clickCooldown = 0;
+// Gesture debounce
 let _lastGesture   = "";
-let _gestureFrames = 0; // how many consecutive frames the same gesture held
+let _gestureFrames = 0;
+let _scrollCooldown = 0;
+let _clickCooldown  = 0;
 
 export function initGesture(chat, orb) {
   _chat = chat;
@@ -68,22 +69,31 @@ export const Gesture = {
     if (_running) { this.stop(); return; }
 
     if (!videoEl) {
-      _chat?.addError("Gesture control needs the camera. Say 'open camera' first, then 'start gesture control'.");
+      _chat?.addError(
+        "Open camera first, then say 'start gesture control'.\n" +
+        "Example: 'open camera' → wait for camera → 'start gesture control'"
+      );
       return;
     }
 
     _videoEl = videoEl;
     _chat?.add(
-      "🖐 Gesture control starting...\n\n" +
-      "**1 finger** → move cursor on target tab\n" +
-      "**2 fingers** → scroll (move hand up/down)\n" +
-      "**3 fingers** → click at cursor position\n" +
-      "**Fist** → pause\n\n" +
-      "Make sure the Flow extension is installed and you have another tab open.",
+      "🖐 Gesture control loading (~1MB)...\n\n" +
+      "**1 finger** — move cursor on target tab\n" +
+      "**2 fingers** — scroll (hand above centre = up, below = down)\n" +
+      "**3 fingers** — click at cursor position\n" +
+      "**Fist** — pause\n\n" +
+      "Extension must be installed and another tab must be open.",
       "bot"
     );
 
-    await _loadMediaPipe();
+    try {
+      await _loadMediaPipe();
+    } catch (e) {
+      _chat?.addError("Failed to load MediaPipe: " + e.message);
+      return;
+    }
+
     _setupCanvas();
     _initHands();
     _running = true;
@@ -91,152 +101,173 @@ export const Gesture = {
 
   stop() {
     _running = false;
-    _mpCam?.stop();
-    _mpCam  = null;
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
     _hands  = null;
-    _overlay?.remove();
-    _overlay = null;
     _canvas?.remove();
     _canvas = null;
     _ctx    = null;
-    _chat?.add("Gesture control stopped.", "bot");
+    _videoEl = null;
+    // Reset state
+    _smoothX = 0.5; _smoothY = 0.5;
+    _lastGesture = ""; _gestureFrames = 0;
+    _scrollCooldown = 0; _clickCooldown = 0;
+    _chat?.add("Gesture control off.", "bot");
   },
 
   isRunning() { return _running; },
 };
 
-// ── Load MediaPipe scripts lazily ─────────────────────────────────────────
+// ── Load MediaPipe scripts (no camera_utils — we use rAF instead) ─────────
 function _loadMediaPipe() {
   return new Promise((resolve, reject) => {
     if (window.Hands) { resolve(); return; }
 
-    const scripts = [MP_HANDS_URL, MP_DRAW_URL, MP_CAMERA_URL];
+    // Only need hands.js and drawing_utils — NOT camera_utils
+    // (camera_utils would try to reopen the camera stream)
+    const scripts = [MP_HANDS_URL, MP_DRAW_URL];
     let loaded = 0;
 
     scripts.forEach(src => {
-      const s = document.createElement("script");
-      s.src = src;
-      s.onload  = () => { if (++loaded === scripts.length) resolve(); };
-      s.onerror = () => reject(new Error("Failed to load MediaPipe from CDN"));
+      if (document.querySelector(`script[src="${src}"]`)) { loaded++; return; }
+      const s    = document.createElement("script");
+      s.src      = src;
+      s.onload   = () => { if (++loaded === scripts.length) resolve(); };
+      s.onerror  = () => reject(new Error("Failed to load: " + src));
       document.head.appendChild(s);
     });
+
+    if (loaded === scripts.length) resolve();
   });
 }
 
-// ── Canvas overlay on top of the camera feed ─────────────────────────────
+// ── Canvas overlay — positioned over the camera video ────────────────────
 function _setupCanvas() {
-  // Find the camera container Flow already rendered
-  const camContainer = document.querySelector(".flow-cam-container, #cam-container, .cam-wrap")
-    || _videoEl?.parentElement;
+  const parent = _videoEl?.parentElement;
+  if (!parent) return;
 
-  if (!camContainer) return;
+  // Remove any old canvas from a previous session
+  parent.querySelector(".gesture-canvas")?.remove();
 
   _canvas = document.createElement("canvas");
+  _canvas.className = "gesture-canvas";
   _canvas.width  = 320;
   _canvas.height = 240;
-  _canvas.style.cssText = [
-    "position:absolute", "top:0", "left:0",
-    "width:100%", "height:100%",
-    "pointer-events:none", "z-index:10",
-    "border-radius:inherit",
-  ].join(";");
+  Object.assign(_canvas.style, {
+    position:      "absolute",
+    top:           "0", left: "0",
+    width:         "100%", height: "100%",
+    pointerEvents: "none",
+    zIndex:        "10",
+    borderRadius:  "inherit",
+  });
 
-  camContainer.style.position = "relative";
-  camContainer.appendChild(_canvas);
+  // Make parent relative so canvas positions correctly over video
+  if (window.getComputedStyle(parent).position === "static") {
+    parent.style.position = "relative";
+  }
+  parent.appendChild(_canvas);
   _ctx = _canvas.getContext("2d");
 }
 
 // ── Init MediaPipe Hands ──────────────────────────────────────────────────
 function _initHands() {
   if (!window.Hands) {
-    _chat?.addError("MediaPipe failed to load. Check your internet connection.");
+    _chat?.addError("MediaPipe Hands didn't load. Check your connection and try again.");
+    _running = false;
     return;
   }
 
   _hands = new window.Hands({
-    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`
+    locateFile: f =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`,
   });
 
   _hands.setOptions({
-    maxNumHands:      1,
-    modelComplexity:  0,   // 0 = lite, fastest
+    maxNumHands:            1,
+    modelComplexity:        0,   // lite model — fastest
     minDetectionConfidence: 0.75,
     minTrackingConfidence:  0.6,
   });
 
   _hands.onResults(_onResults);
 
-  if (window.Camera) {
-    _mpCam = new window.Camera(_videoEl, {
-      onFrame: async () => {
-        if (!_running) return;
-        await _hands.send({ image: _videoEl });
-      },
-      width: 320, height: 240,
-    });
-    _mpCam.start();
-    _chat?.add("✅ Gesture control active. Show your hand to the camera.", "bot");
-  } else {
-    _chat?.addError("MediaPipe Camera utils didn't load. Try refreshing.");
-  }
+  // Drive MediaPipe via rAF on the existing video — no new camera stream
+  const _loop = async () => {
+    if (!_running) return;
+    if (_videoEl && _videoEl.readyState >= 2) {
+      // send() is async but we don't await it — rAF keeps running at display rate
+      _hands.send({ image: _videoEl }).catch(() => {});
+    }
+    _rafId = requestAnimationFrame(_loop);
+  };
+
+  _rafId = requestAnimationFrame(_loop);
+  _chat?.add("✅ Gesture control active — show your hand to the camera.", "bot");
 }
 
-// ── Process each frame result ─────────────────────────────────────────────
+// ── Process MediaPipe results ─────────────────────────────────────────────
 function _onResults(results) {
   if (!_ctx || !_running) return;
 
   _ctx.clearRect(0, 0, 320, 240);
 
   if (!results.multiHandLandmarks?.length) {
+    // No hand visible — reset consistency counters
     _lastGesture   = "";
     _gestureFrames = 0;
-    _prevScrollY   = null;
     return;
   }
 
   const lm      = results.multiHandLandmarks[0];
   const fingers = _countFingers(lm);
-  const gesture = `${fingers}f`;
+  const gesture = fingers + "f";
 
-  // Draw skeleton on canvas
+  // Mirror the skeleton to match what user sees (camera is front-facing)
   if (window.drawConnectors && window.HAND_CONNECTIONS) {
     _ctx.save();
     _ctx.scale(-1, 1);
     _ctx.translate(-320, 0);
-    window.drawConnectors(_ctx, lm, window.HAND_CONNECTIONS, { color: "rgba(56,189,248,0.6)", lineWidth: 1.5 });
-    window.drawLandmarks(_ctx, lm, { color: "#38bdf8", lineWidth: 1, radius: 2 });
+    window.drawConnectors(_ctx, lm, window.HAND_CONNECTIONS,
+      { color: "rgba(56,189,248,0.55)", lineWidth: 1.5 });
+    window.drawLandmarks(_ctx, lm,
+      { color: "#38bdf8", lineWidth: 1, radius: 2 });
     _ctx.restore();
   }
 
-  // Track gesture consistency — require N frames to avoid flickering
+  // Track how many consecutive frames the same gesture has been held
   if (gesture === _lastGesture) {
     _gestureFrames++;
   } else {
     _lastGesture   = gesture;
     _gestureFrames = 1;
+    // Reset scroll/click cooldowns when gesture changes so new gestures
+    // respond immediately instead of waiting out the old cooldown
+    if (fingers !== 2) _scrollCooldown = 0;
+    if (fingers !== 3) _clickCooldown  = Math.min(_clickCooldown, 3);
   }
 
-  // Index fingertip (landmark 8) — mirrored X for natural feel
-  const tipX = 1 - lm[8].x; // mirror horizontally
+  // Index fingertip (landmark 8), X mirrored for natural movement
+  const tipX = 1 - lm[8].x;
   const tipY = lm[8].y;
 
   // EWA smooth
   _smoothX += (tipX - _smoothX) * SMOOTH;
   _smoothY += (tipY - _smoothY) * SMOOTH;
 
-  // Draw fingertip dot
+  // Draw fingertip indicator dot
   _ctx.beginPath();
-  _ctx.arc(_smoothX * 320, _smoothY * 240, 6, 0, Math.PI * 2);
+  _ctx.arc(_smoothX * 320, _smoothY * 240, 7, 0, Math.PI * 2);
   _ctx.fillStyle   = fingers === 3 ? "#34d399" : fingers === 2 ? "#f59e0b" : "#38bdf8";
-  _ctx.strokeStyle = "white";
+  _ctx.strokeStyle = "rgba(255,255,255,0.9)";
   _ctx.lineWidth   = 2;
   _ctx.fill();
   _ctx.stroke();
 
-  // Draw gesture label
-  const label = fingers === 1 ? "MOVE" : fingers === 2 ? "SCROLL" : fingers === 3 ? "CLICK" : "PAUSE";
-  _ctx.fillStyle = "rgba(2,6,23,0.75)";
-  _ctx.fillRect(4, 4, 72, 20);
+  // Label
+  const label = fingers === 0 ? "PAUSE" : fingers === 1 ? "MOVE"
+              : fingers === 2 ? "SCROLL" : fingers === 3 ? "CLICK" : `${fingers}✋`;
+  _ctx.fillStyle = "rgba(2,6,23,0.78)";
+  _ctx.fillRect(4, 4, 80, 20);
   _ctx.fillStyle = "#38bdf8";
   _ctx.font      = "bold 11px monospace";
   _ctx.fillText(`✋ ${label}`, 8, 18);
@@ -245,72 +276,54 @@ function _onResults(results) {
   if (_scrollCooldown > 0) _scrollCooldown--;
   if (_clickCooldown  > 0) _clickCooldown--;
 
-  // Only act after the gesture has been held for a few frames (reduces noise)
+  // Require gesture to be held for ≥3 frames before acting (noise filter)
   if (_gestureFrames < 3) return;
 
-  _dispatchGesture(fingers, _smoothX, _smoothY);
+  _dispatch(fingers, _smoothX, _smoothY);
 }
 
-// ── Map finger count → action ─────────────────────────────────────────────
-function _dispatchGesture(fingers, x, y) {
+// ── Gesture → extension action ────────────────────────────────────────────
+function _dispatch(fingers, x, y) {
+
   if (fingers === 1) {
-    // Move the injected cursor on the target tab
-    _sendToExtension("cursor_move", { x, y });
+    // FIX 3: throttle to 10/sec — prevents message backlog that froze skeleton
+    const now = Date.now();
+    if (now - _lastCursorSend < CURSOR_INTERVAL) return;
+    _lastCursorSend = now;
+    sendToExtension("cursor_move", { x, y });
     return;
   }
 
   if (fingers === 2 && _scrollCooldown === 0) {
-    // Scroll based on Y position relative to screen centre
-    // Above centre → scroll up, below → scroll down
-    const dy     = y - 0.5;          // -0.5 to +0.5
-    const speed  = Math.abs(dy);
-    if (speed < 0.08) return;        // dead zone — don't scroll when hand is level
-
-    const amount    = Math.round(speed * 800);
+    const dy    = y - 0.5;       // negative = hand above centre = scroll up
+    const speed = Math.abs(dy);
+    if (speed < 0.08) return;    // dead zone when hand is roughly level
+    const amount    = Math.round(speed * 700);
     const direction = dy > 0 ? "down" : "up";
-    _sendToExtension("scroll", { direction, amount });
-    _prevScrollY    = y;
-    _scrollCooldown = 4; // ~4 frames ≈ 130ms at 30fps
+    sendToExtension("scroll", { direction, amount });
+    _scrollCooldown = 5;         // ~5 frames ≈ 165ms at 30fps
     return;
   }
 
   if (fingers === 3 && _clickCooldown === 0) {
-    // Click at current cursor position
-    _sendToExtension("gesture_click", { x, y });
-    _clickCooldown = 20; // ~650ms debounce — prevents double-click on one gesture
+    sendToExtension("gesture_click", { x, y });
+    _clickCooldown = 22;         // ~730ms debounce
     return;
   }
 }
 
-// ── Send to extension background → target tab ────────────────────────────
-function _sendToExtension(action, payload) {
-  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
-  chrome.runtime.sendMessage({
-    source:  "flow-control-bg",
-    action,
-    payload,
-  }).catch(() => {});
-}
-
 // ── Count extended fingers ────────────────────────────────────────────────
-// Uses landmark tip vs PIP joint heights — works reliably for most hand poses.
-// Thumb uses X-axis (it extends sideways, not vertically).
 function _countFingers(lm) {
-  // Fingertip landmark indices: thumb=4, index=8, middle=12, ring=16, pinky=20
-  // PIP (middle knuckle) indices:        thumb=3, index=6,  middle=10, ring=14, pinky=18
   const tips = [4, 8, 12, 16, 20];
   const pips = [3, 6, 10, 14, 18];
-
   let count = 0;
 
-  // Thumb: extended if tip X is further from palm than knuckle
-  // (for right hand: tip.x < pip.x means extended left/outward)
-  const thumbExtended = Math.abs(lm[4].x - lm[3].x) > 0.05;
-  if (thumbExtended) count++;
+  // Thumb: extended sideways (X axis)
+  if (Math.abs(lm[4].x - lm[3].x) > 0.06) count++;
 
-  // Other four fingers: extended if tip Y is above (smaller Y) than PIP joint
+  // Four fingers: tip Y above PIP Y (smaller Y = higher on screen)
   for (let i = 1; i < 5; i++) {
-    if (lm[tips[i]].y < lm[pips[i]].y - 0.02) count++;
+    if (lm[tips[i]].y < lm[pips[i]].y - 0.025) count++;
   }
 
   return count;
