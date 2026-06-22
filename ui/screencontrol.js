@@ -12,8 +12,9 @@
 let _chat    = null;
 let _orb     = null;
 let _sendAI  = null;
-let _extId   = null; // set when content.js broadcasts the extension ID
+let _extId   = null;
 let _replyHandlerSet = false;
+let _pendingTimeout  = null;
 
 export function initScreenControl(chat, orb, sendAI) {
   _chat   = chat;
@@ -43,30 +44,36 @@ function _hasExt() {
 function _send(action, payload = {}) {
   if (!_hasExt()) {
     const reason = !_extId
-      ? "Extension ID not received yet — make sure the Flow Screen Control extension is installed and this page is refreshed."
-      : "Flow Screen Control extension is not installed.";
-    _chat?.addError(
-      reason + "\n\n" +
-      "To install:\n" +
-      "1. Chrome → chrome://extensions\n" +
-      "2. Enable Developer mode\n" +
-      "3. Load unpacked → select flow-extension/ folder\n" +
-      "4. Refresh this page"
-    );
+      ? "Extension ID not received — make sure the Flow Screen Control extension is installed and this page is refreshed after installing."
+      : "Flow Screen Control extension not available.";
+    _chat?.addError(reason + "\n\nTo install: Chrome → chrome://extensions → Enable Developer mode → Load unpacked → select flow-extension/ folder → refresh this page.");
     _orb?.setState("idle");
     return;
   }
 
-  // Pass _extId as first argument — required when calling from a webpage
+  // Safety timeout — if extension never replies (e.g. no target tab open),
+  // reset the orb after 5s so Flow doesn't stay in "thinking" forever.
+  const timeoutId = setTimeout(() => {
+    _orb?.setState("idle");
+    if (action !== "cursor_move" && action !== "gesture_click") {
+      _chat?.add("No response from extension — make sure you have another tab open that can be controlled.", "bot");
+    }
+  }, 5000);
+
   chrome.runtime.sendMessage(_extId, {
     source: "flow-control-bg",
     action,
     payload,
   }, () => {
     if (chrome.runtime.lastError) {
+      clearTimeout(timeoutId);
+      _orb?.setState("idle");
       console.warn("[Flow SC]", chrome.runtime.lastError.message);
     }
   });
+
+  // Store timeout so reply handler can cancel it
+  _pendingTimeout = timeoutId;
 }
 
 // ── Receive replies (content.js relays via window.postMessage) ────────────
@@ -76,6 +83,9 @@ function _listenForReplies() {
 
   window.addEventListener("message", (e) => {
     if (e.data?.source !== "flow-ext-reply") return;
+
+    // Cancel the safety timeout — we got a real reply
+    if (_pendingTimeout) { clearTimeout(_pendingTimeout); _pendingTimeout = null; }
 
     const { ok, action, result, error } = e.data;
     _orb?.setState("idle");
