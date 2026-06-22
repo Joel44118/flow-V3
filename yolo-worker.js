@@ -1,62 +1,69 @@
 // ═══════════════════════════════════════════
-// yolo-worker.js — Module Worker for YOLO
+// yolo-worker.js — COCO-SSD object detection worker
 //
-// FIX: importScripts() fails for cross-origin
-// scripts in many browsers/contexts.
-// Using dynamic import() instead, which works
-// correctly in module workers.
+// Replaced: Xenova/yolos-tiny via transformers.js WASM
+//   Problem: 28MB download, slow WASM inference, unreliable
+//            in browsers, frequent "pipeline not ready" errors
 //
-// Spawned with: new Worker('/yolo-worker.js', { type: 'module' })
+// Now uses: TensorFlow.js + COCO-SSD
+//   Why: ~5MB, pure JS (no WASM init), designed for real-time
+//        browser use, detects 80 COCO classes, returns real
+//        pixel coordinates directly (no manual scaling needed)
+//
+// Output boxes format: { label, score, bbox: [x,y,w,h] }
+//   x,y = top-left corner in pixels (relative to input image)
+//   w,h = width/height in pixels
 // ═══════════════════════════════════════════
 
-let pipeline = null;
+// TF.js + COCO-SSD loaded via importScripts (classic worker syntax)
+// because CDN scripts need importScripts, not ES module import
+importScripts(
+  "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js",
+  "https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"
+);
 
-self.onmessage = async (event) => {
-  const { type, imageData } = event.data;
+let model = null;
+
+self.onmessage = async (e) => {
+  const { type, imageData } = e.data;
 
   if (type === "init") {
     try {
-      self.postMessage({ type: "progress", message: "Loading YOLO engine..." });
-
-      // Dynamic import works in module workers across origins
-      const { pipeline: createPipeline, env } = await import(
-        "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.0/dist/transformers.min.js"
-      );
-
-      env.allowRemoteModels  = true;
-      env.allowLocalModels   = false;
-
-      self.postMessage({ type: "progress", message: "Downloading YOLO model (~28MB), please wait..." });
-
-      pipeline = await createPipeline(
-        "object-detection",
-        "Xenova/yolos-tiny",
-        { dtype: "fp32", device: "wasm" }
-      );
-
+      self.postMessage({ type: "progress", message: "Loading COCO-SSD model (~5MB)..." });
+      model = await cocoSsd.load({ base: "lite_mobilenet_v2" });
       self.postMessage({ type: "ready" });
-
-    } catch (e) {
-      self.postMessage({ type: "error", message: e.message });
+    } catch (err) {
+      self.postMessage({ type: "error", message: err.message });
     }
     return;
   }
 
   if (type === "detect") {
-    if (!pipeline) {
-      self.postMessage({ type: "error", message: "Pipeline not ready" });
+    if (!model) {
+      self.postMessage({ type: "warn", message: "Model not ready yet" });
       return;
     }
     try {
-      const results = await pipeline(imageData, { threshold: 0.45 });
-      self.postMessage({ type: "result", boxes: results });
-    } catch (e) {
-      if (!e.message?.includes("tensor")) {
-        self.postMessage({ type: "warn", message: e.message });
-      } else {
-        // Tensor errors on blurry/empty frames are normal — just mark not busy
-        self.postMessage({ type: "result", boxes: [] });
-      }
+      // Decode base64 dataURL → ImageBitmap for TF.js
+      const res  = await fetch(imageData);
+      const blob = await res.blob();
+      const bmp  = await createImageBitmap(blob);
+
+      const predictions = await model.detect(bmp);
+      bmp.close();
+
+      // Normalise to the same format vision.js _drawBoxes expects:
+      // { label, score, bbox: [x, y, w, h] } — already pixel coords
+      const boxes = predictions.map(p => ({
+        label: p.class,
+        score: p.score,
+        bbox:  p.bbox, // [x, y, width, height]
+      }));
+
+      self.postMessage({ type: "result", boxes });
+    } catch (err) {
+      // Silently swallow transient tensor errors on empty/blurry frames
+      self.postMessage({ type: "result", boxes: [] });
     }
     return;
   }
