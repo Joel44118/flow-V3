@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Flow Screen Control",
+  "version": "1.0",
+  "description": "Gives Flow AI the ability to scroll, click, type, and read any page you share.",
+  "permissions": ["activeTab", "scripting", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
