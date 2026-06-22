@@ -125,13 +125,24 @@ export async function parseCommand(text) {
 export async function parseVisionCommand(text) {
   const t = text.toLowerCase().trim();
 
-  if (/open\s+camera|start\s+camera|turn\s+on\s+camera/i.test(t))         { _vision?.Camera.start();        return null; }
-  if (/close\s+camera|stop\s+camera|turn\s+off\s+camera/i.test(t))        { _vision?.Camera.stop();         return null; }
-  if (/share\s+screen|open\s+screen|see\s+my\s+screen/i.test(t))          { _vision?.ScreenVision.start();  return null; }
-  if (/stop\s+screen|close\s+screen|stop\s+sharing/i.test(t))             { _vision?.ScreenVision.stop();   return null; }
-  if (/start\s+yolo|object\s+detect|detect\s+objects|eyes?\s+on/i.test(t)){ _vision?.YOLO.start();          return null; }
-  if (/stop\s+yolo|eyes?\s+off|stop\s+detect/i.test(t))                   { _vision?.YOLO.stop();           return null; }
-  if (/learn\s+my\s+face|remember\s+my\s+face/i.test(t))                  { _vision?.Camera.learnMyFace?.(); return null; }
+  if (/open\s+camera|start\s+camera|turn\s+on\s+camera/i.test(t))          { _vision?.Camera.start();         return null; }
+  if (/close\s+camera|stop\s+camera|turn\s+off\s+camera/i.test(t))         { _vision?.Camera.stop();          return null; }
+  if (/share\s+screen|open\s+screen|see\s+my\s+screen/i.test(t))           { _vision?.ScreenVision.start();   return null; }
+  if (/stop\s+screen|close\s+screen|stop\s+sharing/i.test(t))              { _vision?.ScreenVision.stop();    return null; }
+  if (/start\s+yolo|object\s+detect|detect\s+objects|eyes?\s+on/i.test(t)) { _vision?.YOLO.start();           return null; }
+  if (/stop\s+yolo|eyes?\s+off|stop\s+detect/i.test(t))                    { _vision?.YOLO.stop();            return null; }
+  if (/learn\s+my\s+face|remember\s+my\s+face/i.test(t))                   { _vision?.Camera.learnMyFace?.(); return null; }
+
+  // ── Gesture control ──────────────────────────────────────────────────────
+  if (/start\s+gesture|gesture\s+(?:control|mode)|hand\s+control|finger\s+control/i.test(t)) {
+    const vid = _vision?.Camera._video;
+    _vision?.Gesture?.start(vid);
+    return null;
+  }
+  if (/stop\s+gesture|gesture\s+off|stop\s+hand\s+control/i.test(t)) {
+    _vision?.Gesture?.stop();
+    return null;
+  }
 
   if (/what\s+(?:do\s+you\s+)?see|look\s+at\s+(?:the\s+)?(?:screen|camera)/i.test(t)) {
     if (_vision?.ScreenVision._video) { _vision.ScreenVision.look(text); return null; }
