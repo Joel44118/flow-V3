@@ -35,6 +35,7 @@ import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
 import { Projects } from "./core/projects.js";
 import { initProjects, handleProjectCommand } from "./ui/projects.js";
 import { initScreenControl, parseScreenControl } from "./ui/screencontrol.js";
+import { Gesture, initGesture } from "./ui/gesture.js";
 
 // ── Handle slash commands ─────────────────────────────────────────────────
 function _openProjects() { document.getElementById('proj-btn')?.click(); }
@@ -163,7 +164,7 @@ window.__flowOrb = Orb; // used by speech.js cancel/pause to reset orb state
 setNotepad(Notepad);
 setSpeakFn((t) => Speech.speak(t));
 
-const visionObj = { Camera, ScreenVision, YOLO };
+const visionObj = { Camera, ScreenVision, YOLO, Gesture };
 initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
 setSearchHandlers((t) => sendToAI(t), (t, w) => Chat.add(t, w));
@@ -173,6 +174,9 @@ setHistoryFn(() => Memory.forAPI());
 // any tab that's being shared. Only fires when ScreenVision is active.
 initScreenControl(Chat, Orb, sendToAI);
 setScreenControl({ parseScreenControl });
+
+// Gesture control — MediaPipe Hands, lazy-loaded on first use
+initGesture(Chat, Orb);
 
 // Agent mode badge — updates orb area label when agent activates/deactivates
 onAgentChange(agent => {
