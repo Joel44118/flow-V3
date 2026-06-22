@@ -5,7 +5,7 @@ import { Weather }         from "./weather.js";
 import { Alarms, normaliseTime } from "./alarms.js";
 import { Storage }         from "./storage.js";
 import { CONFIG }          from "./config.js";
-import { webSearch, deepResearch, smartSearch, formatResults, businessResearch, inspectUrl, formatUrlResult } from "./websearch.js";
+import { webSearch, deepResearch, smartSearch, formatResults, businessResearch, inspectUrl } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
 import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults, createRepo, createOrUpdateFile, scaffoldRepo, createBranch, deleteFile, createPR, listBranches } from "./github.js";
 import { parseAgentCommand, activateAgent, deactivateAgent, getActiveAgent, AGENTS } from "./agent.js";
@@ -500,15 +500,12 @@ export async function parseSearchGoalCommand(text) {
   const urlMatch = text.match(/https?:\/\/[^\s]+/i);
   if (urlMatch) {
     const url  = urlMatch[0];
-    const deep = /deep research|full analysis|audit|everything about/i.test(t);
-    _chatAdd?.(`Fetching ${url}...`, "bot");
-    const data = await inspectUrl(url, deep);
-    if (!data) return "I couldn\'t reach that URL. It might be offline or blocking bots.";
-    const formatted = formatUrlResult(data, deep);
-    const intent    = deep
-      ? `Do a thorough analysis of this website. Cover: purpose, features, tech stack clues, content quality, target audience, pricing if any, and anything notable.\n\n${formatted}`
-      : `Summarise this website briefly. What does it do, who is it for, and what are the main features?\n\n${formatted}`;
-    _searchSend?.(intent);
+    // inspectUrl(url, sendToAI, chatAdd) handles the full lifecycle —
+    // fetches the URL, formats it, calls sendToAI with the result.
+    // commands.js was previously calling it as if it returned data,
+    // which meant sendToAI was receiving the boolean `deep` as its
+    // second argument and being ignored entirely → "sendToAI is not a function"
+    await inspectUrl(url, _searchSend, _chatAdd);
     return null;
   }
 
