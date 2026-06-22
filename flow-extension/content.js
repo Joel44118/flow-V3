@@ -1,265 +1,255 @@
 // ═══════════════════════════════════════════
-// flow-extension/content.js
+// flow-extension/content.js (v4)
 //
-// Injected into every tab. Listens for
-// flow-control messages and executes them
-// inside the page context.
+// FIX 1 — Extension ID broadcast:
+//   chrome.runtime.sendMessage() called from a
+//   *webpage* requires the extension ID as the
+//   first arg. The page has no way to know its
+//   own ID. So content.js (which IS inside the
+//   extension and does know chrome.runtime.id)
+//   broadcasts it to the page via postMessage
+//   on load. screencontrol.js and gesture.js
+//   listen for it and store it for all future
+//   sendMessage calls.
 //
-// Actions: scroll, click, type, read,
-//          navigate, back, refresh, select
+// FIX 2 — Dual-role content script:
+//   ROLE A (target tab): receives flow-control
+//     messages from background.js, executes
+//     scroll/click/type/etc, replies with result.
+//   ROLE B (Flow tab): receives reply-relay from
+//     background.js, fires window.postMessage so
+//     screencontrol.js picks up the result.
 // ═══════════════════════════════════════════
 
-// ── Register this tab with background.js ─────────────────────────────────
-// If this is Flow's tab, background.js records its ID so it knows where
-// to send replies. Harmless on other tabs.
+// ── FIX 1: Broadcast extension ID to the page ─────────────────────────────
+// This runs as soon as content.js is injected. screencontrol.js and
+// gesture.js listen for this message and store the ID for sendMessage calls.
+window.postMessage({
+  source:      "flow-ext-id",
+  extensionId: chrome.runtime.id,
+}, "*");
+
+// Register tab with background so it can track which tab is Flow
 chrome.runtime.sendMessage({ source: "flow-tab-register" }).catch(() => {});
 
-// ── Listen for commands relayed from background.js ────────────────────────
+// ── Listen from background.js ─────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.source !== "flow-control") return;
-  _handle(msg.action, msg.payload || {})
-    .then(result => sendResponse({ ok: true,  result }))
-    .catch(err  => sendResponse({ ok: false, error: err.message }));
-  return true; // keep channel open for async response
-});
 
-// ── Also listen for window.postMessage from Flow's own page ───────────────
-// When Flow and the target are in the same tab (rare but possible),
-// this catches commands directly without going through background.js.
-window.addEventListener("message", async (e) => {
-  if (e.data?.source !== "flow-control") return;
-  try {
-    const result = await _handle(e.data.action, e.data.payload || {});
-    window.postMessage({ source: "flow-ext-reply", ok: true,  action: e.data.action, result }, "*");
-  } catch (err) {
-    window.postMessage({ source: "flow-ext-reply", ok: false, action: e.data.action, error: err.message }, "*");
+  // ROLE B: relay result to screencontrol.js / gesture.js via postMessage
+  if (msg.source === "flow-ext-reply-relay") {
+    window.postMessage({
+      source: "flow-ext-reply",
+      ok:     msg.ok,
+      action: msg.action,
+      result: msg.result,
+      error:  msg.error,
+    }, "*");
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  // ROLE A: execute action on this tab
+  if (msg.source === "flow-control") {
+    _handle(msg.action, msg.payload || {})
+      .then(result => sendResponse({ ok: true,  result }))
+      .catch(err   => sendResponse({ ok: false, error: err.message }));
+    return true;
   }
 });
 
 // ── Action dispatcher ─────────────────────────────────────────────────────
 async function _handle(action, payload) {
   switch (action) {
-
-    case "ping":
-      return { pong: true };
-
-    case "scroll":
-      return _scroll(payload);
-
-    case "click":
-      return _click(payload.target || "");
-
-    case "type":
-      return _type(payload.text || "", payload.field || "");
-
-    case "read":
-      return _read();
-
-    case "navigate":
-      if (payload.url) window.location.href = payload.url;
-      return {};
-
-    case "back":
-      window.history.back();
-      return {};
-
-    case "refresh":
-      window.location.reload();
-      return {};
-
-    case "select":
-      return _select(payload.option || "", payload.field || "");
-
-    default:
-      throw new Error(`Unknown action: ${action}`);
+    case "ping":          return { pong: true };
+    case "scroll":        return _scroll(payload);
+    case "click":         return _click(payload.target || "");
+    case "type":          return _type(payload.text || "", payload.field || "");
+    case "read":          return _read();
+    case "navigate":      window.location.href = payload.url; return {};
+    case "back":          window.history.back(); return {};
+    case "refresh":       window.location.reload(); return {};
+    case "select":        return _select(payload.option || "", payload.field || "");
+    case "cursor_move":   return _cursorMove(payload.x ?? 0.5, payload.y ?? 0.5);
+    case "gesture_click": return _gestureClick(payload.x ?? 0.5, payload.y ?? 0.5);
+    default: throw new Error("Unknown action: " + action);
   }
 }
 
 // ── scroll ────────────────────────────────────────────────────────────────
 function _scroll({ direction = "down", amount = 400 }) {
   switch (direction) {
-    case "top":    window.scrollTo({ top: 0,                        behavior: "smooth" }); break;
+    case "top":    window.scrollTo({ top: 0,                          behavior: "smooth" }); break;
     case "bottom": window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }); break;
-    case "up":     window.scrollBy({ top: -amount,                  behavior: "smooth" }); break;
-    default:       window.scrollBy({ top:  amount,                  behavior: "smooth" }); break;
+    case "up":     window.scrollBy({ top: -amount,                    behavior: "smooth" }); break;
+    default:       window.scrollBy({ top:  amount,                    behavior: "smooth" }); break;
   }
   return { direction, amount };
 }
 
 // ── click ─────────────────────────────────────────────────────────────────
-// Finds an element by visible text, aria-label, placeholder, title, or
-// id/class fragment. Tries multiple strategies in order.
 function _click(target) {
   const el = _findElement(target);
   if (!el) return { clicked: null };
-
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   el.focus?.();
   el.click();
-
-  // For anchors/buttons that use JS click handlers not bound to <a href>
   el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   return { clicked: el.textContent?.trim().slice(0, 60) || el.getAttribute("aria-label") || target };
 }
 
 // ── type ──────────────────────────────────────────────────────────────────
 function _type(text, fieldHint) {
-  // Find the right input — either by fieldHint or just the focused/visible one
-  let input = null;
+  let input = fieldHint ? _findInput(fieldHint) : null;
 
-  if (fieldHint) {
-    input = _findInput(fieldHint);
+  if (!input && document.activeElement) {
+    const ae = document.activeElement;
+    if (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)
+      input = ae;
   }
 
-  // Fallback: use currently focused element if it's an input
-  if (!input && document.activeElement &&
-      ["INPUT","TEXTAREA","[contenteditable]"].some(s =>
-        document.activeElement.matches?.(s) || document.activeElement.isContentEditable
-      )) {
-    input = document.activeElement;
-  }
-
-  // Fallback: find the first visible, interactable input on the page
-  if (!input) {
-    input = _findInput("") || document.querySelector(
-      "input:not([type=hidden]):not([disabled]), textarea:not([disabled])"
-    );
-  }
+  if (!input) input = _findInput("") || document.querySelector(
+    "input:not([type=hidden]):not([type=submit]):not([type=button]):not([disabled])," +
+    "textarea:not([disabled])"
+  );
 
   if (!input) return { typed: null };
 
   input.scrollIntoView({ behavior: "smooth", block: "center" });
   input.focus();
 
-  // Works for both regular inputs and contenteditable elements
   if (input.isContentEditable) {
     input.textContent = text;
     input.dispatchEvent(new Event("input", { bubbles: true }));
   } else {
-    // Trigger React/Vue synthetic events by setting value via descriptor
-    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype, "value"
-    )?.set || Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype, "value"
-    )?.set;
-
-    if (nativeInputValueSetter) {
-      nativeInputValueSetter.call(input, text);
-    } else {
-      input.value = text;
-    }
-
+    const proto  = input.tagName === "TEXTAREA"
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(input, text); else input.value = text;
     input.dispatchEvent(new Event("input",  { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
-
   return { typed: text };
 }
 
 // ── read ──────────────────────────────────────────────────────────────────
-// Returns the page's meaningful text content, stripped of nav/scripts/style
 function _read() {
-  // Clone to avoid mutating the live DOM
   const clone = document.body.cloneNode(true);
-
-  // Remove noise nodes
-  for (const tag of ["script","style","noscript","svg","iframe","nav","footer","header"]) {
+  for (const tag of ["script","style","noscript","svg","iframe","nav","footer","header"])
     clone.querySelectorAll(tag).forEach(n => n.remove());
-  }
-
-  const raw = clone.innerText || clone.textContent || "";
-  // Collapse excessive whitespace
+  const raw  = clone.innerText || clone.textContent || "";
   const text = raw.replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
   return { text: text.slice(0, 8000), title: document.title, url: location.href };
 }
 
 // ── select ────────────────────────────────────────────────────────────────
-// Selects an <option> from a <select> by label/value
 function _select(optionText, fieldHint) {
-  let sel = fieldHint ? _findElement(fieldHint, "select") : null;
-  if (!sel) sel = document.querySelector("select");
+  const sel = (fieldHint ? _findElement(fieldHint, "select") : null)
+           || document.querySelector("select");
   if (!sel) return { selected: null };
-
   const opt = Array.from(sel.options).find(o =>
     o.text.toLowerCase().includes(optionText.toLowerCase()) ||
     o.value.toLowerCase().includes(optionText.toLowerCase())
   );
   if (!opt) return { selected: null };
-
   sel.value = opt.value;
   sel.dispatchEvent(new Event("change", { bubbles: true }));
   return { selected: opt.text };
 }
 
+// ── gesture cursor dot ────────────────────────────────────────────────────
+let _dot = null, _dotX = 0, _dotY = 0;
+
+function _ensureDot() {
+  if (_dot) return;
+  _dot = document.createElement("div");
+  _dot.id = "flow-gesture-dot";
+  Object.assign(_dot.style, {
+    position: "fixed", width: "18px", height: "18px",
+    borderRadius: "50%", background: "rgba(56,189,248,0.85)",
+    border: "2px solid #fff", boxShadow: "0 0 12px rgba(56,189,248,0.6)",
+    pointerEvents: "none", zIndex: "2147483647",
+    transform: "translate(-50%,-50%)",
+    transition: "left .04s linear, top .04s linear",
+  });
+  document.body.appendChild(_dot);
+}
+
+function _cursorMove(nx, ny) {
+  _dotX = nx * window.innerWidth;
+  _dotY = ny * window.innerHeight;
+  _ensureDot();
+  _dot.style.left = _dotX + "px";
+  _dot.style.top  = _dotY + "px";
+  return { ok: true };
+}
+
+function _gestureClick(nx, ny) {
+  _cursorMove(nx, ny);
+  _ensureDot();
+  _dot.style.background = "rgba(52,211,153,0.9)";
+  setTimeout(() => { if (_dot) _dot.style.background = "rgba(56,189,248,0.85)"; }, 250);
+  const el = document.elementFromPoint(_dotX, _dotY);
+  if (!el || el === _dot) return { clicked: null };
+  el.focus?.();
+  el.click();
+  el.dispatchEvent(new MouseEvent("click", {
+    bubbles: true, cancelable: true, clientX: _dotX, clientY: _dotY
+  }));
+  return { clicked: el.textContent?.trim().slice(0, 60) || el.tagName };
+}
+
 // ── Element finders ───────────────────────────────────────────────────────
-
 function _findElement(target, tagFilter = null) {
-  const t = target.toLowerCase().trim();
+  const t = (target || "").toLowerCase().trim();
   if (!t) return null;
-
-  const candidates = tagFilter
+  const scope = tagFilter
     ? document.querySelectorAll(tagFilter)
-    : document.querySelectorAll("button, a, [role=button], [role=link], input[type=submit], label, h1, h2, h3, li, td, th, span, div");
-
-  // Score each element — exact match wins, partial match is ok
+    : document.querySelectorAll(
+        "button,a,[role=button],[role=link],input[type=submit]," +
+        "input[type=button],label,h1,h2,h3,li,td,th,span,div,p"
+      );
   let best = null, bestScore = 0;
-
-  for (const el of candidates) {
+  for (const el of scope) {
     if (!_isVisible(el)) continue;
-
-    const texts = [
+    const attrs = [
       el.textContent?.trim().toLowerCase(),
       el.getAttribute("aria-label")?.toLowerCase(),
       el.getAttribute("title")?.toLowerCase(),
       el.getAttribute("placeholder")?.toLowerCase(),
       el.id?.toLowerCase(),
-      el.name?.toLowerCase(),
     ].filter(Boolean);
-
-    for (const txt of texts) {
-      let score = 0;
-      if (txt === t)             score = 10; // exact
-      else if (txt.startsWith(t)) score = 7;  // starts with
-      else if (txt.includes(t))   score = 4;  // contains
-
+    for (const a of attrs) {
+      const score = a === t ? 10 : a.startsWith(t) ? 7 : a.includes(t) ? 4 : 0;
       if (score > bestScore) { bestScore = score; best = el; }
     }
   }
-
   return bestScore > 0 ? best : null;
 }
 
 function _findInput(hint) {
-  const h = hint.toLowerCase().trim();
+  const h = (hint || "").toLowerCase().trim();
   const inputs = document.querySelectorAll(
-    "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]):not([disabled]), textarea:not([disabled]), [contenteditable=true]"
+    "input:not([type=hidden]):not([type=submit]):not([type=button])" +
+    ":not([type=checkbox]):not([type=radio]):not([disabled])," +
+    "textarea:not([disabled]),[contenteditable=true]"
   );
-
   if (!h) return Array.from(inputs).find(_isVisible) || null;
-
   let best = null, bestScore = 0;
-
   for (const el of inputs) {
     if (!_isVisible(el)) continue;
-
-    const texts = [
-      el.placeholder?.toLowerCase(),
-      el.name?.toLowerCase(),
-      el.id?.toLowerCase(),
-      el.getAttribute("aria-label")?.toLowerCase(),
-      // Also check the associated <label>
-      el.id ? document.querySelector(`label[for="${el.id}"]`)?.textContent.toLowerCase() : null,
+    const label = el.id
+      ? document.querySelector(`label[for="${el.id}"]`)?.textContent.toLowerCase()
+      : null;
+    const attrs = [
+      el.placeholder?.toLowerCase(), el.name?.toLowerCase(),
+      el.id?.toLowerCase(), el.getAttribute("aria-label")?.toLowerCase(), label,
     ].filter(Boolean);
-
-    for (const txt of texts) {
-      let score = 0;
-      if (txt === h)              score = 10;
-      else if (txt.startsWith(h)) score = 7;
-      else if (txt.includes(h))   score = 4;
+    for (const a of attrs) {
+      const score = a === h ? 10 : a.startsWith(h) ? 7 : a.includes(h) ? 4 : 0;
       if (score > bestScore) { bestScore = score; best = el; }
     }
   }
-
   return bestScore > 0 ? best : null;
 }
 
@@ -267,6 +257,6 @@ function _isVisible(el) {
   if (!el) return false;
   const r = el.getBoundingClientRect();
   if (r.width === 0 && r.height === 0) return false;
-  const style = window.getComputedStyle(el);
-  return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+  const s = window.getComputedStyle(el);
+  return s.display !== "none" && s.visibility !== "hidden" && s.opacity !== "0";
 }
