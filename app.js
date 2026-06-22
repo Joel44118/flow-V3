@@ -15,7 +15,7 @@ import { startWakeListener, startCommandListen, init as initWake } from "./core/
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
 import {
-  setNotepad, setSpeakFn, setVision, setSearchHandlers,
+  setNotepad, setSpeakFn, setVision, setSearchHandlers, setScreenControl,
   parseCommand, parseVisionCommand, parseSearchGoalCommand,
   handleRepoCommand, handleScaffoldCommand, handlePushCommand,
   checkPendingPush, setHistoryFn, getTime, getDate
@@ -34,6 +34,7 @@ import { fetchIntel, buildIntelPrompt } from "./core/intel.js";
 import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
 import { Projects } from "./core/projects.js";
 import { initProjects, handleProjectCommand } from "./ui/projects.js";
+import { initScreenControl, parseScreenControl } from "./ui/screencontrol.js";
 
 // ── Handle slash commands ─────────────────────────────────────────────────
 function _openProjects() { document.getElementById('proj-btn')?.click(); }
@@ -167,6 +168,11 @@ initVision(Chat, Orb, sendMessage);
 setVision(visionObj);
 setSearchHandlers((t) => sendToAI(t), (t, w) => Chat.add(t, w));
 setHistoryFn(() => Memory.forAPI());
+
+// Screen control — gives Flow the ability to scroll/click/type on
+// any tab that's being shared. Only fires when ScreenVision is active.
+initScreenControl(Chat, Orb, sendToAI);
+setScreenControl({ parseScreenControl });
 
 // Agent mode badge — updates orb area label when agent activates/deactivates
 onAgentChange(agent => {
