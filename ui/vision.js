@@ -218,12 +218,13 @@ export const YOLO = {
 
     if (cameraStream && !cameraStream.active) cameraStream = null;
 
-    _chat?.add("Loading object detection model... first load takes ~20 seconds.", "bot");
+    _chat?.add("Loading COCO-SSD object detection (~5MB, one moment)...", "bot");
     _orb?.setState("thinking");
 
     try {
-      // Spawn Web Worker — all WASM inference runs there
-      this._worker = new Worker("/yolo-worker.js", { type: "module" });
+      // Classic worker (not module) because COCO-SSD CDN scripts use
+      // importScripts() which is not available in module workers.
+      this._worker = new Worker("/yolo-worker.js");
 
       // Wire up worker message handler
       this._worker.onmessage = (e) => this._onWorkerMsg(e.data);
@@ -295,7 +296,7 @@ export const YOLO = {
       yoloActive    = true;
       this._running = true;
       _orb?.setState("idle");
-      _chat?.add("YOLO active. Detecting objects — UI stays smooth.", "bot");
+      _chat?.add("COCO-SSD active — detecting 80 object classes in real-time.", "bot");
       Speech.speak("Eyes online. Object detection active.");
 
       // Start the 2fps capture loop
@@ -328,28 +329,18 @@ export const YOLO = {
   },
 
   _drawBoxes(results) {
-    if (!this._canvas || !results?.length) {
-      // Clear canvas if no detections
-      if (this._canvas) {
-        this._canvas.getContext("2d").clearRect(0, 0, 320, 240);
-      }
-      return;
-    }
-
+    if (!this._canvas) return;
     const ctx = this._canvas.getContext("2d");
     ctx.clearRect(0, 0, 320, 240);
+    if (!results?.length) return;
+
     ctx.lineWidth = 1.5;
     ctx.font = "bold 11px monospace";
 
-    results.forEach(({ label, score, box }) => {
-      // yolos-tiny returns pixel coords relative to model input (416x416)
-      // Scale to our 320x240 canvas
-      const scaleX = 320 / 416;
-      const scaleY = 240 / 416;
-      const x = box.xmin * scaleX;
-      const y = box.ymin * scaleY;
-      const w = (box.xmax - box.xmin) * scaleX;
-      const h = (box.ymax - box.ymin) * scaleY;
+    results.forEach(({ label, score, bbox }) => {
+      // COCO-SSD returns bbox as [x, y, width, height] in pixels
+      // relative to the input image (320x240) — no scaling needed.
+      const [x, y, w, h] = bbox;
 
       // Sci-fi corner brackets
       const cs = Math.min(w, h) * 0.22;
