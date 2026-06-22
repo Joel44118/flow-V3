@@ -1,76 +1,75 @@
 // ═══════════════════════════════════════════
-// ui/screencontrol.js — Flow Screen Control (v2)
+// ui/screencontrol.js — Flow Screen Control (v3)
 //
-// FIXED ARCHITECTURE:
-// Previous version used window.postMessage which only
-// talks to listeners IN THE SAME PAGE — so commands
-// were hitting Flow's own DOM, not the target tab.
-//
-// Correct path:
-//   Flow → chrome.runtime.sendMessage (to extension)
-//        → background.js finds the active non-Flow tab
-//        → chrome.tabs.sendMessage to that tab's content.js
-//        → content.js executes the action
-//        → replies via chrome.runtime.sendMessage back
-//        → background.js relays to Flow tab
-//        → content.js in Flow tab fires window.postMessage
-//        → screencontrol.js receives the reply here
-//
-// chrome.runtime is only available when the extension is
-// installed — we guard every call with a _hasExt() check
-// and show a clear install message if it's missing.
+// FIX: chrome.runtime.sendMessage() from a webpage
+// requires the extension ID as the first argument.
+// content.js broadcasts it via window.postMessage
+// ({ source:"flow-ext-id", extensionId }) on load.
+// We listen for it here and store it — all sendMessage
+// calls use _extId as their first argument.
 // ═══════════════════════════════════════════
 
-let _chat   = null;
-let _orb    = null;
-let _sendAI = null;
+let _chat    = null;
+let _orb     = null;
+let _sendAI  = null;
+let _extId   = null; // set when content.js broadcasts the extension ID
 let _replyHandlerSet = false;
 
 export function initScreenControl(chat, orb, sendAI) {
   _chat   = chat;
   _orb    = orb;
   _sendAI = sendAI;
+  _listenForExtId();
   _listenForReplies();
 }
 
-// ── Check extension is installed ─────────────────────────────────────────
-function _hasExt() {
-  return typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage;
+// ── Wait for content.js to broadcast the extension ID ────────────────────
+function _listenForExtId() {
+  window.addEventListener("message", (e) => {
+    if (e.data?.source === "flow-ext-id" && e.data?.extensionId) {
+      _extId = e.data.extensionId;
+    }
+  });
 }
 
-// ── Send action to extension background → target tab ─────────────────────
+// ── Check extension is installed and ID is known ──────────────────────────
+function _hasExt() {
+  return typeof chrome !== "undefined"
+    && chrome.runtime?.sendMessage
+    && !!_extId;
+}
+
+// ── Send action to background → target tab ────────────────────────────────
 function _send(action, payload = {}) {
   if (!_hasExt()) {
+    const reason = !_extId
+      ? "Extension ID not received yet — make sure the Flow Screen Control extension is installed and this page is refreshed."
+      : "Flow Screen Control extension is not installed.";
     _chat?.addError(
-      "Flow Screen Control extension is not installed.\n\n" +
+      reason + "\n\n" +
       "To install:\n" +
       "1. Chrome → chrome://extensions\n" +
-      "2. Enable Developer mode (top-right toggle)\n" +
-      "3. Click 'Load unpacked'\n" +
-      "4. Select the flow-extension/ folder in your Flow V3 project\n" +
-      "5. Refresh Flow — then try again."
+      "2. Enable Developer mode\n" +
+      "3. Load unpacked → select flow-extension/ folder\n" +
+      "4. Refresh this page"
     );
     _orb?.setState("idle");
     return;
   }
 
-  // Send to background.js which will forward to the active target tab
-  chrome.runtime.sendMessage({
-    source:  "flow-control-bg",
+  // Pass _extId as first argument — required when calling from a webpage
+  chrome.runtime.sendMessage(_extId, {
+    source: "flow-control-bg",
     action,
     payload,
-  }, (response) => {
-    // Immediate ack from background — actual result comes via window.postMessage
+  }, () => {
     if (chrome.runtime.lastError) {
-      _chat?.addError("Extension error: " + chrome.runtime.lastError.message);
-      _orb?.setState("idle");
+      console.warn("[Flow SC]", chrome.runtime.lastError.message);
     }
   });
 }
 
-// ── Receive replies from the extension ───────────────────────────────────
-// content.js (in Flow's own tab) receives the relay from background.js
-// and forwards it here via window.postMessage
+// ── Receive replies (content.js relays via window.postMessage) ────────────
 function _listenForReplies() {
   if (_replyHandlerSet) return;
   _replyHandlerSet = true;
@@ -95,32 +94,24 @@ function _listenForReplies() {
       if (result?.text) {
         _sendAI?.(
           `The user asked Flow to read the page they are sharing.\n` +
-          `Page title: ${result.title || "unknown"}\n` +
-          `URL: ${result.url || "unknown"}\n\n` +
-          `Page content:\n${result.text.slice(0, 4000)}\n\n` +
+          `Title: ${result.title || "?"}\nURL: ${result.url || "?"}\n\n` +
+          `Content:\n${result.text.slice(0, 4000)}\n\n` +
           `Summarise what this page is about clearly and concisely.`
         );
       } else {
-        _chat?.add("Couldn't read that page — it may be blocking content extraction.", "bot");
+        _chat?.add("Couldn't read that page.", "bot");
       }
       return;
     }
 
-    // All other action confirmations
     const confirms = {
       scroll:   "Done — scrolled.",
-      click:    result?.clicked
-        ? `Clicked "${result.clicked}".`
-        : "Couldn't find that element — try describing the visible text on it.",
-      type:     result?.typed
-        ? `Typed "${result.typed}".`
-        : "Couldn't find an input field — try naming it (e.g. 'type hello in the search box').",
+      click:    result?.clicked ? `Clicked "${result.clicked}".` : "Couldn't find that element — describe the visible text on it.",
+      type:     result?.typed   ? `Typed "${result.typed}".`    : "Couldn't find an input field.",
       navigate: "Navigating…",
       back:     "Going back.",
       refresh:  "Page refreshing.",
-      select:   result?.selected
-        ? `Selected "${result.selected}".`
-        : "Couldn't find that option.",
+      select:   result?.selected ? `Selected "${result.selected}".` : "Couldn't find that option.",
     };
     _chat?.add(confirms[action] || "Done.", "bot");
   });
@@ -130,20 +121,18 @@ function _listenForReplies() {
 export async function parseScreenControl(text) {
   const t = text.toLowerCase().trim();
 
-  // ── Scroll ──────────────────────────────────────────────────────────────
   if (/\bscroll\b/.test(t)) {
     let direction = "down", amount = 400;
-    if (/top|beginning|start/.test(t))             direction = "top";
-    else if (/bottom|end/.test(t))                 direction = "bottom";
-    else if (/up/.test(t))                         direction = "up";
-    if (/a\s+lot|far|way\s+(down|up)/.test(t))    amount = 1200;
-    if (/a\s+little|bit|slightly/.test(t))         amount = 150;
+    if (/top|beginning|start/.test(t))            direction = "top";
+    else if (/bottom|end/.test(t))                direction = "bottom";
+    else if (/\bup\b/.test(t))                    direction = "up";
+    if (/a\s+lot|far|way\s+(down|up)/.test(t))   amount = 1200;
+    if (/a\s+little|bit|slightly/.test(t))        amount = 150;
     _orb?.setState("thinking");
     _send("scroll", { direction, amount });
     return true;
   }
 
-  // ── Click ────────────────────────────────────────────────────────────────
   const clickM = t.match(/\bclick\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+button|\s+link|\s+tab|\s+icon|\s+menu)?\s*$/i);
   if (clickM && clickM[1].trim().length > 1) {
     _orb?.setState("thinking");
@@ -151,7 +140,6 @@ export async function parseScreenControl(text) {
     return true;
   }
 
-  // ── Type ─────────────────────────────────────────────────────────────────
   const typeM = t.match(/\b(?:type|write|enter|input|put)\s+(.+?)\s+(?:in(?:to|side)?|on)\s+(?:the\s+)?(.+)/i)
              || t.match(/\b(?:type|write|enter|input)\s+["']?(.+?)["']?\s*$/i);
   if (typeM) {
@@ -164,14 +152,12 @@ export async function parseScreenControl(text) {
     }
   }
 
-  // ── Read page ─────────────────────────────────────────────────────────────
   if (/\bread\s+(?:the\s+)?(?:page|screen|site|website)\b|\bwhat\s+does\s+(?:the\s+)?(?:page|site)\s+say\b|\bsummarise\s+(?:the\s+)?(?:page|site)\b/i.test(t)) {
     _orb?.setState("thinking");
     _send("read", {});
     return true;
   }
 
-  // ── Navigate ─────────────────────────────────────────────────────────────
   const navM = t.match(/\bgo\s+to\s+(https?:\/\/\S+|\S+\.\S+)/i);
   if (navM) {
     let url = navM[1];
@@ -181,11 +167,9 @@ export async function parseScreenControl(text) {
     return true;
   }
 
-  // ── Back / refresh ────────────────────────────────────────────────────────
   if (/\bgo\s+back\b|\bprevious\s+page\b/i.test(t))        { _send("back",    {}); return true; }
   if (/\brefresh\b|\breload\s+(?:the\s+)?page\b/i.test(t)) { _send("refresh", {}); return true; }
 
-  // ── Select dropdown ───────────────────────────────────────────────────────
   const selM = t.match(/\bselect\s+(.+?)\s+(?:from|in)\s+(?:the\s+)?(.+)/i);
   if (selM) {
     _orb?.setState("thinking");
@@ -193,10 +177,9 @@ export async function parseScreenControl(text) {
     return true;
   }
 
-  // ── Extension connection check ────────────────────────────────────────────
   if (/\bextension\s+connected\b|\bcheck\s+extension\b|\bscreen\s+control\s+working\b/i.test(t)) {
     if (!_hasExt()) {
-      _chat?.add("Extension not detected. Make sure you loaded the flow-extension/ folder in chrome://extensions.", "bot");
+      _chat?.add(_extId ? "Extension known but chrome.runtime unavailable." : "Extension not detected — install it and refresh this page.", "bot");
     } else {
       _send("ping", {});
     }
@@ -204,4 +187,9 @@ export async function parseScreenControl(text) {
   }
 
   return false;
+}
+
+// ── Export send for gesture.js to reuse (same bridge, same ID) ───────────
+export function sendToExtension(action, payload) {
+  _send(action, payload);
 }
