@@ -40,18 +40,16 @@ function _send(action, payload = {}) {
   if (!_hasExt()) {
     if (!_extId) {
       _chat?.addError(
-        "Extension ID not received — extension may not be installed.\n\n" +
-        "Fix: chrome://extensions → Remove Flow Screen Control → Load unpacked → " +
-        "select flow-extension/ folder → refresh Flow."
+        "Extension not connected. Fix:\n" +
+        "1. chrome://extensions → Remove Flow Screen Control\n" +
+        "2. Load unpacked → select flow-extension/ folder\n" +
+        "3. Refresh this page"
       );
-    } else {
-      _chat?.addError("chrome.runtime not available on this page.");
     }
     _orb?.setState("idle");
     return;
   }
 
-  // 5s timeout — orb won't hang forever if extension doesn't reply
   if (_pendingTimeout) clearTimeout(_pendingTimeout);
   _pendingTimeout = setTimeout(() => {
     _pendingTimeout = null;
@@ -61,13 +59,34 @@ function _send(action, payload = {}) {
     }
   }, 5000);
 
-  chrome.runtime.sendMessage(_extId, { source: "flow-control-bg", action, payload }, () => {
-    if (chrome.runtime.lastError) {
-      clearTimeout(_pendingTimeout); _pendingTimeout = null;
-      _orb?.setState("idle");
-      console.warn("[Flow SC]", chrome.runtime.lastError.message);
-    }
-  });
+  // Wake the service worker first via connect(), then send the message.
+  // Direct sendMessage fails with "Receiving end does not exist" when the
+  // MV3 worker is sleeping — connect() forces it to start before we send.
+  try {
+    const port = chrome.runtime.connect(_extId, { name: "flow-wake" });
+    port.disconnect(); // immediately disconnect — we only needed the wake
+  } catch (_) {}
+
+  // Small delay lets the worker fully initialise after waking
+  setTimeout(() => {
+    chrome.runtime.sendMessage(_extId, { source: "flow-control-bg", action, payload }, () => {
+      if (chrome.runtime.lastError) {
+        console.warn("[Flow SC]", chrome.runtime.lastError.message);
+        // One retry after another 300ms — worker may still be starting
+        setTimeout(() => {
+          chrome.runtime.sendMessage(_extId, { source: "flow-control-bg", action, payload }, () => {
+            if (chrome.runtime.lastError) {
+              clearTimeout(_pendingTimeout); _pendingTimeout = null;
+              _orb?.setState("idle");
+              if (action !== "cursor_move" && action !== "gesture_click") {
+                _chat?.addError("Could not reach extension — try again.");
+              }
+            }
+          });
+        }, 300);
+      }
+    });
+  }, 100);
 }
 
 function _listenForReplies() {
