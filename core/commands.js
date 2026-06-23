@@ -134,12 +134,12 @@ export async function parseVisionCommand(text) {
   if (/learn\s+my\s+face|remember\s+my\s+face/i.test(t))                   { _vision?.Camera.learnMyFace?.(); return null; }
 
   // ── Gesture control ──────────────────────────────────────────────────────
-  if (/start\s+gesture|gesture\s+(?:control|mode)|hand\s+control|finger\s+control/i.test(t)) {
+  if (/start\s+ges\w*|ges\w+\s+(?:control|mode)|hand\s+control|finger\s+control/i.test(t)) {
     const vid = _vision?.Camera._video;
     _vision?.Gesture?.start(vid);
     return null;
   }
-  if (/stop\s+gesture|gesture\s+off|stop\s+hand\s+control/i.test(t)) {
+  if (/stop\s+ges\w*|ges\w+\s+off|stop\s+hand\s+control/i.test(t)) {
     _vision?.Gesture?.stop();
     return null;
   }
