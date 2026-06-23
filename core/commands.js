@@ -153,9 +153,9 @@ export async function parseVisionCommand(text) {
   if (/who is that|who am i/i.test(t))              { _vision?.Camera.look(text);       return null; }
 
   // ── Screen control (scroll/click/type/read) ────────────────────────────
-  // Only attempt when screen is actively shared — avoids false positives on
-  // casual messages containing words like "scroll" or "click".
-  if (_screenControl && _vision?.ScreenVision._video) {
+  // Allow screen control commands whether or not screen is being shared —
+  // the extension targets whichever tab was most recently active.
+  if (_screenControl) {
     const handled = await _screenControl.parseScreenControl(text);
     if (handled) return null;
   }
