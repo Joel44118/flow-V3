@@ -1,19 +1,22 @@
-// ui/gesture.js (v5) — TF.js hand-pose-detection, fixed skeleton scaling
+// ui/gesture.js (v6)
+// Uses @mediapipe/hands from unpkg — model assets are co-located on unpkg,
+// no Kaggle/storage.googleapis URLs, no signed URL expiry issues.
 
 import { sendToExtension } from "./screencontrol.js";
 
-const TF_CORE  = "https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.20.0/tf.min.js";
-const TF_HANDS = "https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection@2.0.1/dist/hand-pose-detection.min.js";
+const MP_HANDS = "https://unpkg.com/@mediapipe/hands@0.4.1675469240/hands.js";
+const MP_DRAW  = "https://unpkg.com/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js";
+const MP_BASE  = "https://unpkg.com/@mediapipe/hands@0.4.1675469240/";
 
 let _chat = null, _orb = null, _running = false;
-let _detector = null, _rafId = null, _videoEl = null;
-let _canvas = null, _ctx = null, _lastVideoTime = -1;
+let _hands = null, _rafId = null, _videoEl = null;
+let _canvas = null, _ctx = null, _processing = false;
 let _smoothX = 0.5, _smoothY = 0.5;
-const SMOOTH = 0.28;
+const SMOOTH = 0.25;
 let _lastCursorSend = 0;
-const CURSOR_INTERVAL = 100;
+const CURSOR_MS = 120;
 let _lastGesture = "", _gestureFrames = 0;
-let _scrollCooldown = 0, _clickCooldown = 0;
+let _scrollCd = 0, _clickCd = 0;
 
 export function initGesture(chat, orb) { _chat = chat; _orb = orb; }
 
@@ -24,17 +27,15 @@ export const Gesture = {
       _chat?.addError("Open camera first, then say 'start gesture control'.");
       return;
     }
-    // Wait until video has real dimensions
-    await new Promise(r => {
-      if (videoEl.videoWidth > 0) { r(); return; }
-      videoEl.addEventListener("loadeddata", r, { once: true });
-      setTimeout(r, 3000);
-    });
+    if (videoEl.videoWidth === 0) {
+      await new Promise(r => { videoEl.addEventListener("loadeddata", r, { once: true }); setTimeout(r, 3000); });
+    }
     _videoEl = videoEl;
-    _chat?.add("🖐 Gesture control loading (~5MB first time)...\n\n**1 finger** — move cursor\n**2 fingers** — scroll\n**3 fingers** — click\n**Fist** — pause", "bot");
+    _chat?.add("🖐 Loading gesture model...\n\n**1 finger** — move cursor\n**2 fingers** — scroll\n**3 fingers** — click\n**Fist** — pause", "bot");
     try {
-      await _loadLibs();
-      await _initDetector();
+      await _load(MP_HANDS, () => !!window.Hands);
+      await _load(MP_DRAW,  () => !!window.drawConnectors);
+      await _initHands();
     } catch(e) {
       console.error("[Gesture]", e);
       _chat?.addError("Gesture setup failed: " + e.message);
@@ -42,47 +43,43 @@ export const Gesture = {
     }
     _setupCanvas();
     _running = true;
-    _loop();
+    _rafId = requestAnimationFrame(_loop);
     _chat?.add("✅ Gesture control active — show your hand to the camera.", "bot");
   },
   stop() {
     _running = false;
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
-    _detector?.dispose?.(); _detector = null;
-    _canvas?.remove(); _canvas = null; _ctx = null; _videoEl = null;
-    _lastVideoTime = -1; _smoothX = 0.5; _smoothY = 0.5;
-    _lastGesture = ""; _gestureFrames = 0; _scrollCooldown = 0; _clickCooldown = 0;
+    _hands?.close?.(); _hands = null;
+    _canvas?.remove(); _canvas = null; _ctx = null;
+    _videoEl = null; _processing = false;
+    _smoothX = 0.5; _smoothY = 0.5;
+    _lastGesture = ""; _gestureFrames = 0; _scrollCd = 0; _clickCd = 0;
     _chat?.add("Gesture control off.", "bot");
   },
   isRunning() { return _running; },
 };
 
-function _loadScript(src, testFn) {
+function _load(src, ready) {
   return new Promise((resolve, reject) => {
-    if (testFn()) { resolve(); return; }
+    if (ready()) { resolve(); return; }
     if (document.querySelector(`script[src="${src}"]`)) {
-      const p = setInterval(() => { if (testFn()) { clearInterval(p); resolve(); } }, 150);
-      setTimeout(() => { clearInterval(p); testFn() ? resolve() : reject(new Error("Timeout: " + src)); }, 25000);
+      const iv = setInterval(() => { if (ready()) { clearInterval(iv); resolve(); } }, 200);
+      setTimeout(() => { clearInterval(iv); ready() ? resolve() : reject(new Error("Timeout: " + src)); }, 20000);
       return;
     }
     const s = document.createElement("script");
-    s.src = src;
-    s.onload  = () => resolve();
-    s.onerror = () => reject(new Error("Failed: " + src));
+    s.src = src; s.crossOrigin = "anonymous";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Load failed: " + src));
     document.head.appendChild(s);
   });
 }
 
-async function _loadLibs() {
-  await _loadScript(TF_CORE,  () => !!window.tf);
-  await _loadScript(TF_HANDS, () => !!window.handPoseDetection);
-}
-
-async function _initDetector() {
-  const model  = window.handPoseDetection.SupportedModels.MediaPipeHands;
-  _detector = await window.handPoseDetection.createDetector(model, {
-    runtime: "tfjs", modelType: "lite", maxHands: 1,
-  });
+async function _initHands() {
+  _hands = new window.Hands({ locateFile: f => MP_BASE + f });
+  _hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.7, minTrackingConfidence: 0.5 });
+  _hands.onResults(_onResults);
+  await _hands.send({ image: _videoEl }); // triggers model download
 }
 
 function _setupCanvas() {
@@ -91,13 +88,12 @@ function _setupCanvas() {
   parent.querySelector(".gesture-canvas")?.remove();
   _canvas = document.createElement("canvas");
   _canvas.className = "gesture-canvas";
-  // Match actual video display size
-  const rect = _videoEl.getBoundingClientRect();
-  _canvas.width  = rect.width  || _videoEl.videoWidth  || 320;
-  _canvas.height = rect.height || _videoEl.videoHeight || 240;
+  _canvas.width  = _videoEl.videoWidth  || 320;
+  _canvas.height = _videoEl.videoHeight || 240;
   Object.assign(_canvas.style, {
-    position:"absolute", top:"0", left:"0", width:"100%", height:"100%",
-    pointerEvents:"none", zIndex:"10", borderRadius:"inherit",
+    position: "absolute", top: "0", left: "0",
+    width: "100%", height: "100%",
+    pointerEvents: "none", zIndex: "10", borderRadius: "inherit",
   });
   if (window.getComputedStyle(parent).position === "static") parent.style.position = "relative";
   parent.appendChild(_canvas);
@@ -107,12 +103,9 @@ function _setupCanvas() {
 function _loop() {
   if (!_running) return;
   _rafId = requestAnimationFrame(_loop);
-  if (!_videoEl || _videoEl.readyState < 2 || !_detector) return;
-  if (_videoEl.currentTime === _lastVideoTime) return;
-  _lastVideoTime = _videoEl.currentTime;
-  _detector.estimateHands(_videoEl, { flipHorizontal: true })
-    .then(hands => _onHands(hands))
-    .catch(() => {});
+  if (!_videoEl || _videoEl.readyState < 2 || !_hands || _processing) return;
+  _processing = true;
+  _hands.send({ image: _videoEl }).catch(() => { _processing = false; });
 }
 
 const CONNECTIONS = [
@@ -121,84 +114,86 @@ const CONNECTIONS = [
   [0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17],
 ];
 
-function _onHands(hands) {
+function _onResults(r) {
+  _processing = false;
   if (!_ctx || !_running) return;
   const W = _canvas.width, H = _canvas.height;
   _ctx.clearRect(0, 0, W, H);
 
-  const hand = hands?.[0];
-  if (!hand?.keypoints?.length) {
-    _lastGesture = ""; _gestureFrames = 0; return;
+  const lms = r.multiHandLandmarks?.[0];
+  if (!lms) { _lastGesture = ""; _gestureFrames = 0; return; }
+
+  // Draw skeleton using drawing_utils if available, else manually
+  if (window.drawConnectors && window.HAND_CONNECTIONS) {
+    window.drawConnectors(_ctx, lms, window.HAND_CONNECTIONS, { color: "rgba(56,189,248,0.7)", lineWidth: 2 });
+    window.drawLandmarks(_ctx, lms, { color: "#38bdf8", lineWidth: 1, radius: 4 });
+  } else {
+    // Manual fallback
+    _ctx.strokeStyle = "rgba(56,189,248,0.7)"; _ctx.lineWidth = 2;
+    for (const [a, b] of CONNECTIONS) {
+      _ctx.beginPath();
+      _ctx.moveTo(lms[a].x * W, lms[a].y * H);
+      _ctx.lineTo(lms[b].x * W, lms[b].y * H);
+      _ctx.stroke();
+    }
+    _ctx.fillStyle = "#38bdf8";
+    for (const p of lms) { _ctx.beginPath(); _ctx.arc(p.x*W, p.y*H, 4, 0, Math.PI*2); _ctx.fill(); }
   }
 
-  // keypoints are in VIDEO pixel space — scale to canvas size
-  const scaleX = W / (_videoEl.videoWidth  || W);
-  const scaleY = H / (_videoEl.videoHeight || H);
-  const kp = hand.keypoints.map(p => ({ x: p.x * scaleX, y: p.y * scaleY }));
-
-  // Draw skeleton
-  _ctx.strokeStyle = "rgba(56,189,248,0.6)"; _ctx.lineWidth = 1.5;
-  for (const [a, b] of CONNECTIONS) {
-    if (!kp[a] || !kp[b]) continue;
-    _ctx.beginPath(); _ctx.moveTo(kp[a].x, kp[a].y); _ctx.lineTo(kp[b].x, kp[b].y); _ctx.stroke();
-  }
-  _ctx.fillStyle = "#38bdf8";
-  for (const p of kp) { _ctx.beginPath(); _ctx.arc(p.x, p.y, 3, 0, Math.PI*2); _ctx.fill(); }
-
-  // Normalise to 0-1 for gesture logic
-  const norm = hand.keypoints.map(p => ({ x: p.x / (_videoEl.videoWidth||320), y: p.y / (_videoEl.videoHeight||240) }));
-  const fingers = _countFingers(norm);
+  const fingers = _countFingers(lms);
   const gesture = fingers + "f";
-
   if (gesture === _lastGesture) _gestureFrames++;
-  else { _lastGesture = gesture; _gestureFrames = 1; if (fingers!==2) _scrollCooldown=0; if (fingers!==3) _clickCooldown=Math.min(_clickCooldown,3); }
+  else {
+    _lastGesture = gesture; _gestureFrames = 1;
+    if (fingers !== 2) _scrollCd = 0;
+    if (fingers !== 3) _clickCd = Math.min(_clickCd, 3);
+  }
 
-  const tip = norm[8] || norm[0];
+  const tip = lms[8];
   _smoothX += (tip.x - _smoothX) * SMOOTH;
   _smoothY += (tip.y - _smoothY) * SMOOTH;
 
   // Tip dot
-  _ctx.beginPath(); _ctx.arc(_smoothX*W, _smoothY*H, 7, 0, Math.PI*2);
+  _ctx.beginPath(); _ctx.arc(_smoothX*W, _smoothY*H, 8, 0, Math.PI*2);
   _ctx.fillStyle = fingers===3?"#34d399":fingers===2?"#f59e0b":"#38bdf8";
-  _ctx.strokeStyle="rgba(255,255,255,0.9)"; _ctx.lineWidth=2; _ctx.fill(); _ctx.stroke();
+  _ctx.strokeStyle="white"; _ctx.lineWidth=2; _ctx.fill(); _ctx.stroke();
 
-  // Label — only show non-PAUSE states
-  const labels = {1:"MOVE",2:"SCROLL",3:"CLICK"};
-  if (labels[fingers]) {
-    _ctx.fillStyle="rgba(2,6,23,0.78)"; _ctx.fillRect(4,4,80,20);
+  const label = {1:"MOVE",2:"SCROLL",3:"CLICK"}[fingers];
+  if (label) {
+    _ctx.fillStyle="rgba(2,6,23,0.8)"; _ctx.fillRect(4,4,84,20);
     _ctx.fillStyle="#38bdf8"; _ctx.font="bold 11px monospace";
-    _ctx.fillText(`✋ ${labels[fingers]}`, 8, 18);
+    _ctx.fillText("✋ "+label, 8, 18);
   }
 
-  if (_scrollCooldown>0) _scrollCooldown--;
-  if (_clickCooldown>0)  _clickCooldown--;
+  if (_scrollCd>0) _scrollCd--;
+  if (_clickCd>0)  _clickCd--;
   if (_gestureFrames < 3) return;
   _dispatch(fingers, _smoothX, _smoothY);
 }
 
-function _dispatch(fingers, x, y) {
-  if (fingers === 1) {
+function _dispatch(f, x, y) {
+  if (f === 1) {
     const now = Date.now();
-    if (now - _lastCursorSend < CURSOR_INTERVAL) return;
+    if (now - _lastCursorSend < CURSOR_MS) return;
     _lastCursorSend = now;
-    sendToExtension("cursor_move", { x, y }); return;
+    sendToExtension("cursor_move", {x, y}); return;
   }
-  if (fingers === 2 && _scrollCooldown === 0) {
+  if (f === 2 && _scrollCd === 0) {
     const dy = y - 0.5; if (Math.abs(dy) < 0.08) return;
     sendToExtension("scroll", { direction: dy>0?"down":"up", amount: Math.round(Math.abs(dy)*700) });
-    _scrollCooldown = 5; return;
+    _scrollCd = 6; return;
   }
-  if (fingers === 3 && _clickCooldown === 0) {
-    sendToExtension("gesture_click", { x, y });
-    _clickCooldown = 22;
+  if (f === 3 && _clickCd === 0) {
+    sendToExtension("gesture_click", {x, y});
+    _clickCd = 24;
   }
 }
 
-function _countFingers(norm) {
-  if (norm.length < 21) return 0;
-  let count = 0;
-  if (Math.abs(norm[4].x - norm[3].x) > 0.06) count++;
+function _countFingers(lms) {
+  if (!lms || lms.length < 21) return 0;
+  let c = 0;
+  if (Math.abs(lms[4].x - lms[3].x) > 0.06) c++;
   const tips=[8,12,16,20], pips=[6,10,14,18];
-  for (let i=0; i<4; i++) { if (norm[tips[i]].y < norm[pips[i]].y - 0.025) count++; }
-  return count;
+  for (let i=0;i<4;i++) { if (lms[tips[i]].y < lms[pips[i]].y - 0.025) c++; }
+  return c;
 }
