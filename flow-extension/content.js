@@ -1,19 +1,34 @@
-// flow-extension/content.js (v5)
-// Broadcast ID immediately + respond to ID requests (fixes timing issue)
+// flow-extension/content.js (v6)
+// ARCHITECTURE CHANGE: webpage never calls chrome.runtime directly.
+// Flow sends commands via window.postMessage → content.js picks them up
+// and forwards to background via chrome.runtime.sendMessage.
+// This bypasses the externally_connectable restriction entirely.
 
-// Broadcast on load
+// Tell the page what extension ID we are (still useful for diagnostics)
 window.postMessage({ source: "flow-ext-id", extensionId: chrome.runtime.id }, "*");
 
-// Also respond to explicit ID requests from the page (fixes race condition
-// where Flow loaded before content.js injected and missed the broadcast)
-window.addEventListener("message", (e) => {
-  if (e.data?.source === "flow-ext-id-request") {
-    window.postMessage({ source: "flow-ext-id", extensionId: chrome.runtime.id }, "*");
-  }
-});
-
+// Register with background so it knows our tab ID
 chrome.runtime.sendMessage({ source: "flow-tab-register" }).catch(() => {});
 
+// ── Relay commands FROM the page TO background ────────────────────────────
+window.addEventListener("message", (e) => {
+  if (e.data?.source !== "flow-control-page") return;
+  chrome.runtime.sendMessage({
+    source:  "flow-control-bg",
+    action:  e.data.action,
+    payload: e.data.payload,
+  }).catch(err => {
+    // Background not ready — send error back to page
+    window.postMessage({
+      source: "flow-ext-reply",
+      ok:     false,
+      action: e.data.action,
+      error:  "Background not ready: " + err.message,
+    }, "*");
+  });
+});
+
+// ── Relay replies FROM background TO page ─────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.source === "flow-ext-reply-relay") {
     window.postMessage({
@@ -26,6 +41,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
+
   if (msg.source === "flow-control") {
     _handle(msg.action, msg.payload || {})
       .then(result => sendResponse({ ok: true, result }))
