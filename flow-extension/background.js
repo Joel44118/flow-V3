@@ -4,6 +4,12 @@
 // was always a no-op. Now stored in chrome.storage.session which persists
 // across service worker restarts within the same browser session.
 
+// Wake listener — screencontrol.js connects briefly to force the
+// service worker to start before sending a message
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === "flow-wake") port.disconnect();
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.source === "flow-tab-register") {
