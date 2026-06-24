@@ -68,13 +68,49 @@ async function _handle(action, payload) {
 }
 
 function _scroll({ direction = "down", amount = 400 }) {
+  // Many sites (Google, Twitter, etc.) scroll a child div, not window.
+  // Strategy: try window first, then find the largest scrollable element
+  // that's actually scrolled, then force-scroll the deepest scrollable div.
+  const scrollable = _findScrollable();
+
   switch (direction) {
-    case "top":    window.scrollTo({ top: 0, behavior: "smooth" }); break;
-    case "bottom": window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }); break;
-    case "up":     window.scrollBy({ top: -amount, behavior: "smooth" }); break;
-    default:       window.scrollBy({ top:  amount, behavior: "smooth" }); break;
+    case "top":
+      scrollable.scrollTo({ top: 0, behavior: "smooth" });
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      break;
+    case "bottom":
+      scrollable.scrollTo({ top: scrollable.scrollHeight, behavior: "smooth" });
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+      break;
+    case "up":
+      scrollable.scrollBy({ top: -amount, behavior: "smooth" });
+      if (scrollable === document.documentElement) {
+        window.scrollBy({ top: -amount, behavior: "smooth" });
+      }
+      break;
+    default: // down
+      scrollable.scrollBy({ top: amount, behavior: "smooth" });
+      if (scrollable === document.documentElement) {
+        window.scrollBy({ top: amount, behavior: "smooth" });
+      }
+      break;
   }
   return { direction, amount };
+}
+
+function _findScrollable() {
+  // Walk elements under the centre of the viewport, find deepest scrollable
+  const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+  const els = document.elementsFromPoint(cx, cy);
+  for (const el of els) {
+    if (el === document.body || el === document.documentElement) continue;
+    const s = window.getComputedStyle(el);
+    const overflowY = s.overflowY;
+    if ((overflowY === "auto" || overflowY === "scroll") && el.scrollHeight > el.clientHeight + 10) {
+      return el;
+    }
+  }
+  return document.documentElement; // fallback
 }
 
 function _click(target) {
