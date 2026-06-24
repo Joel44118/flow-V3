@@ -74,7 +74,7 @@ function _listenForReplies() {
     }
 
     const confirms = {
-      scroll:   "Done — scrolled.",
+      scroll:   null, // suppress — scroll fires too often and spams chat
       click:    result?.clicked ? `Clicked "${result.clicked}".` : "Couldn't find that element — describe the visible text.",
       type:     result?.typed   ? `Typed "${result.typed}".`    : "Couldn't find an input field.",
       navigate: "Navigating…",
@@ -82,7 +82,9 @@ function _listenForReplies() {
       refresh:  "Page refreshing.",
       select:   result?.selected ? `Selected "${result.selected}".` : "Couldn't find that option.",
     };
-    _chat?.add(confirms[action] || "Done.", "bot");
+    if (confirms[action] !== null && confirms[action] !== undefined) {
+      _chat?.add(confirms[action] || "Done.", "bot");
+    }
   });
 }
 
