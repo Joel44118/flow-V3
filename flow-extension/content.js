@@ -1,31 +1,55 @@
-// flow-extension/content.js (v6)
-// ARCHITECTURE CHANGE: webpage never calls chrome.runtime directly.
-// Flow sends commands via window.postMessage → content.js picks them up
-// and forwards to background via chrome.runtime.sendMessage.
-// This bypasses the externally_connectable restriction entirely.
+// flow-extension/content.js (v7)
+// FIX: "Extension context invalidated" crash when extension reloads
+// while page is still open. All chrome.runtime calls now wrapped in
+// try/catch — errors are swallowed gracefully instead of crashing.
 
-// Tell the page what extension ID we are (still useful for diagnostics)
-window.postMessage({ source: "flow-ext-id", extensionId: chrome.runtime.id }, "*");
+function _safeSend(msg) {
+  try {
+    chrome.runtime.sendMessage(msg).catch(() => {});
+  } catch(e) {
+    // Extension context invalidated — extension was reloaded.
+    // Nothing we can do from this context, silently ignore.
+  }
+}
 
-// Register with background so it knows our tab ID
-chrome.runtime.sendMessage({ source: "flow-tab-register" }).catch(() => {});
+function _safePostId() {
+  try {
+    window.postMessage({ source: "flow-ext-id", extensionId: chrome.runtime.id }, "*");
+  } catch(e) {}
+}
 
-// ── Relay commands FROM the page TO background ────────────────────────────
+// Broadcast ID on load
+_safePostId();
+
+// Register with background
+_safeSend({ source: "flow-tab-register" });
+
+// ── Relay commands FROM page TO background ────────────────────────────────
 window.addEventListener("message", (e) => {
+  if (e.data?.source === "flow-ext-id-request") { _safePostId(); return; }
   if (e.data?.source !== "flow-control-page") return;
-  chrome.runtime.sendMessage({
-    source:  "flow-control-bg",
-    action:  e.data.action,
-    payload: e.data.payload,
-  }).catch(err => {
-    // Background not ready — send error back to page
+
+  try {
+    chrome.runtime.sendMessage({
+      source:  "flow-control-bg",
+      action:  e.data.action,
+      payload: e.data.payload,
+    }).catch(err => {
+      window.postMessage({
+        source: "flow-ext-reply",
+        ok:     false,
+        action: e.data.action,
+        error:  "Background error: " + err.message,
+      }, "*");
+    });
+  } catch(e) {
     window.postMessage({
       source: "flow-ext-reply",
       ok:     false,
-      action: e.data.action,
-      error:  "Background not ready: " + err.message,
+      action: e.data?.action,
+      error:  "Extension context invalidated — reload the page.",
     }, "*");
-  });
+  }
 });
 
 // ── Relay replies FROM background TO page ─────────────────────────────────
@@ -41,7 +65,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
-
   if (msg.source === "flow-control") {
     _handle(msg.action, msg.payload || {})
       .then(result => sendResponse({ ok: true, result }))
@@ -50,6 +73,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 });
 
+// ── Action dispatcher ─────────────────────────────────────────────────────
 async function _handle(action, payload) {
   switch (action) {
     case "ping":          return { pong: true };
@@ -63,56 +87,35 @@ async function _handle(action, payload) {
     case "select":        return _select(payload.option || "", payload.field || "");
     case "cursor_move":   return _cursorMove(payload.x ?? 0.5, payload.y ?? 0.5);
     case "gesture_click": return _gestureClick(payload.x ?? 0.5, payload.y ?? 0.5);
+    case "key":           return _key(payload.key || "", payload.modifiers || []);
     default: throw new Error("Unknown action: " + action);
   }
 }
 
+// ── scroll ────────────────────────────────────────────────────────────────
 function _scroll({ direction = "down", amount = 400 }) {
-  // Many sites (Google, Twitter, etc.) scroll a child div, not window.
-  // Strategy: try window first, then find the largest scrollable element
-  // that's actually scrolled, then force-scroll the deepest scrollable div.
-  const scrollable = _findScrollable();
-
+  const el = _findScrollable();
   switch (direction) {
-    case "top":
-      scrollable.scrollTo({ top: 0, behavior: "smooth" });
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      break;
-    case "bottom":
-      scrollable.scrollTo({ top: scrollable.scrollHeight, behavior: "smooth" });
-      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
-      break;
-    case "up":
-      scrollable.scrollBy({ top: -amount, behavior: "smooth" });
-      if (scrollable === document.documentElement) {
-        window.scrollBy({ top: -amount, behavior: "smooth" });
-      }
-      break;
-    default: // down
-      scrollable.scrollBy({ top: amount, behavior: "smooth" });
-      if (scrollable === document.documentElement) {
-        window.scrollBy({ top: amount, behavior: "smooth" });
-      }
-      break;
+    case "top":    el.scrollTo({ top: 0, behavior: "smooth" }); window.scrollTo({ top: 0, behavior: "smooth" }); break;
+    case "bottom": el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }); break;
+    case "up":     el.scrollBy({ top: -amount, behavior: "smooth" }); window.scrollBy({ top: -amount, behavior: "smooth" }); break;
+    default:       el.scrollBy({ top:  amount, behavior: "smooth" }); window.scrollBy({ top:  amount, behavior: "smooth" }); break;
   }
   return { direction, amount };
 }
 
 function _findScrollable() {
-  // Walk elements under the centre of the viewport, find deepest scrollable
   const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
   const els = document.elementsFromPoint(cx, cy);
   for (const el of els) {
     if (el === document.body || el === document.documentElement) continue;
-    const s = window.getComputedStyle(el);
-    const overflowY = s.overflowY;
-    if ((overflowY === "auto" || overflowY === "scroll") && el.scrollHeight > el.clientHeight + 10) {
-      return el;
-    }
+    const oy = window.getComputedStyle(el).overflowY;
+    if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 10) return el;
   }
-  return document.documentElement; // fallback
+  return document.documentElement;
 }
 
+// ── click ─────────────────────────────────────────────────────────────────
 function _click(target) {
   const el = _findElement(target);
   if (!el) return { clicked: null };
@@ -122,6 +125,7 @@ function _click(target) {
   return { clicked: el.textContent?.trim().slice(0, 60) || target };
 }
 
+// ── type ──────────────────────────────────────────────────────────────────
 function _type(text, fieldHint) {
   let input = fieldHint ? _findInput(fieldHint) : null;
   if (!input && document.activeElement) {
@@ -147,6 +151,7 @@ function _type(text, fieldHint) {
   return { typed: text };
 }
 
+// ── read ──────────────────────────────────────────────────────────────────
 function _read() {
   const clone = document.body.cloneNode(true);
   for (const tag of ["script","style","noscript","svg","iframe","nav","footer","header"])
@@ -156,6 +161,7 @@ function _read() {
   return { text: text.slice(0, 8000), title: document.title, url: location.href };
 }
 
+// ── select ────────────────────────────────────────────────────────────────
 function _select(optionText, fieldHint) {
   const sel = (fieldHint ? _findElement(fieldHint, "select") : null) || document.querySelector("select");
   if (!sel) return { selected: null };
@@ -169,28 +175,56 @@ function _select(optionText, fieldHint) {
   return { selected: opt.text };
 }
 
+// ── key press (for gesture keyboard) ─────────────────────────────────────
+function _key(key, modifiers = []) {
+  const el = document.activeElement || document.body;
+  const opts = {
+    key, bubbles: true, cancelable: true,
+    ctrlKey:  modifiers.includes("ctrl"),
+    shiftKey: modifiers.includes("shift"),
+    altKey:   modifiers.includes("alt"),
+    metaKey:  modifiers.includes("meta"),
+  };
+  el.dispatchEvent(new KeyboardEvent("keydown",  opts));
+  el.dispatchEvent(new KeyboardEvent("keypress", opts));
+  el.dispatchEvent(new KeyboardEvent("keyup",    opts));
+
+  // For printable characters, also insert into active input
+  if (key.length === 1 && el.isContentEditable) {
+    document.execCommand("insertText", false, key);
+  } else if (key.length === 1 && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+    const start = el.selectionStart ?? el.value.length;
+    el.value = el.value.slice(0, start) + key + el.value.slice(el.selectionEnd ?? start);
+    el.selectionStart = el.selectionEnd = start + 1;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  return { key };
+}
+
+// ── gesture dot ───────────────────────────────────────────────────────────
 let _dot = null, _dotX = 0, _dotY = 0;
 function _ensureDot() {
-  if (_dot) return;
+  if (_dot && document.contains(_dot)) return;
   _dot = document.createElement("div");
   Object.assign(_dot.style, {
-    position: "fixed", width: "18px", height: "18px", borderRadius: "50%",
-    background: "rgba(56,189,248,0.85)", border: "2px solid #fff",
-    boxShadow: "0 0 12px rgba(56,189,248,0.6)", pointerEvents: "none",
+    position: "fixed", width: "16px", height: "16px", borderRadius: "50%",
+    background: "rgba(56,189,248,0.9)", border: "2px solid #fff",
+    boxShadow: "0 0 10px rgba(56,189,248,0.8)", pointerEvents: "none",
     zIndex: "2147483647", transform: "translate(-50%,-50%)",
-    transition: "left .04s linear, top .04s linear",
+    transition: "left .05s linear, top .05s linear",
   });
   document.body.appendChild(_dot);
 }
 function _cursorMove(nx, ny) {
   _dotX = nx * window.innerWidth; _dotY = ny * window.innerHeight;
-  _ensureDot(); _dot.style.left = _dotX + "px"; _dot.style.top = _dotY + "px";
+  _ensureDot();
+  _dot.style.left = _dotX + "px"; _dot.style.top = _dotY + "px";
   return { ok: true };
 }
 function _gestureClick(nx, ny) {
   _cursorMove(nx, ny); _ensureDot();
   _dot.style.background = "rgba(52,211,153,0.9)";
-  setTimeout(() => { if (_dot) _dot.style.background = "rgba(56,189,248,0.85)"; }, 250);
+  setTimeout(() => { if (_dot) _dot.style.background = "rgba(56,189,248,0.9)"; }, 250);
   const el = document.elementFromPoint(_dotX, _dotY);
   if (!el || el === _dot) return { clicked: null };
   el.focus?.(); el.click();
@@ -198,6 +232,7 @@ function _gestureClick(nx, ny) {
   return { clicked: el.textContent?.trim().slice(0, 60) || el.tagName };
 }
 
+// ── element finders ───────────────────────────────────────────────────────
 function _findElement(target, tagFilter = null) {
   const t = (target || "").toLowerCase().trim();
   if (!t) return null;
