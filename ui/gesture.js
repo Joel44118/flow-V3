@@ -52,7 +52,7 @@ export const Gesture = {
     _hands?.close?.(); _hands = null;
     _canvas?.remove(); _canvas = null; _ctx = null;
     _videoEl = null; _processing = false;
-    _smoothX = 0.5; _smoothY = 0.5;
+    _smoothX = 0.5; _smoothY = 0.5; _dotAbsX = -1; _dotAbsY = -1;
     _lastGesture = ""; _gestureFrames = 0; _scrollCd = 0; _clickCd = 0;
     _chat?.add("Gesture control off.", "bot");
   },
@@ -150,8 +150,14 @@ function _onResults(r) {
   }
 
   const tip = lms[8];
-  _smoothX += (tip.x - _smoothX) * SMOOTH;
-  _smoothY += (tip.y - _smoothY) * SMOOTH;
+  // Only update smooth position when actively moving (1 finger = MOVE mode)
+  // For other gestures, hold the last position so dot stays put
+  if (fingers === 1) {
+    _smoothX += (tip.x - _smoothX) * SMOOTH;
+    _smoothY += (tip.y - _smoothY) * SMOOTH;
+  }
+  // On first ever detection, jump immediately to hand position
+  if (_dotAbsX < 0) { _smoothX = tip.x; _smoothY = tip.y; }
 
   // Tip dot
   _ctx.beginPath(); _ctx.arc(_smoothX*W, _smoothY*H, 8, 0, Math.PI*2);
@@ -171,20 +177,36 @@ function _onResults(r) {
   _dispatch(fingers, _smoothX, _smoothY);
 }
 
+// Dot position — persists between gestures so it stays where you left it
+let _dotAbsX = -1, _dotAbsY = -1; // -1 = not yet placed
+
 function _dispatch(f, x, y) {
   if (f === 1) {
     const now = Date.now();
     if (now - _lastCursorSend < CURSOR_MS) return;
     _lastCursorSend = now;
-    sendToExtension("cursor_move", {x, y}); return;
+    // Only update stored position when actively moving (1 finger)
+    _dotAbsX = x; _dotAbsY = y;
+    sendToExtension("cursor_move", { x, y });
+    return;
   }
   if (f === 2 && _scrollCd === 0) {
-    const dy = y - 0.5; if (Math.abs(dy) < 0.08) return;
-    sendToExtension("scroll", { direction: dy>0?"down":"up", amount: Math.round(Math.abs(dy)*700) });
-    _scrollCd = 6; return;
+    // Use hand Y relative to centre for scroll direction/speed
+    // Don't use dot position — keep dot where it was
+    const dy = y - 0.5;
+    if (Math.abs(dy) < 0.06) return; // smaller dead zone
+    sendToExtension("scroll", {
+      direction: dy > 0 ? "down" : "up",
+      amount: Math.round(Math.abs(dy) * 900), // stronger scroll
+    });
+    _scrollCd = 4;
+    return;
   }
   if (f === 3 && _clickCd === 0) {
-    sendToExtension("gesture_click", {x, y});
+    // Click at the last known dot position, not current finger position
+    const cx = _dotAbsX >= 0 ? _dotAbsX : x;
+    const cy = _dotAbsY >= 0 ? _dotAbsY : y;
+    sendToExtension("gesture_click", { x: cx, y: cy });
     _clickCd = 24;
   }
 }
