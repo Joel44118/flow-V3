@@ -53,6 +53,7 @@ export const Gesture = {
     _canvas?.remove(); _canvas = null; _ctx = null;
     _videoEl = null; _processing = false;
     _smoothX = 0.5; _smoothY = 0.5; _dotAbsX = -1; _dotAbsY = -1;
+    _kbMode = false; _kbCanvas?.remove(); _kbCanvas = null; _kbCtx = null;
     _lastGesture = ""; _gestureFrames = 0; _scrollCd = 0; _clickCd = 0;
     _chat?.add("Gesture control off.", "bot");
   },
@@ -164,11 +165,12 @@ function _onResults(r) {
   _ctx.fillStyle = fingers===3?"#34d399":fingers===2?"#f59e0b":"#38bdf8";
   _ctx.strokeStyle="white"; _ctx.lineWidth=2; _ctx.fill(); _ctx.stroke();
 
-  const label = {1:"MOVE",2:"SCROLL",3:"CLICK"}[fingers];
+  const label = {1:"MOVE",2:"SCROLL",3:"CLICK",4:"KB"}[Math.min(fingers,4)];
   if (label) {
-    _ctx.fillStyle="rgba(2,6,23,0.8)"; _ctx.fillRect(4,4,84,20);
-    _ctx.fillStyle="#38bdf8"; _ctx.font="bold 11px monospace";
-    _ctx.fillText("✋ "+label, 8, 18);
+    _ctx.fillStyle = fingers === 4 ? "rgba(139,92,246,0.85)" : "rgba(2,6,23,0.8)";
+    _ctx.fillRect(4, 4, 90, 20);
+    _ctx.fillStyle = "#38bdf8"; _ctx.font = "bold 11px monospace";
+    _ctx.fillText((_kbMode ? "⌨️ " : "✋ ") + label, 8, 18);
   }
 
   if (_scrollCd>0) _scrollCd--;
@@ -178,36 +180,33 @@ function _onResults(r) {
 }
 
 // Dot position — persists between gestures so it stays where you left it
-let _dotAbsX = -1, _dotAbsY = -1; // -1 = not yet placed
+let _dotAbsX = -1, _dotAbsY = -1;
 
 function _dispatch(f, x, y) {
   if (f === 1) {
+    if (_kbMode) { _kbNavigate(x, y); return; }
     const now = Date.now();
     if (now - _lastCursorSend < CURSOR_MS) return;
     _lastCursorSend = now;
-    // Only update stored position when actively moving (1 finger)
     _dotAbsX = x; _dotAbsY = y;
     sendToExtension("cursor_move", { x, y });
     return;
   }
   if (f === 2 && _scrollCd === 0) {
-    // Use hand Y relative to centre for scroll direction/speed
-    // Don't use dot position — keep dot where it was
     const dy = y - 0.5;
-    if (Math.abs(dy) < 0.06) return; // smaller dead zone
-    sendToExtension("scroll", {
-      direction: dy > 0 ? "down" : "up",
-      amount: Math.round(Math.abs(dy) * 900), // stronger scroll
-    });
-    _scrollCd = 4;
-    return;
+    if (Math.abs(dy) < 0.06) return;
+    sendToExtension("scroll", { direction: dy > 0 ? "down" : "up", amount: Math.round(Math.abs(dy) * 900) });
+    _scrollCd = 4; return;
   }
   if (f === 3 && _clickCd === 0) {
-    // Click at the last known dot position, not current finger position
+    if (_kbMode) { _kbPress(); _clickCd = 20; return; }
     const cx = _dotAbsX >= 0 ? _dotAbsX : x;
     const cy = _dotAbsY >= 0 ? _dotAbsY : y;
     sendToExtension("gesture_click", { x: cx, y: cy });
-    _clickCd = 24;
+    _clickCd = 24; return;
+  }
+  if (f >= 4 && _clickCd === 0) {
+    _toggleKeyboard(); _clickCd = 30;
   }
 }
 
@@ -215,7 +214,88 @@ function _countFingers(lms) {
   if (!lms || lms.length < 21) return 0;
   let c = 0;
   if (Math.abs(lms[4].x - lms[3].x) > 0.06) c++;
-  const tips=[8,12,16,20], pips=[6,10,14,18];
-  for (let i=0;i<4;i++) { if (lms[tips[i]].y < lms[pips[i]].y - 0.025) c++; }
+  const tips = [8,12,16,20], pips = [6,10,14,18];
+  for (let i = 0; i < 4; i++) { if (lms[tips[i]].y < lms[pips[i]].y - 0.025) c++; }
   return c;
+}
+
+// Keyboard mode state
+let _kbMode = false;
+let _kbCanvas = null, _kbCtx = null;
+let _kbRow = 0, _kbCol = 0;
+
+const KB_ROWS = [
+  ["Q","W","E","R","T","Y","U","I","O","P"],
+  ["A","S","D","F","G","H","J","K","L","⌫"],
+  ["Z","X","C","V","B","N","M","⎵","↵","⇧"],
+];
+
+function _toggleKeyboard() {
+  _kbMode = !_kbMode;
+  if (_kbMode) {
+    _drawKeyboard();
+  } else {
+    _kbCanvas?.remove(); _kbCanvas = null; _kbCtx = null;
+  }
+}
+
+function _drawKeyboard() {
+  if (!_canvas) return;
+  const parent = _canvas.parentElement;
+  if (!parent) return;
+
+  if (!_kbCanvas) {
+    _kbCanvas = document.createElement("canvas");
+    _kbCanvas.className = "gesture-keyboard";
+    _kbCanvas.width  = _canvas.width;
+    _kbCanvas.height = Math.floor(_canvas.height * 0.45);
+    Object.assign(_kbCanvas.style, {
+      position: "absolute", bottom: "0", left: "0",
+      width: "100%", height: "45%",
+      pointerEvents: "none", zIndex: "11",
+    });
+    parent.appendChild(_kbCanvas);
+    _kbCtx = _kbCanvas.getContext("2d");
+  }
+
+  const C = _kbCtx, W = _kbCanvas.width, H = _kbCanvas.height;
+  const cellW = W / 10, cellH = H / 3;
+
+  C.clearRect(0, 0, W, H);
+  C.fillStyle = "rgba(2,6,23,0.88)";
+  C.fillRect(0, 0, W, H);
+
+  KB_ROWS.forEach((row, ri) => {
+    row.forEach((key, ci) => {
+      const x = ci * cellW, y = ri * cellH;
+      const active = ri === _kbRow && ci === _kbCol;
+
+      C.fillStyle = active ? "#38bdf8" : "rgba(56,189,248,0.15)";
+      C.fillRect(x + 2, y + 2, cellW - 4, cellH - 4);
+
+      C.fillStyle = active ? "#020617" : "#38bdf8";
+      C.font = `bold ${Math.floor(cellH * 0.38)}px monospace`;
+      C.textAlign = "center"; C.textBaseline = "middle";
+      C.fillText(key, x + cellW / 2, y + cellH / 2);
+    });
+  });
+}
+
+function _kbNavigate(nx, ny) {
+  // Map normalised hand position to keyboard cell
+  const col = Math.floor(nx * 10);
+  const row = Math.floor(ny * 3);
+  _kbRow = Math.max(0, Math.min(2, row));
+  _kbCol = Math.max(0, Math.min(9, col));
+  _drawKeyboard();
+}
+
+function _kbPress() {
+  const key = KB_ROWS[_kbRow][_kbCol];
+  let send = key;
+  if (key === "⌫")  send = "Backspace";
+  if (key === "⎵")  send = " ";
+  if (key === "↵")  send = "Enter";
+  if (key === "⇧")  send = "Shift";
+  sendToExtension("key", { key: send });
 }
