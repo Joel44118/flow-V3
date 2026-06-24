@@ -1,4 +1,4 @@
-// ui/screencontrol.js (v5)
+// ui/screencontrol.js (v6)
 // Webpage never calls chrome.runtime directly — blocked by Chrome security.
 // All commands go: postMessage → content.js → chrome.runtime → background.
 // Extension ID still received (for diagnostics) but never used for sendMessage.
@@ -8,10 +8,15 @@ let _extReady = false;
 let _replyHandlerSet = false;
 let _pendingTimeout = null;
 
+// These actions are high-frequency gesture stream — never wait for reply or show errors
+const SILENT_ACTIONS = new Set([
+  "cursor_move", "drag_move", "gesture_cleanup",
+  "show_keyboard", "hide_keyboard", "kb_highlight",
+]);
+
 export function initScreenControl(chat, orb, sendAI) {
   _chat = chat; _orb = orb; _sendAI = sendAI;
   _listenForReplies();
-  // Listen for extension ID broadcast — sets _extReady flag
   window.addEventListener("message", (e) => {
     if (e.data?.source === "flow-ext-id" && e.data?.extensionId) {
       _extReady = true;
@@ -22,19 +27,30 @@ export function initScreenControl(chat, orb, sendAI) {
 // ── Send command via postMessage → content.js ─────────────────────────────
 function _send(action, payload = {}) {
   if (!_extReady) {
-    _chat?.addError(
-      "Extension not connected.\n\n" +
-      "Fix:\n" +
-      "1. chrome://extensions → Remove 'Flow Screen Control'\n" +
-      "2. Load unpacked → select your flow-extension/ folder\n" +
-      "3. Refresh this page and try again"
-    );
-    _orb?.setState("idle");
+    // Only show error for explicit user-initiated commands, not gesture stream
+    if (!SILENT_ACTIONS.has(action)) {
+      _chat?.addError(
+        "Extension not connected.\n\n" +
+        "Fix:\n" +
+        "1. chrome://extensions → Remove 'Flow Screen Control'\n" +
+        "2. Load unpacked → select your flow-extension/ folder\n" +
+        "3. Refresh this page and try again"
+      );
+      _orb?.setState("idle");
+    }
     return;
   }
 
   if (_pendingTimeout) clearTimeout(_pendingTimeout);
-  if (action !== "cursor_move" && action !== "gesture_click") {
+
+  // Only start timeout for commands that have a meaningful reply
+  const shouldWait = !SILENT_ACTIONS.has(action) && action !== "gesture_click" &&
+                     action !== "right_click" && action !== "middle_click" &&
+                     action !== "drag_start" && action !== "drag_end" &&
+                     action !== "scroll" && action !== "nav_history" &&
+                     action !== "switch_tab" && action !== "key";
+
+  if (shouldWait) {
     _pendingTimeout = setTimeout(() => {
       _pendingTimeout = null;
       _orb?.setState("idle");
@@ -42,7 +58,6 @@ function _send(action, payload = {}) {
     }, 6000);
   }
 
-  // Route through content.js which has chrome.runtime access
   window.postMessage({ source: "flow-control-page", action, payload }, "*");
 }
 
@@ -58,7 +73,13 @@ function _listenForReplies() {
     const { ok, action, result, error } = e.data;
     _orb?.setState("idle");
 
-    if (!ok) { _chat?.addError(`Screen control: ${error || "unknown error"}`); return; }
+    // Suppress errors for gesture stream actions
+    if (!ok) {
+      if (!SILENT_ACTIONS.has(action)) {
+        _chat?.addError(`Screen control: ${error || "unknown error"}`);
+      }
+      return;
+    }
 
     if (action === "ping") {
       _chat?.add("✅ Flow Screen Control extension connected and working.", "bot");
@@ -73,8 +94,16 @@ function _listenForReplies() {
       return;
     }
 
+    // Gesture stream actions — silent
+    if (SILENT_ACTIONS.has(action)) return;
+    if (action === "gesture_click" || action === "right_click" || action === "middle_click") return;
+    if (action === "drag_start" || action === "drag_move" || action === "drag_end") return;
+    if (action === "scroll") return;
+    if (action === "nav_history") return;
+    if (action === "switch_tab") return;
+    if (action === "key") return;
+
     const confirms = {
-      scroll:   null, // suppress — scroll fires too often and spams chat
       click:    result?.clicked ? `Clicked "${result.clicked}".` : "Couldn't find that element — describe the visible text.",
       type:     result?.typed   ? `Typed "${result.typed}".`    : "Couldn't find an input field.",
       navigate: "Navigating…",
@@ -82,7 +111,7 @@ function _listenForReplies() {
       refresh:  "Page refreshing.",
       select:   result?.selected ? `Selected "${result.selected}".` : "Couldn't find that option.",
     };
-    if (confirms[action] !== null && confirms[action] !== undefined) {
+    if (confirms[action] != null) {
       _chat?.add(confirms[action] || "Done.", "bot");
     }
   });
