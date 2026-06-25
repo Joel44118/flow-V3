@@ -1,320 +1,350 @@
-let _flowTabId = null;
-let _lastHighlightedEl = null;
+// flow-extension/content.js — v9 DEFINITIVE
+// This script runs inside EVERY tab.
+// Role A (Flow's own tab): broadcast extension ID, relay replies back to Flow page
+// Role B (target tab): execute scroll/click/type/etc actions
+// NEVER crashes on extension reload — every chrome.runtime call is try/caught
 
-window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
+(function () {
+  "use strict";
 
-  if (event.data.source === 'flow-ext-id-request') {
+  // ── Broadcast extension ID to the page ───────────────────────────────────
+  function broadcastId() {
     try {
       window.postMessage({
-        source: 'flow-ext-id-reply',
-        extensionId: chrome.runtime.id
-      }, '*');
-    } catch (err) {
-      // Extension context invalidated
-    }
+        source: "flow-ext-id",
+        extensionId: chrome.runtime.id,
+      }, "*");
+    } catch (e) { /* extension context gone, ignore */ }
   }
-});
+  broadcastId();
 
-window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
-
-  if (event.data.source === 'flow-control-page') {
+  // Register this tab with the background worker so it knows Flow's tab ID
+  function registerTab() {
     try {
-      chrome.runtime.sendMessage({
-        source: 'flow-control-relay',
-        action: event.data.action,
-        payload: event.data.payload
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          return;
-        }
-        if (response) {
-          window.postMessage({
-            source: 'flow-control-reply',
-            action: response.action,
-            success: response.success,
-            message: response.message
-          }, '*');
-        }
+      chrome.runtime.sendMessage({ source: "flow-tab-register" }, () => {
+        if (chrome.runtime.lastError) { /* ignore */ }
       });
-    } catch (err) {
-      // Extension context invalidated
-    }
+    } catch (e) { /* ignore */ }
   }
-});
+  registerTab();
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  try {
-    if (msg.source === 'register-flow-tab') {
-      _flowTabId = sender.tab.id;
-      sendResponse({ success: true });
-    } else if (msg.source === 'flow-control-relay') {
-      _handleScreenControl(msg.action, msg.payload, sendResponse);
+  // ── Listen for messages from the Flow page ───────────────────────────────
+  window.addEventListener("message", (e) => {
+    if (!e.data) return;
+
+    // ID request — reply immediately
+    if (e.data.source === "flow-ext-id-request") {
+      broadcastId();
+      return;
     }
-  } catch (err) {
-    sendResponse({ success: false, error: err.message });
+
+    // Screen control command from Flow page
+    if (e.data.source === "flow-control-page") {
+      const { msgId, action, payload } = e.data;
+      try {
+        chrome.runtime.sendMessage(
+          { source: "flow-control-bg", msgId, action, payload },
+          (resp) => {
+            if (chrome.runtime.lastError) {
+              // Background worker asleep — wake it by reconnecting, then retry once
+              _wakeAndRetry(msgId, action, payload);
+            }
+            // resp is just { received: true } — actual result comes via flow-ext-reply-relay
+          }
+        );
+      } catch (err) {
+        _replyError(msgId, action, err.message);
+      }
+      return;
+    }
+  });
+
+  function _wakeAndRetry(msgId, action, payload) {
+    try {
+      const port = chrome.runtime.connect({ name: "flow-wake" });
+      port.disconnect();
+      setTimeout(() => {
+        try {
+          chrome.runtime.sendMessage(
+            { source: "flow-control-bg", msgId, action, payload },
+            () => { if (chrome.runtime.lastError) _replyError(msgId, action, "Worker unavailable"); }
+          );
+        } catch (e) { _replyError(msgId, action, e.message); }
+      }, 150);
+    } catch (e) { _replyError(msgId, action, e.message); }
   }
 
-  return true;
-});
+  function _replyError(msgId, action, error) {
+    window.postMessage({ source: "flow-ext-reply", msgId, action, ok: false, error }, "*");
+  }
 
-function _handleScreenControl(action, payload, sendResponse) {
+  // ── Listen for replies from background worker → relay to Flow page ────────
   try {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg.source === "flow-ext-reply-relay") {
+        window.postMessage({
+          source: "flow-ext-reply",
+          msgId:  msg.msgId,
+          ok:     msg.ok,
+          action: msg.action,
+          result: msg.result,
+          error:  msg.error,
+        }, "*");
+        sendResponse({ ok: true });
+        return true;
+      }
+
+      // Execute action directly (this is the TARGET tab)
+      if (msg.source === "flow-control") {
+        _handle(msg.action, msg.payload || {})
+          .then(result => { try { sendResponse({ ok: true, result }); } catch (e) {} })
+          .catch(err   => { try { sendResponse({ ok: false, error: err.message }); } catch (e) {} });
+        return true;
+      }
+    });
+  } catch (e) { /* extension context invalidated — page will recover on next load */ }
+
+  // ── Action handler ────────────────────────────────────────────────────────
+  async function _handle(action, payload) {
     switch (action) {
-      case 'scroll':
-        _scroll(payload);
-        sendResponse({ action: 'scroll', success: true });
-        break;
-
-      case 'click':
-        _click(payload);
-        sendResponse({ action: 'click', success: true });
-        break;
-
-      case 'right_click':
-        _rightClick(payload);
-        sendResponse({ action: 'right_click', success: true });
-        break;
-
-      case 'cursor_move':
-        _moveCursor(payload);
-        sendResponse({ action: 'cursor_move', success: true });
-        break;
-
-      case 'drag':
-        _drag(payload);
-        sendResponse({ action: 'drag', success: true });
-        break;
-
-      case 'type':
-        _type(payload);
-        sendResponse({ action: 'type', success: true });
-        break;
-
-      case 'key_press':
-        _pressKey(payload);
-        sendResponse({ action: 'key_press', success: true });
-        break;
-
-      case 'navigate':
-        _navigate(payload);
-        sendResponse({ action: 'navigate', success: true });
-        break;
-
-      case 'go_back':
-        window.history.back();
-        sendResponse({ action: 'go_back', success: true });
-        break;
-
-      case 'refresh':
-        window.location.reload();
-        sendResponse({ action: 'refresh', success: true });
-        break;
-
-      case 'read_page':
-        const text = document.body.innerText;
-        sendResponse({ action: 'read_page', success: true, content: text });
-        break;
-
-      default:
-        sendResponse({ action, success: false, error: 'Unknown action' });
+      case "ping":          return { pong: true };
+      case "scroll":        return _scroll(payload);
+      case "click":         return _click(payload.target || "");
+      case "type":          return _type(payload.text || "", payload.field || "");
+      case "read":          return _read();
+      case "navigate":      window.location.href = payload.url; return {};
+      case "back":          window.history.back(); return {};
+      case "refresh":       window.location.reload(); return {};
+      case "select":        return _select(payload.option || "", payload.field || "");
+      case "cursor_move":   return _cursorMove(payload.x ?? 0.5, payload.y ?? 0.5);
+      case "gesture_click": return _gestureClick(payload.x ?? 0.5, payload.y ?? 0.5);
+      default: throw new Error("Unknown action: " + action);
     }
-  } catch (err) {
-    sendResponse({ success: false, error: err.message });
-  }
-}
-
-function _scroll(payload) {
-  const { direction, distance } = payload;
-  const scrollAmount = direction === 'up' ? -(distance || 60) : (distance || 60);
-
-  const scrollable = _findScrollable();
-  if (scrollable) {
-    scrollable.scrollBy({ top: scrollAmount, behavior: 'smooth' });
-  }
-}
-
-function _findScrollable() {
-  if (window.innerHeight < document.documentElement.scrollHeight) {
-    return window;
   }
 
-  const centerX = window.innerWidth / 2;
-  const centerY = window.innerHeight / 2;
-  const elements = document.elementsFromPoint(centerX, centerY);
+  // ── Scroll (finds the real scrollable element, not just window) ────────────
+  function _scroll({ direction = "down", amount = 400 }) {
+    const el = _findScrollable();
+    switch (direction) {
+      case "top":
+        (el || window).scrollTo({ top: 0, behavior: "smooth" });
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        break;
+      case "bottom":
+        if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+        window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+        break;
+      case "up":
+        if (el) el.scrollBy({ top: -amount, behavior: "smooth" });
+        window.scrollBy({ top: -amount, behavior: "smooth" });
+        break;
+      case "left":
+        if (el) el.scrollBy({ left: -amount, behavior: "smooth" });
+        window.scrollBy({ left: -amount, behavior: "smooth" });
+        break;
+      case "right":
+        if (el) el.scrollBy({ left: amount, behavior: "smooth" });
+        window.scrollBy({ left: amount, behavior: "smooth" });
+        break;
+      default:
+        if (el) el.scrollBy({ top: amount, behavior: "smooth" });
+        window.scrollBy({ top: amount, behavior: "smooth" });
+    }
+    return { direction, amount };
+  }
 
-  for (let el of elements) {
-    const overflow = getComputedStyle(el).overflow;
-    if (overflow === 'auto' || overflow === 'scroll') {
-      if (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth) {
-        return el;
+  function _findScrollable() {
+    // Walk elements under the vertical center of the viewport
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    const hits = document.elementsFromPoint(cx, cy) || [];
+    for (const el of hits) {
+      if (el === document.body || el === document.documentElement) continue;
+      const s  = window.getComputedStyle(el);
+      const ov = s.overflow + s.overflowY;
+      if (/(auto|scroll)/.test(ov) && el.scrollHeight > el.clientHeight + 4) return el;
+    }
+    // Fallback: document.documentElement (works on most pages)
+    if (document.documentElement.scrollHeight > document.documentElement.clientHeight + 4) {
+      return document.documentElement;
+    }
+    return null;
+  }
+
+  // ── Click ─────────────────────────────────────────────────────────────────
+  function _click(target) {
+    const el = _findElement(target);
+    if (!el) return { clicked: null };
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.focus?.();
+    el.click();
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    return { clicked: el.textContent?.trim().slice(0, 60) || target };
+  }
+
+  // ── Type ──────────────────────────────────────────────────────────────────
+  function _type(text, fieldHint) {
+    let input = fieldHint ? _findInput(fieldHint) : null;
+    if (!input && document.activeElement) {
+      const ae = document.activeElement;
+      if (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable) input = ae;
+    }
+    if (!input) {
+      input = _findInput("") || document.querySelector(
+        "input:not([type=hidden]):not([type=submit]):not([type=button]):not([disabled]),textarea:not([disabled])"
+      );
+    }
+    if (!input) return { typed: null };
+    input.scrollIntoView({ behavior: "smooth", block: "center" });
+    input.focus();
+    if (input.isContentEditable) {
+      input.textContent = text;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      const proto  = input.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (setter) setter.call(input, text); else input.value = text;
+      input.dispatchEvent(new Event("input",  { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return { typed: text };
+  }
+
+  // ── Read ──────────────────────────────────────────────────────────────────
+  function _read() {
+    const clone = document.body.cloneNode(true);
+    for (const tag of ["script","style","noscript","svg","iframe","nav","footer","header"])
+      clone.querySelectorAll(tag).forEach(n => n.remove());
+    const text = (clone.innerText || clone.textContent || "")
+      .replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
+    return { text: text.slice(0, 8000), title: document.title, url: location.href };
+  }
+
+  // ── Select ────────────────────────────────────────────────────────────────
+  function _select(optionText, fieldHint) {
+    const sel = (fieldHint ? _findElement(fieldHint, "select") : null) || document.querySelector("select");
+    if (!sel) return { selected: null };
+    const opt = Array.from(sel.options).find(o =>
+      o.text.toLowerCase().includes(optionText.toLowerCase()) ||
+      o.value.toLowerCase().includes(optionText.toLowerCase())
+    );
+    if (!opt) return { selected: null };
+    sel.value = opt.value;
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return { selected: opt.text };
+  }
+
+  // ── Gesture cursor dot ────────────────────────────────────────────────────
+  let _dot = null, _dotX = window.innerWidth / 2, _dotY = window.innerHeight / 2;
+  let _hoveredEl = null;
+
+  function _ensureDot() {
+    if (_dot && document.body.contains(_dot)) return;
+    _dot = document.createElement("div");
+    Object.assign(_dot.style, {
+      position:      "fixed",
+      width:         "20px",
+      height:        "20px",
+      borderRadius:  "50%",
+      background:    "rgba(56,189,248,0.85)",
+      border:        "2px solid #fff",
+      boxShadow:     "0 0 14px rgba(56,189,248,0.7)",
+      pointerEvents: "none",
+      zIndex:        "2147483647",
+      transform:     "translate(-50%,-50%)",
+      transition:    "left .05s linear, top .05s linear, background .15s",
+    });
+    document.body.appendChild(_dot);
+  }
+
+  function _cursorMove(nx, ny) {
+    _dotX = Math.max(0, Math.min(1, nx)) * window.innerWidth;
+    _dotY = Math.max(0, Math.min(1, ny)) * window.innerHeight;
+    _ensureDot();
+    _dot.style.left = _dotX + "px";
+    _dot.style.top  = _dotY + "px";
+    // Hover highlight
+    _dot.style.display = "none";
+    const el = document.elementFromPoint(_dotX, _dotY);
+    _dot.style.display = "";
+    if (el !== _hoveredEl) {
+      if (_hoveredEl) _hoveredEl.style.outline = _hoveredEl._origOutline || "";
+      _hoveredEl = el;
+      if (el && el !== document.body && el !== document.documentElement) {
+        el._origOutline = el.style.outline;
+        el.style.outline = "2px solid rgba(56,189,248,0.85)";
       }
     }
+    return { ok: true };
   }
 
-  return window;
-}
-
-function _click(payload) {
-  const { x, y } = payload;
-  const el = document.elementFromPoint(x, y);
-
-  if (el) {
+  function _gestureClick(nx, ny) {
+    _cursorMove(nx, ny);
+    _ensureDot();
+    _dot.style.background = "rgba(52,211,153,0.9)";
+    setTimeout(() => { if (_dot) _dot.style.background = "rgba(56,189,248,0.85)"; }, 250);
+    _dot.style.display = "none";
+    const el = document.elementFromPoint(_dotX, _dotY);
+    _dot.style.display = "";
+    if (!el || el === document.body) return { clicked: null };
+    el.focus?.();
     el.click();
-    _highlightElement(el, '#0f0');
-  }
-}
-
-function _rightClick(payload) {
-  const { x, y } = payload;
-  const el = document.elementFromPoint(x, y);
-
-  if (el) {
-    const event = new MouseEvent('contextmenu', {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: x,
-      clientY: y
-    });
-    el.dispatchEvent(event);
-    _highlightElement(el, '#f80');
-  }
-}
-
-function _moveCursor(payload) {
-  const { x, y } = payload;
-  const el = document.elementFromPoint(x, y);
-
-  _highlightElement(el, '#0ff');
-  _drawCursorDot(x, y);
-}
-
-function _drag(payload) {
-  const { fromX, fromY, toX, toY } = payload;
-  const el = document.elementFromPoint(fromX, fromY);
-
-  if (el) {
-    const mouseDownEvent = new MouseEvent('mousedown', {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: fromX,
-      clientY: fromY
-    });
-    el.dispatchEvent(mouseDownEvent);
-
-    const mouseMoveEvent = new MouseEvent('mousemove', {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: toX,
-      clientY: toY
-    });
-    document.dispatchEvent(mouseMoveEvent);
-
-    const mouseUpEvent = new MouseEvent('mouseup', {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: toX,
-      clientY: toY
-    });
-    document.dispatchEvent(mouseUpEvent);
-
-    _highlightElement(el, '#f0f');
-  }
-}
-
-function _highlightElement(el, color) {
-  if (_lastHighlightedEl && _lastHighlightedEl !== el) {
-    _lastHighlightedEl.style.outline = '';
-    _lastHighlightedEl.style.outlineOffset = '';
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: _dotX, clientY: _dotY }));
+    return { clicked: el.textContent?.trim().slice(0, 60) || el.tagName };
   }
 
-  if (!el) return;
-
-  if (el.tagName.match(/^(BUTTON|A|INPUT|TEXTAREA|SELECT)$/) || el.onclick) {
-    el.style.outline = `3px solid ${color}`;
-    el.style.outlineOffset = '2px';
-    _lastHighlightedEl = el;
-  }
-}
-
-function _drawCursorDot(x, y) {
-  let dot = document.querySelector('#gesture-cursor-dot');
-
-  if (!dot) {
-    dot = document.createElement('div');
-    dot.id = 'gesture-cursor-dot';
-    dot.style.position = 'fixed';
-    dot.style.zIndex = '9999';
-    dot.style.pointerEvents = 'none';
-    document.body.appendChild(dot);
-  }
-
-  dot.style.left = (x - 8) + 'px';
-  dot.style.top = (y - 8) + 'px';
-  dot.style.width = '16px';
-  dot.style.height = '16px';
-  dot.style.borderRadius = '50%';
-  dot.style.backgroundColor = 'rgba(0, 100, 255, 0.5)';
-  dot.style.border = '2px solid #0f0';
-}
-
-function _type(payload) {
-  const { text } = payload;
-  const el = document.activeElement;
-
-  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
-    el.value += text;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-}
-
-function _pressKey(payload) {
-  const { key } = payload;
-
-  const keyMap = {
-    'Backspace': 'Backspace',
-    'Enter': 'Enter',
-    'Shift': 'Shift',
-    ' ': ' ',
-    '?': '?'
-  };
-
-  const keyCode = keyMap[key] || key;
-  const el = document.activeElement;
-
-  if (keyCode === 'Backspace') {
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
-      el.value = el.value.slice(0, -1);
-      el.dispatchEvent(new Event('input', { bubbles: true }));
+  // ── Element finders ───────────────────────────────────────────────────────
+  function _findElement(target, tagFilter = null) {
+    const t = (target || "").toLowerCase().trim();
+    if (!t) return null;
+    const scope = tagFilter
+      ? document.querySelectorAll(tagFilter)
+      : document.querySelectorAll("button,a,[role=button],[role=link],input[type=submit],input[type=button],label,h1,h2,h3,li,td,th,span,div,p");
+    let best = null, bestScore = 0;
+    for (const el of scope) {
+      if (!_isVisible(el)) continue;
+      const attrs = [
+        el.textContent?.trim().toLowerCase(),
+        el.getAttribute("aria-label")?.toLowerCase(),
+        el.getAttribute("title")?.toLowerCase(),
+        el.getAttribute("placeholder")?.toLowerCase(),
+        el.id?.toLowerCase(),
+      ].filter(Boolean);
+      for (const a of attrs) {
+        const score = a === t ? 10 : a.startsWith(t) ? 7 : a.includes(t) ? 4 : 0;
+        if (score > bestScore) { bestScore = score; best = el; }
+      }
     }
-  } else if (keyCode === 'Enter') {
-    if (el && el.tagName === 'TEXTAREA') {
-      el.value += '\n';
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-  } else {
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
-      el.value += keyCode;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    }
+    return bestScore > 0 ? best : null;
   }
-}
 
-function _navigate(payload) {
-  const { url } = payload;
-  window.location.href = url;
-}
+  function _findInput(hint) {
+    const h = (hint || "").toLowerCase().trim();
+    const inputs = document.querySelectorAll(
+      "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]):not([disabled])," +
+      "textarea:not([disabled]),[contenteditable=true]"
+    );
+    if (!h) return Array.from(inputs).find(_isVisible) || null;
+    let best = null, bestScore = 0;
+    for (const el of inputs) {
+      if (!_isVisible(el)) continue;
+      const label = el.id ? document.querySelector(`label[for="${el.id}"]`)?.textContent.toLowerCase() : null;
+      const attrs = [el.placeholder?.toLowerCase(), el.name?.toLowerCase(), el.id?.toLowerCase(),
+        el.getAttribute("aria-label")?.toLowerCase(), label].filter(Boolean);
+      for (const a of attrs) {
+        const score = a === h ? 10 : a.startsWith(h) ? 7 : a.includes(h) ? 4 : 0;
+        if (score > bestScore) { bestScore = score; best = el; }
+      }
+    }
+    return bestScore > 0 ? best : null;
+  }
 
-try {
-  chrome.runtime.sendMessage({
-    source: 'register-flow-tab'
-  });
-} catch (err) {
-  // Extension not ready
-}
+  function _isVisible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const s = window.getComputedStyle(el);
+    return s.display !== "none" && s.visibility !== "hidden" && s.opacity !== "0";
+  }
+
+})();
