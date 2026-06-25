@@ -1,85 +1,80 @@
-// flow-extension/background.js (v4)
-// KEY FIX: MV3 service workers lose all variables when they go inactive.
-// flowTabId was null every time the worker woke up, so _replyToFlow()
-// was always a no-op. Now stored in chrome.storage.session which persists
-// across service worker restarts within the same browser session.
-
-// Wake listener — screencontrol.js connects briefly to force the
-// service worker to start before sending a message
-chrome.runtime.onConnect.addListener((port) => {
-  if (port.name === "flow-wake") port.disconnect();
-});
+let _flowTabId = null;
+let _activeTargetTabId = null;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  try {
+    if (msg.source === 'register-flow-tab') {
+      _flowTabId = sender.tab.id;
+      chrome.storage.session.set({ flowTabId: _flowTabId });
+      sendResponse({ success: true });
 
-  if (msg.source === "flow-tab-register") {
-    const url = sender.tab?.url || "";
-    if (url.includes("localhost") || url.includes("vercel.app") || url.includes("flow")) {
-      // Persist so it survives worker sleep/wake cycles
-      chrome.storage.session.set({ flowTabId: sender.tab.id });
+    } else if (msg.source === 'flow-control-relay') {
+      _findAndRouteToTargetTab(msg, sendResponse);
+
+    } else if (msg.source === 'set-active-target-tab') {
+      _activeTargetTabId = msg.tabId;
+      chrome.storage.session.set({ activeTargetTabId: _activeTargetTabId });
+      sendResponse({ success: true });
     }
-    sendResponse({ ok: true });
-    return true;
+  } catch (err) {
+    sendResponse({ success: false, error: err.message });
   }
 
-  if (msg.source === "flow-control-bg") {
-    const { action, payload } = msg;
-    sendResponse({ received: true });
-
-    // Get flowTabId from session storage (survives worker restarts)
-    chrome.storage.session.get("flowTabId", ({ flowTabId }) => {
-      chrome.tabs.query({ active: true }, (tabs) => {
-        const targetTab = tabs.find(
-          t => t.id !== flowTabId && !t.url?.startsWith("chrome://")
-        );
-        if (targetTab) { _forwardToTab(targetTab.id, action, payload, flowTabId); return; }
-
-        chrome.tabs.query({}, (allTabs) => {
-          const candidates = allTabs.filter(t =>
-            t.id !== flowTabId &&
-            !t.url?.startsWith("chrome://") &&
-            !t.url?.startsWith("chrome-extension://")
-          );
-          candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-          if (candidates[0]) {
-            _forwardToTab(candidates[0].id, action, payload, flowTabId);
-          } else {
-            _replyToFlow({ ok: false, action, error: "No controllable tab found." }, flowTabId);
-          }
-        });
-      });
-    });
-    return true;
-  }
-
-  return false;
+  return true;
 });
 
-function _forwardToTab(tabId, action, payload, flowTabId) {
-  chrome.tabs.sendMessage(tabId, { source: "flow-control", action, payload }, (result) => {
-    if (chrome.runtime.lastError) {
-      chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }, () => {
-        if (chrome.runtime.lastError) {
-          _replyToFlow({ ok: false, action, error: "Cannot inject into that page." }, flowTabId);
-          return;
-        }
-        setTimeout(() => {
-          chrome.tabs.sendMessage(tabId, { source: "flow-control", action, payload }, (r2) => {
-            if (chrome.runtime.lastError || !r2) {
-              _replyToFlow({ ok: false, action, error: "Injection retry failed." }, flowTabId);
-            } else {
-              _replyToFlow({ ok: r2.ok, action, result: r2.result, error: r2.error }, flowTabId);
-            }
-          });
-        }, 300);
-      });
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  if (activeInfo.tabId !== _flowTabId) {
+    _activeTargetTabId = activeInfo.tabId;
+    chrome.storage.session.set({ activeTargetTabId: _activeTargetTabId });
+  }
+});
+
+async function _findAndRouteToTargetTab(msg, sendResponse) {
+  try {
+    // Restore _flowTabId and _activeTargetTabId from session storage in case worker restarted
+    const stored = await chrome.storage.session.get(['flowTabId', 'activeTargetTabId']);
+    if (stored.flowTabId) _flowTabId = stored.flowTabId;
+    if (stored.activeTargetTabId) _activeTargetTabId = stored.activeTargetTabId;
+
+    // If no active target, find the most recently active non-Flow tab
+    if (!_activeTargetTabId) {
+      const tabs = await chrome.tabs.query({});
+      const nonFlowTabs = tabs.filter(t => t.id !== _flowTabId);
+      if (nonFlowTabs.length > 0) {
+        const sorted = nonFlowTabs.sort((a, b) => b.lastAccessed - a.lastAccessed);
+        _activeTargetTabId = sorted[0].id;
+      }
+    }
+
+    if (!_activeTargetTabId) {
+      sendResponse({ success: false, error: 'No target tab found' });
       return;
     }
-    _replyToFlow({ ok: result?.ok ?? false, action, result: result?.result, error: result?.error }, flowTabId);
-  });
+
+    // Route the command to the target tab's content script
+    chrome.tabs.sendMessage(
+      _activeTargetTabId,
+      {
+        source: 'flow-control-relay',
+        action: msg.action,
+        payload: msg.payload
+      },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ success: false, error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse(response || { success: true, action: msg.action });
+        }
+      }
+    );
+  } catch (err) {
+    sendResponse({ success: false, error: err.message });
+  }
 }
 
-function _replyToFlow(data, flowTabId) {
-  if (!flowTabId) return;
-  chrome.tabs.sendMessage(flowTabId, { source: "flow-ext-reply-relay", ...data }).catch(() => {});
-}
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'flow-ext-wake') {
+    port.disconnect();
+  }
+});
