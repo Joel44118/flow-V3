@@ -7,6 +7,7 @@ export const Gesture = {};
 export function initGesture(Chat, Orb) {
   Gesture.Chat = Chat;
   Gesture.Orb = Orb;
+  // Called at app startup, actual gesture.start() fires on "start gesture control" command
 }
 
 let _video = null;
@@ -44,14 +45,14 @@ const KEYS = [
   ['⇧', '⎵', '⎵', '⎵', '⎵', '⎵', '⎵', '⎵', '?!', '↵']
 ];
 
-async function start(videoEl) {
+export async function start(videoEl) {
   try {
     if (_active) return;
     _active = true;
     _video = videoEl;
 
     const script = document.createElement('script');
-    script.src = 'https://unpkg.com/@mediapipe/hands@0.4.1646424926/hands.js';
+    script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424926/hands.min.js';
     script.crossOrigin = 'anonymous';
 
     let scriptReady = false;
@@ -90,7 +91,7 @@ async function start(videoEl) {
     container.appendChild(_canvas);
 
     _hands = new window.Hands({
-      locateFile: (file) => `https://unpkg.com/@mediapipe/hands@0.4.1646424926/${file}`
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424926/${file}`
     });
 
     _hands.setOptions({
@@ -418,7 +419,19 @@ function _animate() {
   _animationId = requestAnimationFrame(_animate);
 }
 
+async function _start(videoEl) {
+  return start(videoEl);
+}
+
 function _stop() {
+  return stop();
+}
+
+// Wire functions to Gesture object
+Gesture.start = _start;
+Gesture.stop = _stop;
+
+export function stop() {
   _active = false;
   _kbMode = false;
 
@@ -438,7 +451,3 @@ function _stop() {
   _gestureFrames = 0;
   _handVisible = false;
 }
-
-// Wire start/stop into Gesture object
-Gesture.start = start;
-Gesture.stop = _stop;
