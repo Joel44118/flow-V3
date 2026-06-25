@@ -309,3 +309,9 @@ function _loadScript(src) {
 
 function _chat(msg) { _Chat?.addMessage?.("bot", msg); }
 function _log(msg)  { console.log("[Gesture]", msg); }
+
+// ── Gesture namespace object (imported by app.js as { Gesture }) ───────────
+export const Gesture = {
+  start: startGesture,
+  stop:  stopGesture,
+};
