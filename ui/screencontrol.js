@@ -177,3 +177,8 @@ export async function runCommand(text, chatAdd) {
     }
   }
 }
+
+// ── parseScreenControl (imported by app.js, called from commands.js) ────────
+export function parseScreenControl(text) {
+  return runCommand(text, null);
+}
