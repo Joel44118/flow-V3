@@ -67,7 +67,13 @@ export function sendToExtension(action, payload) {
   }
 }
 
-export async function initScreenControl() {
+export async function initScreenControl(Chat, Orb, sendToAI) {
   await _requestExtId();
   return { sendToExtension };
+}
+
+export function parseScreenControl(text) {
+  // Screen control commands are routed directly to extension via gesture control
+  // This is a pass-through function for compatibility with app.js
+  return null;
 }
