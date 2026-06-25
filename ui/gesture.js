@@ -3,6 +3,12 @@ import { sendToExtension } from './screencontrol.js';
 // Export as a Gesture object for app.js compatibility
 export const Gesture = {};
 
+// Initialize gesture — app.js calls this at startup
+export function initGesture(Chat, Orb) {
+  Gesture.Chat = Chat;
+  Gesture.Orb = Orb;
+}
+
 let _video = null;
 let _canvas = null;
 let _ctx = null;
