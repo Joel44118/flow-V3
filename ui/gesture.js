@@ -1,5 +1,8 @@
 import { sendToExtension } from './screencontrol.js';
 
+// Export as a Gesture object for app.js compatibility
+export const Gesture = {};
+
 let _video = null;
 let _canvas = null;
 let _ctx = null;
@@ -408,6 +411,18 @@ function _animate() {
   if (!_active) return;
   _animationId = requestAnimationFrame(_animate);
 }
+
+async function _start(videoEl) {
+  return start(videoEl);
+}
+
+function _stop() {
+  return stop();
+}
+
+// Wire functions to Gesture object
+Gesture.start = _start;
+Gesture.stop = _stop;
 
 export function stop() {
   _active = false;
