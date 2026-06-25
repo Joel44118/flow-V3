@@ -52,7 +52,7 @@ export async function start(videoEl) {
     _video = videoEl;
 
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424926/hands.min.js';
+    script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424926/hands.js';
     script.crossOrigin = 'anonymous';
 
     let scriptReady = false;
