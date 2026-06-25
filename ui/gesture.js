@@ -3,6 +3,12 @@ import { sendToExtension } from './screencontrol.js';
 // Export as a Gesture object for app.js compatibility
 export const Gesture = {};
 
+// Initialize gesture control and wire it into Chat/Orb
+export function initGesture(Chat, Orb) {
+  Gesture.Chat = Chat;
+  Gesture.Orb = Orb;
+}
+
 let _video = null;
 let _canvas = null;
 let _ctx = null;
@@ -38,7 +44,7 @@ const KEYS = [
   ['⇧', '⎵', '⎵', '⎵', '⎵', '⎵', '⎵', '⎵', '?!', '↵']
 ];
 
-export async function start(videoEl) {
+async function start(videoEl) {
   try {
     if (_active) return;
     _active = true;
@@ -412,19 +418,7 @@ function _animate() {
   _animationId = requestAnimationFrame(_animate);
 }
 
-async function _start(videoEl) {
-  return start(videoEl);
-}
-
 function _stop() {
-  return stop();
-}
-
-// Wire functions to Gesture object
-Gesture.start = _start;
-Gesture.stop = _stop;
-
-export function stop() {
   _active = false;
   _kbMode = false;
 
@@ -444,3 +438,7 @@ export function stop() {
   _gestureFrames = 0;
   _handVisible = false;
 }
+
+// Wire start/stop into Gesture object
+Gesture.start = start;
+Gesture.stop = _stop;
