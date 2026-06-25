@@ -1,7 +1,7 @@
 // ui/gesture.js (v7)
 // Hand gesture control using MediaPipe Hands
 // Detects finger positions and converts to browser/tab control actions
-// Model: @mediapipe/hands@0.4.1646424926 (unpkg CDN)
+// Model: @mediapipe/hands@0.4.1646424926 (unpkg CDN - verified accessible)
 //
 // Exports:
 //   - Gesture: object with start/stop methods, wired by app.js
@@ -43,10 +43,6 @@ let _active = false;
 let _lockedX = 0.5;
 let _lockedY = 0.5;
 
-// Gesture detection
-let _lastGesture = null;
-let _gestureFrames = 0;
-
 // ────────────────────────────────────────────────────────────────────────────
 // START: Load MediaPipe and begin tracking
 // ────────────────────────────────────────────────────────────────────────────
@@ -72,7 +68,7 @@ export async function start(videoEl) {
       );
     }
 
-    // Load MediaPipe script from CDN
+    // Load MediaPipe script from unpkg CDN (verified: hands.js + wasm binary accessible)
     const script = document.createElement('script');
     script.src = 'https://unpkg.com/@mediapipe/hands@0.4.1646424926/hands.js';
     script.crossOrigin = 'anonymous';
@@ -80,7 +76,7 @@ export async function start(videoEl) {
     let scriptReady = false;
     script.onload = () => { scriptReady = true; };
     script.onerror = () => {
-      throw new Error('Failed to load MediaPipe hands.js from CDN');
+      throw new Error('Failed to load MediaPipe hands.js from unpkg CDN');
     };
 
     document.head.appendChild(script);
@@ -146,7 +142,7 @@ export async function start(videoEl) {
       _Chat.add(
         '✅ **Gesture Control Ready!**\n\n' +
         'Show your hand to camera (palm facing). ' +
-        'Spread fingers for detection. Move your hand to control cursor.\n\n' +
+        'Spread fingers for detection.\n\n' +
         '_Tip: Say "stop gesture control" to exit._',
         'bot'
       );
@@ -225,7 +221,7 @@ function _dispatchGesture(fingers, landmarks) {
     case 2:
       // 2 fingers = scroll
       sendToExtension('scroll', {
-        direction: 'vertical',  // Will be refined by hand Y position
+        direction: tipY < 0.5 ? 'up' : 'down',
         distance: 80
       });
       break;
@@ -265,7 +261,6 @@ function _drawSkeleton(landmarks) {
   _ctx.lineWidth = 2;
   _ctx.fillStyle = '#0f0';
 
-  // Draw connections
   connections.forEach(([start, end]) => {
     const p1 = landmarks[start];
     const p2 = landmarks[end];
@@ -275,7 +270,6 @@ function _drawSkeleton(landmarks) {
     _ctx.stroke();
   });
 
-  // Draw joints
   landmarks.forEach((lm) => {
     _ctx.beginPath();
     _ctx.arc(lm.x * _canvas.width, lm.y * _canvas.height, 4, 0, Math.PI * 2);
