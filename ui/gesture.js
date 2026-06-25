@@ -3,13 +3,6 @@ import { sendToExtension } from './screencontrol.js';
 // Export as a Gesture object for app.js compatibility
 export const Gesture = {};
 
-// Initialize gesture control and wire it into Chat/Orb
-export function initGesture(Chat, Orb) {
-  Gesture.Chat = Chat;
-  Gesture.Orb = Orb;
-  // Called at app startup, actual gesture.start() fires on "start gesture control" command
-}
-
 let _video = null;
 let _canvas = null;
 let _ctx = null;
@@ -52,7 +45,7 @@ export async function start(videoEl) {
     _video = videoEl;
 
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424926/hands.js';
+    script.src = 'https://unpkg.com/@mediapipe/hands@0.4.1646424926/hands.js';
     script.crossOrigin = 'anonymous';
 
     let scriptReady = false;
@@ -91,7 +84,7 @@ export async function start(videoEl) {
     container.appendChild(_canvas);
 
     _hands = new window.Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424926/${file}`
+      locateFile: (file) => `https://unpkg.com/@mediapipe/hands@0.4.1646424926/${file}`
     });
 
     _hands.setOptions({
