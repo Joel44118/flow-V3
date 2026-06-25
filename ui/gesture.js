@@ -1,301 +1,431 @@
-// ui/gesture.js (v6)
-// Uses @mediapipe/hands from unpkg — model assets are co-located on unpkg,
-// no Kaggle/storage.googleapis URLs, no signed URL expiry issues.
+import { sendToExtension } from './screencontrol.js';
 
-import { sendToExtension } from "./screencontrol.js";
+let _video = null;
+let _canvas = null;
+let _ctx = null;
+let _hands = null;
+let _camera = null;
+let _animationId = null;
+let _active = false;
+let _kbMode = false;
 
-const MP_HANDS = "https://unpkg.com/@mediapipe/hands@0.4.1675469240/hands.js";
-const MP_DRAW  = "https://unpkg.com/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js";
-const MP_BASE  = "https://unpkg.com/@mediapipe/hands@0.4.1675469240/";
+// Dot position — STAYS where you leave it
+let _dotAbsX = null;
+let _dotAbsY = null;
+let _handVisible = false;
 
-let _chat = null, _orb = null, _running = false;
-let _hands = null, _rafId = null, _videoEl = null;
-let _canvas = null, _ctx = null, _processing = false;
-let _smoothX = 0.5, _smoothY = 0.5;
-const SMOOTH = 0.25;
-let _lastCursorSend = 0;
-const CURSOR_MS = 120;
-let _lastGesture = "", _gestureFrames = 0;
-let _scrollCd = 0, _clickCd = 0;
+// Gesture state
+let _currentGesture = null;
+let _gestureFrames = 0;
+let _fourFingerCooldown = 0;
+const FOUR_FINGER_DEBOUNCE_MS = 800;
 
-export function initGesture(chat, orb) { _chat = chat; _orb = orb; }
+// Scroll state
+let _lastScrollY = 0;
+let _scrollThreshold = 30;
 
-export const Gesture = {
-  async start(videoEl) {
-    if (_running) { this.stop(); return; }
-    if (!videoEl) {
-      _chat?.addError("Open camera first, then say 'start gesture control'.");
-      return;
-    }
-    if (videoEl.videoWidth === 0) {
-      await new Promise(r => { videoEl.addEventListener("loadeddata", r, { once: true }); setTimeout(r, 3000); });
-    }
-    _videoEl = videoEl;
-    _chat?.add("🖐 Loading gesture model...\n\n**1 finger** — move cursor\n**2 fingers** — scroll\n**3 fingers** — click\n**Fist** — pause", "bot");
-    try {
-      await _load(MP_HANDS, () => !!window.Hands);
-      await _load(MP_DRAW,  () => !!window.drawConnectors);
-      await _initHands();
-    } catch(e) {
-      console.error("[Gesture]", e);
-      _chat?.addError("Gesture setup failed: " + e.message);
-      return;
-    }
-    _setupCanvas();
-    _running = true;
-    _rafId = requestAnimationFrame(_loop);
-    _chat?.add("✅ Gesture control active — show your hand to the camera.", "bot");
-  },
-  stop() {
-    _running = false;
-    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
-    _hands?.close?.(); _hands = null;
-    _canvas?.remove(); _canvas = null; _ctx = null;
-    _videoEl = null; _processing = false;
-    _smoothX = 0.5; _smoothY = 0.5; _dotAbsX = -1; _dotAbsY = -1;
-    _kbMode = false; _kbCanvas?.remove(); _kbCanvas = null; _kbCtx = null;
-    _lastGesture = ""; _gestureFrames = 0; _scrollCd = 0; _clickCd = 0;
-    _chat?.add("Gesture control off.", "bot");
-  },
-  isRunning() { return _running; },
-};
+// Keyboard
+let _kbContainer = null;
+let _selectedKeyIndex = 0;
 
-function _load(src, ready) {
-  return new Promise((resolve, reject) => {
-    if (ready()) { resolve(); return; }
-    if (document.querySelector(`script[src="${src}"]`)) {
-      const iv = setInterval(() => { if (ready()) { clearInterval(iv); resolve(); } }, 200);
-      setTimeout(() => { clearInterval(iv); ready() ? resolve() : reject(new Error("Timeout: " + src)); }, 20000);
-      return;
-    }
-    const s = document.createElement("script");
-    s.src = src; s.crossOrigin = "anonymous";
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error("Load failed: " + src));
-    document.head.appendChild(s);
-  });
-}
-
-async function _initHands() {
-  _hands = new window.Hands({ locateFile: f => MP_BASE + f });
-  _hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.7, minTrackingConfidence: 0.5 });
-  _hands.onResults(_onResults);
-  await _hands.send({ image: _videoEl }); // triggers model download
-}
-
-function _setupCanvas() {
-  const parent = _videoEl?.parentElement;
-  if (!parent) return;
-  parent.querySelector(".gesture-canvas")?.remove();
-  _canvas = document.createElement("canvas");
-  _canvas.className = "gesture-canvas";
-  _canvas.width  = _videoEl.videoWidth  || 320;
-  _canvas.height = _videoEl.videoHeight || 240;
-  Object.assign(_canvas.style, {
-    position: "absolute", top: "0", left: "0",
-    width: "100%", height: "100%",
-    pointerEvents: "none", zIndex: "10", borderRadius: "inherit",
-  });
-  if (window.getComputedStyle(parent).position === "static") parent.style.position = "relative";
-  parent.appendChild(_canvas);
-  _ctx = _canvas.getContext("2d");
-}
-
-function _loop() {
-  if (!_running) return;
-  _rafId = requestAnimationFrame(_loop);
-  if (!_videoEl || _videoEl.readyState < 2 || !_hands || _processing) return;
-  _processing = true;
-  _hands.send({ image: _videoEl }).catch(() => { _processing = false; });
-}
-
-const CONNECTIONS = [
-  [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
-  [0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],
-  [0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17],
+const KEYS = [
+  ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+  ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', '⌫'],
+  ['z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '↵'],
+  ['⇧', '⎵', '⎵', '⎵', '⎵', '⎵', '⎵', '⎵', '?!', '↵']
 ];
 
-function _onResults(r) {
-  _processing = false;
-  if (!_ctx || !_running) return;
-  const W = _canvas.width, H = _canvas.height;
-  _ctx.clearRect(0, 0, W, H);
+export async function start(videoEl) {
+  try {
+    if (_active) return;
+    _active = true;
+    _video = videoEl;
 
-  const lms = r.multiHandLandmarks?.[0];
-  if (!lms) { _lastGesture = ""; _gestureFrames = 0; return; }
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/@mediapipe/hands@0.4.1646424926/hands.js';
+    script.crossOrigin = 'anonymous';
 
-  // Draw skeleton using drawing_utils if available, else manually
-  if (window.drawConnectors && window.HAND_CONNECTIONS) {
-    window.drawConnectors(_ctx, lms, window.HAND_CONNECTIONS, { color: "rgba(56,189,248,0.7)", lineWidth: 2 });
-    window.drawLandmarks(_ctx, lms, { color: "#38bdf8", lineWidth: 1, radius: 4 });
-  } else {
-    // Manual fallback
-    _ctx.strokeStyle = "rgba(56,189,248,0.7)"; _ctx.lineWidth = 2;
-    for (const [a, b] of CONNECTIONS) {
-      _ctx.beginPath();
-      _ctx.moveTo(lms[a].x * W, lms[a].y * H);
-      _ctx.lineTo(lms[b].x * W, lms[b].y * H);
-      _ctx.stroke();
-    }
-    _ctx.fillStyle = "#38bdf8";
-    for (const p of lms) { _ctx.beginPath(); _ctx.arc(p.x*W, p.y*H, 4, 0, Math.PI*2); _ctx.fill(); }
+    let scriptReady = false;
+    script.onload = () => { scriptReady = true; };
+
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('SDK load timeout')), 10000)
+    );
+
+    document.head.appendChild(script);
+    await Promise.race([
+      new Promise(r => {
+        const check = setInterval(() => {
+          if (scriptReady && window.Hands) {
+            clearInterval(check);
+            r();
+          }
+        }, 100);
+      }),
+      timeout
+    ]);
+
+    _canvas = document.createElement('canvas');
+    _canvas.id = 'gesture-canvas';
+    _canvas.width = _video.videoWidth || 640;
+    _canvas.height = _video.videoHeight || 480;
+    _canvas.style.position = 'absolute';
+    _canvas.style.top = '0';
+    _canvas.style.left = '0';
+    _canvas.style.zIndex = '10000';
+    _canvas.style.cursor = 'none';
+    _ctx = _canvas.getContext('2d', { willReadFrequently: true });
+
+    const container = _video.parentElement;
+    container.style.position = 'relative';
+    container.appendChild(_canvas);
+
+    _hands = new window.Hands({
+      locateFile: (file) => `https://unpkg.com/@mediapipe/hands@0.4.1646424926/${file}`
+    });
+
+    _hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    _hands.onResults(_onResults);
+
+    const camera = new window.Camera(_video, {
+      onFrame: async () => {
+        await _hands.send({ image: _video });
+      },
+      width: 640,
+      height: 480
+    });
+
+    _camera = camera;
+    camera.start();
+
+    _animate();
+  } catch (err) {
+    console.error('[Gesture] Error:', err.message);
+    throw err;
   }
-
-  const fingers = _countFingers(lms);
-  const gesture = fingers + "f";
-  if (gesture === _lastGesture) _gestureFrames++;
-  else {
-    _lastGesture = gesture; _gestureFrames = 1;
-    if (fingers !== 2) _scrollCd = 0;
-    if (fingers !== 3) _clickCd = Math.min(_clickCd, 3);
-  }
-
-  const tip = lms[8];
-  // Only update smooth position when actively moving (1 finger = MOVE mode)
-  // For other gestures, hold the last position so dot stays put
-  if (fingers === 1) {
-    _smoothX += (tip.x - _smoothX) * SMOOTH;
-    _smoothY += (tip.y - _smoothY) * SMOOTH;
-  }
-  // On first ever detection, jump immediately to hand position
-  if (_dotAbsX < 0) { _smoothX = tip.x; _smoothY = tip.y; }
-
-  // Tip dot
-  _ctx.beginPath(); _ctx.arc(_smoothX*W, _smoothY*H, 8, 0, Math.PI*2);
-  _ctx.fillStyle = fingers===3?"#34d399":fingers===2?"#f59e0b":"#38bdf8";
-  _ctx.strokeStyle="white"; _ctx.lineWidth=2; _ctx.fill(); _ctx.stroke();
-
-  const label = {1:"MOVE",2:"SCROLL",3:"CLICK",4:"KB"}[Math.min(fingers,4)];
-  if (label) {
-    _ctx.fillStyle = fingers === 4 ? "rgba(139,92,246,0.85)" : "rgba(2,6,23,0.8)";
-    _ctx.fillRect(4, 4, 90, 20);
-    _ctx.fillStyle = "#38bdf8"; _ctx.font = "bold 11px monospace";
-    _ctx.fillText((_kbMode ? "⌨️ " : "✋ ") + label, 8, 18);
-  }
-
-  if (_scrollCd>0) _scrollCd--;
-  if (_clickCd>0)  _clickCd--;
-  if (_gestureFrames < 3) return;
-  _dispatch(fingers, _smoothX, _smoothY);
 }
 
-// Dot position — persists between gestures so it stays where you left it
-let _dotAbsX = -1, _dotAbsY = -1;
+function _onResults(results) {
+  if (!_active || !_canvas) return;
 
-function _dispatch(f, x, y) {
-  if (f === 1) {
-    if (_kbMode) { _kbNavigate(x, y); return; }
-    const now = Date.now();
-    if (now - _lastCursorSend < CURSOR_MS) return;
-    _lastCursorSend = now;
-    _dotAbsX = x; _dotAbsY = y;
-    sendToExtension("cursor_move", { x, y });
+  const landmarks = results.multiHandLandmarks?.[0];
+  _drawCanvas();
+
+  if (!landmarks || landmarks.length === 0) {
+    _handVisible = false;
+    _currentGesture = null;
+    _gestureFrames = 0;
+    _fourFingerCooldown = Math.max(0, _fourFingerCooldown - 16);
+    _drawDotAtPosition();
+    _drawLabel(0);
     return;
   }
-  if (f === 2 && _scrollCd === 0) {
-    const dy = y - 0.5;
-    if (Math.abs(dy) < 0.06) return;
-    sendToExtension("scroll", { direction: dy > 0 ? "down" : "up", amount: Math.round(Math.abs(dy) * 900) });
-    _scrollCd = 4; return;
-  }
-  if (f === 3 && _clickCd === 0) {
-    if (_kbMode) { _kbPress(); _clickCd = 20; return; }
-    const cx = _dotAbsX >= 0 ? _dotAbsX : x;
-    const cy = _dotAbsY >= 0 ? _dotAbsY : y;
-    sendToExtension("gesture_click", { x: cx, y: cy });
-    _clickCd = 24; return;
-  }
-  if (f >= 4 && _clickCd === 0) {
-    _toggleKeyboard(); _clickCd = 30;
-  }
-}
 
-function _countFingers(lms) {
-  if (!lms || lms.length < 21) return 0;
-  let c = 0;
-  if (Math.abs(lms[4].x - lms[3].x) > 0.06) c++;
-  const tips = [8,12,16,20], pips = [6,10,14,18];
-  for (let i = 0; i < 4; i++) { if (lms[tips[i]].y < lms[pips[i]].y - 0.025) c++; }
-  return c;
-}
+  _handVisible = true;
+  const fingers = _countFingers(landmarks);
 
-// Keyboard mode state
-let _kbMode = false;
-let _kbCanvas = null, _kbCtx = null;
-let _kbRow = 0, _kbCol = 0;
-
-const KB_ROWS = [
-  ["Q","W","E","R","T","Y","U","I","O","P"],
-  ["A","S","D","F","G","H","J","K","L","⌫"],
-  ["Z","X","C","V","B","N","M","⎵","↵","⇧"],
-];
-
-function _toggleKeyboard() {
-  _kbMode = !_kbMode;
-  if (_kbMode) {
-    _drawKeyboard();
+  if (fingers === 4) {
+    if (_fourFingerCooldown <= 0) {
+      _fourFingerCooldown = FOUR_FINGER_DEBOUNCE_MS;
+      _dispatchGesture(4, landmarks);
+    }
+    _fourFingerCooldown = Math.max(0, _fourFingerCooldown - 16);
   } else {
-    _kbCanvas?.remove(); _kbCanvas = null; _kbCtx = null;
+    _fourFingerCooldown = 0;
+    _gestureFrames++;
+
+    if (_gestureFrames >= 3) {
+      if (fingers !== _currentGesture) {
+        _currentGesture = fingers;
+        _gestureFrames = 0;
+      } else {
+        _dispatchGesture(fingers, landmarks);
+      }
+    }
+  }
+
+  _drawSkeleton(landmarks);
+  _drawDot(landmarks, fingers);
+  _drawLabel(fingers);
+}
+
+function _countFingers(landmarks) {
+  const tips = [4, 8, 12, 16, 20];
+  let count = 0;
+
+  for (let i = 0; i < tips.length; i++) {
+    const tip = landmarks[tips[i]];
+    const pip = landmarks[tips[i] - 2];
+    if (tip.y < pip.y) count++;
+  }
+
+  return count;
+}
+
+function _dispatchGesture(fingers, landmarks) {
+  if (_kbMode) {
+    _handleKeyboardGesture(fingers, landmarks);
+    return;
+  }
+
+  const tipX = landmarks[8].x;
+  const tipY = landmarks[8].y;
+
+  switch (fingers) {
+    case 1:
+      _dotAbsX = Math.round(tipX * window.innerWidth);
+      _dotAbsY = Math.round(tipY * window.innerHeight);
+      sendToExtension('cursor_move', { x: _dotAbsX, y: _dotAbsY });
+      break;
+
+    case 2:
+      const scrollY = Math.round(tipY * window.innerHeight);
+      if (Math.abs(scrollY - _lastScrollY) > _scrollThreshold) {
+        const direction = scrollY > _lastScrollY ? 'down' : 'up';
+        sendToExtension('scroll', { direction, distance: 80 });
+        _lastScrollY = scrollY;
+      }
+      break;
+
+    case 3:
+      if (_dotAbsX !== null && _dotAbsY !== null) {
+        sendToExtension('click', { x: _dotAbsX, y: _dotAbsY });
+      }
+      break;
+
+    case 5:
+      if (_dotAbsX !== null && _dotAbsY !== null) {
+        sendToExtension('right_click', { x: _dotAbsX, y: _dotAbsY });
+      }
+      break;
+
+    case 4:
+      _kbMode = !_kbMode;
+      if (_kbMode) {
+        _initKeyboard();
+      } else {
+        _closeKeyboard();
+      }
+      break;
   }
 }
 
-function _drawKeyboard() {
-  if (!_canvas) return;
-  const parent = _canvas.parentElement;
-  if (!parent) return;
+function _handleKeyboardGesture(fingers, landmarks) {
+  const tipX = landmarks[8].x;
+  const tipY = landmarks[8].y;
 
-  if (!_kbCanvas) {
-    _kbCanvas = document.createElement("canvas");
-    _kbCanvas.className = "gesture-keyboard";
-    _kbCanvas.width  = _canvas.width;
-    _kbCanvas.height = Math.floor(_canvas.height * 0.45);
-    Object.assign(_kbCanvas.style, {
-      position: "absolute", bottom: "0", left: "0",
-      width: "100%", height: "45%",
-      pointerEvents: "none", zIndex: "11",
-    });
-    parent.appendChild(_kbCanvas);
-    _kbCtx = _kbCanvas.getContext("2d");
+  if (fingers === 1) {
+    const cols = KEYS[0].length;
+    const rows = KEYS.length;
+    const col = Math.floor(tipX * cols);
+    const row = Math.floor(tipY * rows);
+    _selectedKeyIndex = Math.min(col + row * cols, KEYS.flat().length - 1);
+    _drawKeyboard();
+  } else if (fingers === 3) {
+    const keys = KEYS.flat();
+    const key = keys[_selectedKeyIndex];
+    _pressKey(key);
+  } else if (fingers === 4) {
+    _kbMode = false;
+    _closeKeyboard();
   }
-
-  const C = _kbCtx, W = _kbCanvas.width, H = _kbCanvas.height;
-  const cellW = W / 10, cellH = H / 3;
-
-  C.clearRect(0, 0, W, H);
-  C.fillStyle = "rgba(2,6,23,0.88)";
-  C.fillRect(0, 0, W, H);
-
-  KB_ROWS.forEach((row, ri) => {
-    row.forEach((key, ci) => {
-      const x = ci * cellW, y = ri * cellH;
-      const active = ri === _kbRow && ci === _kbCol;
-
-      C.fillStyle = active ? "#38bdf8" : "rgba(56,189,248,0.15)";
-      C.fillRect(x + 2, y + 2, cellW - 4, cellH - 4);
-
-      C.fillStyle = active ? "#020617" : "#38bdf8";
-      C.font = `bold ${Math.floor(cellH * 0.38)}px monospace`;
-      C.textAlign = "center"; C.textBaseline = "middle";
-      C.fillText(key, x + cellW / 2, y + cellH / 2);
-    });
-  });
 }
 
-function _kbNavigate(nx, ny) {
-  // Map normalised hand position to keyboard cell
-  const col = Math.floor(nx * 10);
-  const row = Math.floor(ny * 3);
-  _kbRow = Math.max(0, Math.min(2, row));
-  _kbCol = Math.max(0, Math.min(9, col));
+function _initKeyboard() {
+  if (_kbContainer) return;
+
+  _kbContainer = document.createElement('div');
+  _kbContainer.id = 'gesture-keyboard-container';
+  _kbContainer.style.position = 'fixed';
+  _kbContainer.style.bottom = '120px';
+  _kbContainer.style.right = '20px';
+  _kbContainer.style.zIndex = '10001';
+  _kbContainer.style.width = '380px';
+  _kbContainer.style.backgroundColor = '#1a1a1a';
+  _kbContainer.style.border = '2px solid #0f0';
+  _kbContainer.style.borderRadius = '8px';
+  _kbContainer.style.padding = '10px';
+  _kbContainer.style.boxShadow = '0 4px 16px rgba(0,0,0,0.7)';
+  _kbContainer.style.fontFamily = 'monospace';
+  document.body.appendChild(_kbContainer);
+
   _drawKeyboard();
 }
 
-function _kbPress() {
-  const key = KB_ROWS[_kbRow][_kbCol];
-  let send = key;
-  if (key === "⌫")  send = "Backspace";
-  if (key === "⎵")  send = " ";
-  if (key === "↵")  send = "Enter";
-  if (key === "⇧")  send = "Shift";
-  sendToExtension("key", { key: send });
+function _drawKeyboard() {
+  if (!_kbContainer) return;
+
+  let html = '';
+  const keys = KEYS.flat();
+  let keyIdx = 0;
+
+  KEYS.forEach((row) => {
+    html += '<div style="display: flex; gap: 4px; margin-bottom: 4px;">';
+
+    row.forEach((key) => {
+      const idx = keyIdx++;
+      const isSelected = idx === _selectedKeyIndex;
+      const bgColor = isSelected ? '#0f0' : '#333';
+      const textColor = isSelected ? '#000' : '#0f0';
+
+      html += `<button data-key-idx="${idx}" style="
+        flex: 1;
+        padding: 8px;
+        backgroundColor: ${bgColor};
+        color: ${textColor};
+        border: 1px solid #0f0;
+        borderRadius: 4px;
+        font: bold 11px monospace;
+        cursor: pointer;
+        transition: all 0.1s;
+      ">${key}</button>`;
+    });
+
+    html += '</div>';
+  });
+
+  _kbContainer.innerHTML = html;
+
+  _kbContainer.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.keyIdx);
+      const key = KEYS.flat()[idx];
+      _pressKey(key);
+    });
+  });
+}
+
+function _pressKey(key) {
+  const keyMap = {
+    '⌫': 'Backspace',
+    '⎵': ' ',
+    '↵': 'Enter',
+    '⇧': 'Shift',
+    '?!': '?'
+  };
+
+  const keyCode = keyMap[key] || key;
+  sendToExtension('key_press', { key: keyCode });
+}
+
+function _closeKeyboard() {
+  if (_kbContainer) {
+    _kbContainer.remove();
+    _kbContainer = null;
+  }
+  _selectedKeyIndex = 0;
+}
+
+function _drawCanvas() {
+  _ctx.clearRect(0, 0, _canvas.width, _canvas.height);
+}
+
+function _drawSkeleton(landmarks) {
+  const connections = [
+    [0, 1], [1, 2], [2, 3], [3, 4],
+    [0, 5], [5, 6], [6, 7], [7, 8],
+    [0, 9], [9, 10], [10, 11], [11, 12],
+    [0, 13], [13, 14], [14, 15], [15, 16],
+    [0, 17], [17, 18], [18, 19], [19, 20]
+  ];
+
+  _ctx.strokeStyle = '#0f0';
+  _ctx.lineWidth = 2;
+  _ctx.fillStyle = '#0f0';
+
+  connections.forEach(([start, end]) => {
+    const p1 = landmarks[start];
+    const p2 = landmarks[end];
+    _ctx.beginPath();
+    _ctx.moveTo(p1.x * _canvas.width, p1.y * _canvas.height);
+    _ctx.lineTo(p2.x * _canvas.width, p2.y * _canvas.height);
+    _ctx.stroke();
+  });
+
+  landmarks.forEach((lm) => {
+    _ctx.beginPath();
+    _ctx.arc(lm.x * _canvas.width, lm.y * _canvas.height, 3, 0, Math.PI * 2);
+    _ctx.fill();
+  });
+}
+
+function _drawDot(landmarks, fingers) {
+  if (fingers === 1) {
+    const tipX = landmarks[8].x;
+    const tipY = landmarks[8].y;
+    _dotAbsX = Math.round(tipX * window.innerWidth);
+    _dotAbsY = Math.round(tipY * window.innerHeight);
+  }
+
+  _drawDotAtPosition();
+}
+
+function _drawDotAtPosition() {
+  if (_dotAbsX === null || _dotAbsY === null) return;
+
+  const screenX = (_dotAbsX / window.innerWidth) * _canvas.width;
+  const screenY = (_dotAbsY / window.innerHeight) * _canvas.height;
+
+  _ctx.fillStyle = 'rgba(0, 100, 255, 0.7)';
+  _ctx.beginPath();
+  _ctx.arc(screenX, screenY, 10, 0, Math.PI * 2);
+  _ctx.fill();
+
+  _ctx.strokeStyle = 'rgba(0, 200, 255, 1)';
+  _ctx.lineWidth = 2.5;
+  _ctx.beginPath();
+  _ctx.arc(screenX, screenY, 10, 0, Math.PI * 2);
+  _ctx.stroke();
+}
+
+function _drawLabel(fingers) {
+  const labels = {
+    0: _handVisible ? '✋ PAUSE' : '👋 SHOW HAND',
+    1: _kbMode ? '🔤 SELECT KEY' : '🎯 MOVE DOT',
+    2: '🔄 SCROLL',
+    3: '👆 CLICK',
+    4: '⌨️ KEYBOARD',
+    5: '🖱️ RIGHT-CLICK'
+  };
+
+  _ctx.fillStyle = 'rgba(0, 150, 255, 0.9)';
+  _ctx.font = 'bold 14px sans-serif';
+  _ctx.textAlign = 'left';
+  _ctx.fillText(labels[fingers] || '', 10, 30);
+
+  if (_kbMode && fingers === 1) {
+    _ctx.fillText('← 1=select  3=press  4=close →', 10, 50);
+  }
+}
+
+function _animate() {
+  if (!_active) return;
+  _animationId = requestAnimationFrame(_animate);
+}
+
+export function stop() {
+  _active = false;
+  _kbMode = false;
+
+  if (_animationId) cancelAnimationFrame(_animationId);
+  if (_camera) _camera.stop();
+  if (_canvas) _canvas.remove();
+  if (_kbContainer) _kbContainer.remove();
+
+  _video = null;
+  _canvas = null;
+  _ctx = null;
+  _hands = null;
+  _camera = null;
+  _dotAbsX = null;
+  _dotAbsY = null;
+  _currentGesture = null;
+  _gestureFrames = 0;
+  _handVisible = false;
 }
