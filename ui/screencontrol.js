@@ -1,7 +1,10 @@
+// ui/screencontrol.js (v6)
+// Webpage never calls chrome.runtime directly — blocked by Chrome security.
+// All commands go: postMessage → content.js → chrome.runtime → background.
+
 let _extId = null;
-let _pendingTimeout = null;
-let _lastScrollTime = 0;
-const SCROLL_DEBOUNCE_MS = 100;
+let _pendingReplies = new Map();
+let _replyTimeouts = new Map();
 
 async function _requestExtId() {
   const maxRetries = 3;
@@ -17,51 +20,42 @@ window.addEventListener('message', (event) => {
     _extId = event.data.extensionId;
     console.log('[Flow SC] Extension ID:', _extId);
   } else if (event.data.source === 'flow-control-reply') {
-    if (_pendingTimeout) {
-      clearTimeout(_pendingTimeout);
-      _pendingTimeout = null;
+    // Route reply to pending handler if exists
+    const replyId = event.data.replyId;
+    if (_pendingReplies.has(replyId)) {
+      const handler = _pendingReplies.get(replyId);
+      clearTimeout(_replyTimeouts.get(replyId));
+      _pendingReplies.delete(replyId);
+      _replyTimeouts.delete(replyId);
+      if (handler) handler(event.data);
     }
   }
 });
 
-export function sendToExtension(action, payload) {
+function _send(action, payload, onReply) {
   if (!_extId) {
-    console.warn('[Flow SC] Extension not connected yet. Retrying...');
-    _requestExtId();
+    console.warn('[Flow SC] Extension not connected. Retrying...');
+    _requestExtId().then(() => _send(action, payload, onReply));
     return;
   }
 
+  const replyId = Math.random().toString(36).slice(2, 11);
+
   try {
-    // Debounce scroll to avoid flooding the channel
-    if (action === 'scroll') {
-      const now = Date.now();
-      if (now - _lastScrollTime < SCROLL_DEBOUNCE_MS) {
-        return;
-      }
-      _lastScrollTime = now;
+    window.postMessage({
+      source: 'flow-control-page',
+      replyId: replyId,
+      action: action,
+      payload: payload
+    }, '*');
+
+    if (onReply) {
+      _pendingReplies.set(replyId, onReply);
+      _replyTimeouts.set(replyId, setTimeout(() => {
+        _pendingReplies.delete(replyId);
+        _replyTimeouts.delete(replyId);
+      }, 3000));
     }
-
-    // Send via chrome.runtime with extension ID
-    chrome.runtime.sendMessage(
-      _extId,
-      {
-        source: 'flow-control-relay',
-        action: action,
-        payload: payload
-      },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          console.warn('[Flow SC] Could not establish connection:', chrome.runtime.lastError.message);
-        }
-      }
-    );
-
-    // Set timeout for no-response case (but don't show to chat)
-    if (_pendingTimeout) clearTimeout(_pendingTimeout);
-    _pendingTimeout = setTimeout(() => {
-      _pendingTimeout = null;
-    }, 3000);
-
   } catch (err) {
     console.error('[Flow SC] Send error:', err.message);
   }
@@ -73,6 +67,11 @@ export async function initScreenControl(Chat, Orb, sendToAI) {
 }
 
 export function parseScreenControl(text) {
-  // Screen control commands routed via gesture control/extension
+  // Screen control commands are routed via gesture/extension
+  // This is a compatibility pass-through for app.js
   return null;
+}
+
+export function sendToExtension(action, payload) {
+  _send(action, payload);
 }
