@@ -1,7 +1,7 @@
-// ui/gesture.js (v7)
+// ui/gesture.js (v8)
 // Hand gesture control using MediaPipe Hands
-// Detects finger positions and converts to browser/tab control actions
-// Model: @mediapipe/hands@0.4.1646424926 (unpkg CDN - verified accessible)
+// FIX: Use alternative CDN with proper CORS support for Vercel domains
+// Model: @mediapipe/hands@0.4.1646424926 via esm.sh (CORS-friendly)
 //
 // Exports:
 //   - Gesture: object with start/stop methods, wired by app.js
@@ -68,33 +68,11 @@ export async function start(videoEl) {
       );
     }
 
-    // Load MediaPipe script from unpkg CDN (verified: hands.js + wasm binary accessible)
-    const script = document.createElement('script');
-    script.src = 'https://unpkg.com/@mediapipe/hands@0.4.1646424926/hands.js';
-    script.crossOrigin = 'anonymous';
-
-    let scriptReady = false;
-    script.onload = () => { scriptReady = true; };
-    script.onerror = () => {
-      throw new Error('Failed to load MediaPipe hands.js from unpkg CDN');
-    };
-
-    document.head.appendChild(script);
-
-    // Wait for script to load (with 10s timeout)
-    await Promise.race([
-      new Promise(r => {
-        const check = setInterval(() => {
-          if (scriptReady && window.Hands) {
-            clearInterval(check);
-            r();
-          }
-        }, 100);
-      }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('MediaPipe SDK load timeout')), 10000)
-      )
-    ]);
+    // Load MediaPipe using dynamic import via esm.sh (CORS-friendly)
+    // esm.sh wraps npm packages and serves them with proper CORS headers
+    const module = await import('https://esm.sh/@mediapipe/hands@0.4.1646424926');
+    window.Hands = module.Hands;
+    window.Camera = module.Camera;
 
     // Setup canvas for skeleton/dot drawing
     _canvas = document.createElement('canvas');
@@ -113,7 +91,7 @@ export async function start(videoEl) {
     // Initialize Hands detector
     _hands = new window.Hands({
       locateFile: (file) => 
-        `https://unpkg.com/@mediapipe/hands@0.4.1646424926/${file}`
+        `https://esm.sh/@mediapipe/hands@0.4.1646424926/dist/${file}`
     });
 
     _hands.setOptions({
