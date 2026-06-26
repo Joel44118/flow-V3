@@ -1,7 +1,8 @@
-// ui/gesture.js (v11)
-// Hand gesture control using MediaPipe Hands
-// FIX: Load hands.js + camera_utils.js from /mediapipe/ (same-origin Vercel static files)
-//      locateFile points WASM assets to same /mediapipe/ path — zero CORS issues
+// ui/gesture.js (v12)
+// FIX: Load MediaPipe via /api/mediapipe?f= proxy (same-origin, no CORS)
+//      locateFile also routes all WASM/data requests through the proxy
+// FIX: Camera box disappearing — canvas is now overlaid using position:absolute
+//      on a wrapper div, NOT replacing the video's parent layout
 
 import { sendToExtension } from './screencontrol.js';
 
@@ -24,20 +25,22 @@ let _hands       = null;
 let _camera      = null;
 let _animationId = null;
 let _active      = false;
+let _wrapper     = null;   // injected wrapper div — removed on stop()
 let _lockedX     = 0.5;
 let _lockedY     = 0.5;
 
-// Same-origin paths served by Vercel from /mediapipe/ folder in repo root
-const MP_BASE = '/mediapipe';
+const PROXY = '/api/mediapipe?f=';
 
-function _loadScript(src) {
+function _loadScript(filename) {
+  const src = PROXY + filename;
   return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-    const s   = document.createElement('script');
-    s.src     = src;
-    s.async   = true;
-    s.onload  = resolve;
-    s.onerror = () => reject(new Error(`Failed to load: ${src}`));
+    if (document.querySelector(`script[data-mp="${filename}"]`)) { resolve(); return; }
+    const s         = document.createElement('script');
+    s.src           = src;
+    s.dataset.mp    = filename;
+    s.async         = true;
+    s.onload        = resolve;
+    s.onerror       = () => reject(new Error(`Failed to load MediaPipe: ${filename}`));
     document.head.appendChild(s);
   });
 }
@@ -63,29 +66,52 @@ export async function start(videoEl) {
       );
     }
 
-    // Load from same-origin /mediapipe/ — no CORS, no CDN
-    await _loadScript(`${MP_BASE}/hands.js`);
-    await _loadScript(`${MP_BASE}/camera_utils.js`);
+    await _loadScript('hands.js');
+    await _loadScript('camera_utils.js');
 
     if (!window.Hands || !window.Camera) {
       throw new Error('MediaPipe Hands or Camera not available after load');
     }
 
-    // Setup canvas overlay on top of video
-    _canvas           = document.createElement('canvas');
-    _canvas.id        = 'gesture-canvas';
-    _canvas.width     = _video.videoWidth  || 640;
-    _canvas.height    = _video.videoHeight || 480;
-    _canvas.style.cssText = 'position:absolute;top:0;left:0;z-index:10000;cursor:none;';
+    // ── Canvas overlay — wraps the video without disturbing its layout ──────
+    // Save video's original layout styles so we don't break them
+    const vidStyle   = window.getComputedStyle(_video);
+    const vidWidth   = _video.offsetWidth  || 640;
+    const vidHeight  = _video.offsetHeight || 480;
+
+    // Create a wrapper that sits exactly on top of the video element
+    _wrapper = document.createElement('div');
+    Object.assign(_wrapper.style, {
+      position:      'absolute',
+      top:           _video.offsetTop  + 'px',
+      left:          _video.offsetLeft + 'px',
+      width:         vidWidth  + 'px',
+      height:        vidHeight + 'px',
+      pointerEvents: 'none',
+      zIndex:        '10000',
+    });
+
+    // Insert wrapper as sibling after the video (not inside it)
+    _video.parentElement.style.position = 'relative';
+    _video.after(_wrapper);
+
+    _canvas        = document.createElement('canvas');
+    _canvas.id     = 'gesture-canvas';
+    _canvas.width  = vidWidth;
+    _canvas.height = vidHeight;
+    Object.assign(_canvas.style, {
+      position: 'absolute',
+      top:      '0',
+      left:     '0',
+      width:    '100%',
+      height:   '100%',
+    });
     _ctx = _canvas.getContext('2d', { willReadFrequently: true });
+    _wrapper.appendChild(_canvas);
 
-    const container = _video.parentElement;
-    container.style.position = 'relative';
-    container.appendChild(_canvas);
-
-    // Init hands detector — locateFile points WASM files to same /mediapipe/ path
+    // ── MediaPipe Hands ───────────────────────────────────────────────────
     _hands = new window.Hands({
-      locateFile: (file) => `${MP_BASE}/${file}`
+      locateFile: (file) => PROXY + file
     });
 
     _hands.setOptions({
@@ -97,7 +123,6 @@ export async function start(videoEl) {
 
     _hands.onResults(_onResults);
 
-    // Start camera
     _camera = new window.Camera(_video, {
       onFrame: async () => { await _hands.send({ image: _video }); },
       width:   640,
@@ -124,6 +149,8 @@ export async function start(videoEl) {
     throw err;
   }
 }
+
+// ── Results handler ───────────────────────────────────────────────────────────
 
 function _onResults(results) {
   if (!_active || !_canvas) return;
@@ -156,18 +183,10 @@ function _dispatchGesture(fingers, landmarks) {
   _lockedY = tipY;
 
   switch (fingers) {
-    case 1:
-      sendToExtension('cursor_move', { x: tipX, y: tipY });
-      break;
-    case 2:
-      sendToExtension('scroll', { direction: tipY < 0.5 ? 'up' : 'down', amount: 80 });
-      break;
-    case 3:
-      sendToExtension('gesture_click', { x: tipX, y: tipY });
-      break;
-    case 5:
-      sendToExtension('right_click', { x: tipX, y: tipY });
-      break;
+    case 1: sendToExtension('cursor_move',   { x: tipX, y: tipY }); break;
+    case 2: sendToExtension('scroll',        { direction: tipY < 0.5 ? 'up' : 'down', amount: 80 }); break;
+    case 3: sendToExtension('gesture_click', { x: tipX, y: tipY }); break;
+    case 5: sendToExtension('right_click',   { x: tipX, y: tipY }); break;
   }
 }
 
@@ -199,7 +218,7 @@ function _drawSkeleton(landmarks) {
 function _drawCursor() {
   const sx = _lockedX * _canvas.width;
   const sy = _lockedY * _canvas.height;
-  _ctx.fillStyle   = 'rgba(0,150,255,0.6)';
+  _ctx.fillStyle = 'rgba(0,150,255,0.6)';
   _ctx.beginPath();
   _ctx.arc(sx, sy, 12, 0, Math.PI * 2);
   _ctx.fill();
@@ -222,12 +241,14 @@ function _animate() {
   _animationId = requestAnimationFrame(_animate);
 }
 
+// ── STOP ─────────────────────────────────────────────────────────────────────
+
 export function stop() {
   _active = false;
   if (_animationId) cancelAnimationFrame(_animationId);
   if (_camera)      _camera.stop();
-  if (_canvas)      _canvas.remove();
-  _video = _canvas = _ctx = _hands = _camera = null;
+  if (_wrapper)     _wrapper.remove();   // removes canvas too
+  _video = _canvas = _ctx = _hands = _camera = _wrapper = null;
 }
 
 Gesture.start = start;
