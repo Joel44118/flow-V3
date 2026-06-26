@@ -1,24 +1,25 @@
-// flow-extension/content.js — v9 DEFINITIVE
-// This script runs inside EVERY tab.
-// Role A (Flow's own tab): broadcast extension ID, relay replies back to Flow page
+// flow-extension/content.js (v10) — DEFINITIVE
+// Role A (Flow tab): broadcast extension ID to page, relay replies back to Flow page
 // Role B (target tab): execute scroll/click/type/etc actions
-// NEVER crashes on extension reload — every chrome.runtime call is try/caught
+//
+// FIX: registerTab uses 'flow-tab-register' (matches background.js)
+//      _wakeAndRetry uses port name 'flow-wake' (matches background.js onConnect)
 
 (function () {
   "use strict";
 
-  // ── Broadcast extension ID to the page ───────────────────────────────────
+  // ── Broadcast extension ID to the page ──────────────────────────────────
   function broadcastId() {
     try {
       window.postMessage({
-        source: "flow-ext-id",
+        source:      "flow-ext-id",      // screencontrol.js listens for this exact name
         extensionId: chrome.runtime.id,
       }, "*");
-    } catch (e) { /* extension context gone, ignore */ }
+    } catch (e) { /* extension context gone */ }
   }
   broadcastId();
 
-  // Register this tab with the background worker so it knows Flow's tab ID
+  // Register this tab as the Flow tab with the background worker
   function registerTab() {
     try {
       chrome.runtime.sendMessage({ source: "flow-tab-register" }, () => {
@@ -46,10 +47,10 @@
           { source: "flow-control-bg", msgId, action, payload },
           (resp) => {
             if (chrome.runtime.lastError) {
-              // Background worker asleep — wake it by reconnecting, then retry once
+              // Background worker asleep — wake it and retry once
               _wakeAndRetry(msgId, action, payload);
             }
-            // resp is just { received: true } — actual result comes via flow-ext-reply-relay
+            // Actual result comes back via flow-ext-reply-relay from background
           }
         );
       } catch (err) {
@@ -70,7 +71,7 @@
             () => { if (chrome.runtime.lastError) _replyError(msgId, action, "Worker unavailable"); }
           );
         } catch (e) { _replyError(msgId, action, e.message); }
-      }, 150);
+      }, 200);
     } catch (e) { _replyError(msgId, action, e.message); }
   }
 
@@ -78,9 +79,10 @@
     window.postMessage({ source: "flow-ext-reply", msgId, action, ok: false, error }, "*");
   }
 
-  // ── Listen for replies from background worker → relay to Flow page ────────
+  // ── Listen for messages from background worker → relay to Flow page ───────
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      // Background sends this to Flow tab to relay result back to page
       if (msg.source === "flow-ext-reply-relay") {
         window.postMessage({
           source: "flow-ext-reply",
@@ -94,15 +96,15 @@
         return true;
       }
 
-      // Execute action directly (this is the TARGET tab)
+      // Background sends this to TARGET tab to execute action
       if (msg.source === "flow-control") {
         _handle(msg.action, msg.payload || {})
-          .then(result => { try { sendResponse({ ok: true, result }); } catch (e) {} })
+          .then(result => { try { sendResponse({ ok: true,  result }); } catch (e) {} })
           .catch(err   => { try { sendResponse({ ok: false, error: err.message }); } catch (e) {} });
         return true;
       }
     });
-  } catch (e) { /* extension context invalidated — page will recover on next load */ }
+  } catch (e) { /* extension context invalidated */ }
 
   // ── Action handler ────────────────────────────────────────────────────────
   async function _handle(action, payload) {
@@ -118,16 +120,17 @@
       case "select":        return _select(payload.option || "", payload.field || "");
       case "cursor_move":   return _cursorMove(payload.x ?? 0.5, payload.y ?? 0.5);
       case "gesture_click": return _gestureClick(payload.x ?? 0.5, payload.y ?? 0.5);
+      case "right_click":   return _rightClick(payload.x ?? 0.5, payload.y ?? 0.5);
       default: throw new Error("Unknown action: " + action);
     }
   }
 
-  // ── Scroll (finds the real scrollable element, not just window) ────────────
+  // ── Scroll ─────────────────────────────────────────────────────────────────
   function _scroll({ direction = "down", amount = 400 }) {
     const el = _findScrollable();
     switch (direction) {
       case "top":
-        (el || window).scrollTo({ top: 0, behavior: "smooth" });
+        (el || document.documentElement).scrollTo({ top: 0, behavior: "smooth" });
         window.scrollTo({ top: 0, behavior: "smooth" });
         break;
       case "bottom":
@@ -154,7 +157,6 @@
   }
 
   function _findScrollable() {
-    // Walk elements under the vertical center of the viewport
     const cx = window.innerWidth / 2;
     const cy = window.innerHeight / 2;
     const hits = document.elementsFromPoint(cx, cy) || [];
@@ -164,14 +166,12 @@
       const ov = s.overflow + s.overflowY;
       if (/(auto|scroll)/.test(ov) && el.scrollHeight > el.clientHeight + 4) return el;
     }
-    // Fallback: document.documentElement (works on most pages)
-    if (document.documentElement.scrollHeight > document.documentElement.clientHeight + 4) {
+    if (document.documentElement.scrollHeight > document.documentElement.clientHeight + 4)
       return document.documentElement;
-    }
     return null;
   }
 
-  // ── Click ─────────────────────────────────────────────────────────────────
+  // ── Click ──────────────────────────────────────────────────────────────────
   function _click(target) {
     const el = _findElement(target);
     if (!el) return { clicked: null };
@@ -182,7 +182,7 @@
     return { clicked: el.textContent?.trim().slice(0, 60) || target };
   }
 
-  // ── Type ──────────────────────────────────────────────────────────────────
+  // ── Type ───────────────────────────────────────────────────────────────────
   function _type(text, fieldHint) {
     let input = fieldHint ? _findInput(fieldHint) : null;
     if (!input && document.activeElement) {
@@ -210,7 +210,7 @@
     return { typed: text };
   }
 
-  // ── Read ──────────────────────────────────────────────────────────────────
+  // ── Read ───────────────────────────────────────────────────────────────────
   function _read() {
     const clone = document.body.cloneNode(true);
     for (const tag of ["script","style","noscript","svg","iframe","nav","footer","header"])
@@ -220,7 +220,7 @@
     return { text: text.slice(0, 8000), title: document.title, url: location.href };
   }
 
-  // ── Select ────────────────────────────────────────────────────────────────
+  // ── Select ─────────────────────────────────────────────────────────────────
   function _select(optionText, fieldHint) {
     const sel = (fieldHint ? _findElement(fieldHint, "select") : null) || document.querySelector("select");
     if (!sel) return { selected: null };
@@ -234,7 +234,7 @@
     return { selected: opt.text };
   }
 
-  // ── Gesture cursor dot ────────────────────────────────────────────────────
+  // ── Gesture cursor dot ─────────────────────────────────────────────────────
   let _dot = null, _dotX = window.innerWidth / 2, _dotY = window.innerHeight / 2;
   let _hoveredEl = null;
 
@@ -263,7 +263,6 @@
     _ensureDot();
     _dot.style.left = _dotX + "px";
     _dot.style.top  = _dotY + "px";
-    // Hover highlight
     _dot.style.display = "none";
     const el = document.elementFromPoint(_dotX, _dotY);
     _dot.style.display = "";
@@ -293,7 +292,16 @@
     return { clicked: el.textContent?.trim().slice(0, 60) || el.tagName };
   }
 
-  // ── Element finders ───────────────────────────────────────────────────────
+  function _rightClick(nx, ny) {
+    const x = Math.max(0, Math.min(1, nx)) * window.innerWidth;
+    const y = Math.max(0, Math.min(1, ny)) * window.innerHeight;
+    const el = document.elementFromPoint(x, y);
+    if (!el) return { ok: false };
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    return { ok: true };
+  }
+
+  // ── Element finders ────────────────────────────────────────────────────────
   function _findElement(target, tagFilter = null) {
     const t = (target || "").toLowerCase().trim();
     if (!t) return null;
