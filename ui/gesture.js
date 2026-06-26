@@ -1,19 +1,14 @@
-// ui/gesture.js (v8)
+// ui/gesture.js (v9)
 // Hand gesture control using MediaPipe Hands
-// FIX: Use alternative CDN with proper CORS support for Vercel domains
-// Model: @mediapipe/hands@0.4.1646424926 via esm.sh (CORS-friendly)
+// FIXED: Use unpkg with proper script loading (no dynamic import, no CORS issues)
 //
 // Exports:
-//   - Gesture: object with start/stop methods, wired by app.js
-//   - initGesture(Chat, Orb): initialize with UI refs for setup messages
-//   - start(videoEl): load MediaPipe, begin hand tracking
-//   - stop(): cleanup canvas, stop camera
+//   - Gesture: object with start/stop methods
+//   - initGesture(Chat, Orb): initialize
+//   - start(videoEl): load MediaPipe and begin tracking
+//   - stop(): cleanup
 
 import { sendToExtension } from './screencontrol.js';
-
-// ────────────────────────────────────────────────────────────────────────────
-// MODULE EXPORTS
-// ────────────────────────────────────────────────────────────────────────────
 
 export const Gesture = {};
 
@@ -27,10 +22,6 @@ export function initGesture(Chat, Orb) {
   Gesture.Orb = Orb;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// STATE & CONFIGURATION
-// ────────────────────────────────────────────────────────────────────────────
-
 let _video = null;
 let _canvas = null;
 let _ctx = null;
@@ -39,12 +30,11 @@ let _camera = null;
 let _animationId = null;
 let _active = false;
 
-// Cursor locked position (persists when hand leaves frame)
 let _lockedX = 0.5;
 let _lockedY = 0.5;
 
 // ────────────────────────────────────────────────────────────────────────────
-// START: Load MediaPipe and begin tracking
+// START: Load MediaPipe via unpkg script tag
 // ────────────────────────────────────────────────────────────────────────────
 
 export async function start(videoEl) {
@@ -53,45 +43,63 @@ export async function start(videoEl) {
     _active = true;
     _video = videoEl;
 
-    // Send setup message to Flow UI
     if (_Chat) {
       _Chat.add(
         '🎥 **Gesture Control Loading...**\n\n' +
         '**Hand Gestures:**\n' +
         '1️⃣ **1 Finger** = Move cursor\n' +
-        '2️⃣ **2 Fingers** = Scroll (vertical)\n' +
+        '2️⃣ **2 Fingers** = Scroll\n' +
         '3️⃣ **3 Fingers** = Click\n' +
-        '5️⃣ **Open Palm** = Right-click\n' +
-        '✊ **Fist** = Lock cursor\n\n' +
-        '_Loading MediaPipe model from CDN..._',
+        '5️⃣ **Open Palm** = Right-click\n\n' +
+        '_Loading MediaPipe..._',
         'bot'
       );
     }
 
-    // Load MediaPipe using dynamic import via esm.sh (CORS-friendly)
-    // esm.sh wraps npm packages and serves them with proper CORS headers
-    const module = await import('https://esm.sh/@mediapipe/hands@0.4.1646424926');
-    window.Hands = module.Hands;
-    window.Camera = module.Camera;
+    // Load MediaPipe hands.js from unpkg
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/@mediapipe/hands@0.4.1646424926/hands.js';
+    script.crossOrigin = 'anonymous';
+    script.async = true;
 
-    // Setup canvas for skeleton/dot drawing
+    // Wait for script to load
+    await new Promise((resolve, reject) => {
+      script.onload = () => {
+        // Check if Hands and Camera are available
+        if (window.Hands && window.Camera) {
+          resolve();
+        } else {
+          reject(new Error('MediaPipe objects not available after script load'));
+        }
+      };
+
+      script.onerror = () => {
+        reject(new Error('Failed to load MediaPipe hands.js'));
+      };
+
+      // Add timeout
+      setTimeout(() => {
+        reject(new Error('MediaPipe script load timeout'));
+      }, 15000);
+
+      document.head.appendChild(script);
+    });
+
+    // Setup canvas
     _canvas = document.createElement('canvas');
     _canvas.id = 'gesture-canvas';
     _canvas.width = _video.videoWidth || 640;
     _canvas.height = _video.videoHeight || 480;
-    _canvas.style.cssText = `
-      position: absolute; top: 0; left: 0; z-index: 10000; cursor: none;
-    `;
+    _canvas.style.cssText = 'position:absolute;top:0;left:0;z-index:10000;cursor:none;';
     _ctx = _canvas.getContext('2d', { willReadFrequently: true });
 
     const container = _video.parentElement;
     container.style.position = 'relative';
     container.appendChild(_canvas);
 
-    // Initialize Hands detector
+    // Initialize hands detector
     _hands = new window.Hands({
-      locateFile: (file) => 
-        `https://esm.sh/@mediapipe/hands@0.4.1646424926/dist/${file}`
+      locateFile: (file) => `https://unpkg.com/@mediapipe/hands@0.4.1646424926/${file}`
     });
 
     _hands.setOptions({
@@ -103,7 +111,7 @@ export async function start(videoEl) {
 
     _hands.onResults(_onResults);
 
-    // Start camera feed
+    // Start camera
     const camera = new window.Camera(_video, {
       onFrame: async () => {
         await _hands.send({ image: _video });
@@ -115,18 +123,15 @@ export async function start(videoEl) {
     _camera = camera;
     camera.start();
 
-    // Send success message
     if (_Chat) {
       _Chat.add(
         '✅ **Gesture Control Ready!**\n\n' +
-        'Show your hand to camera (palm facing). ' +
-        'Spread fingers for detection.\n\n' +
-        '_Tip: Say "stop gesture control" to exit._',
+        'Show your hand to camera (palm facing).\n\n' +
+        '_Say "stop gesture control" to exit._',
         'bot'
       );
     }
 
-    // Start animation loop
     _animate();
 
   } catch (err) {
@@ -138,10 +143,6 @@ export async function start(videoEl) {
     throw err;
   }
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// HAND DETECTION & GESTURE DISPATCH
-// ────────────────────────────────────────────────────────────────────────────
 
 function _onResults(results) {
   if (!_active || !_canvas) return;
@@ -163,10 +164,9 @@ function _onResults(results) {
   _drawLabel(`${fingers} finger${fingers !== 1 ? 's' : ''}`);
 }
 
-// Count how many fingers are extended (open) vs folded
 function _countExtendedFingers(landmarks) {
-  const tips = [4, 8, 12, 16, 20];      // Thumb, index, middle, ring, pinky tips
-  const pips = [3, 6, 10, 14, 18];      // PIP (middle knuckle) of each finger
+  const tips = [4, 8, 12, 16, 20];
+  const pips = [3, 6, 10, 14, 18];
   let count = 0;
 
   for (let i = 0; i < tips.length; i++) {
@@ -178,42 +178,33 @@ function _countExtendedFingers(landmarks) {
   return count;
 }
 
-// Route detected gesture to extension
 function _dispatchGesture(fingers, landmarks) {
-  const tipX = landmarks[8].x;  // Index finger tip
+  const tipX = landmarks[8].x;
   const tipY = landmarks[8].y;
 
-  // Update locked cursor position based on hand movement
   _lockedX = tipX;
   _lockedY = tipY;
 
   switch (fingers) {
     case 1:
-      // 1 finger = move cursor
       sendToExtension('cursor_move', {
         x: Math.round(tipX * window.innerWidth),
         y: Math.round(tipY * window.innerHeight)
       });
       break;
-
     case 2:
-      // 2 fingers = scroll
       sendToExtension('scroll', {
         direction: tipY < 0.5 ? 'up' : 'down',
         distance: 80
       });
       break;
-
     case 3:
-      // 3 fingers = click
       sendToExtension('click', {
         x: Math.round(tipX * window.innerWidth),
         y: Math.round(tipY * window.innerHeight)
       });
       break;
-
     case 5:
-      // Open palm (all 5) = right-click
       sendToExtension('right_click', {
         x: Math.round(tipX * window.innerWidth),
         y: Math.round(tipY * window.innerHeight)
@@ -221,10 +212,6 @@ function _dispatchGesture(fingers, landmarks) {
       break;
   }
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// DRAWING
-// ────────────────────────────────────────────────────────────────────────────
 
 function _drawSkeleton(landmarks) {
   const connections = [
@@ -278,10 +265,6 @@ function _drawLabel(text) {
   _ctx.fillText(text, 10, 30);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// ANIMATION & CLEANUP
-// ────────────────────────────────────────────────────────────────────────────
-
 function _animate() {
   if (!_active) return;
   _animationId = requestAnimationFrame(_animate);
@@ -289,7 +272,6 @@ function _animate() {
 
 export function stop() {
   _active = false;
-
   if (_animationId) cancelAnimationFrame(_animationId);
   if (_camera) _camera.stop();
   if (_canvas) _canvas.remove();
@@ -301,6 +283,5 @@ export function stop() {
   _camera = null;
 }
 
-// Wire start/stop to Gesture export
 Gesture.start = start;
 Gesture.stop = stop;
