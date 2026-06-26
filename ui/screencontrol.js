@@ -1,74 +1,91 @@
-// ui/screencontrol.js (v6)
+// ui/screencontrol.js (v7)
 // Routes screen control commands from Flow text/voice to the extension
-// Does NOT call chrome.runtime directly (blocked by Chrome security policy)
 // All commands route: postMessage → content.js → chrome.runtime → background.js
+//
+// FIX: Listen for 'flow-ext-id' (what content.js actually broadcasts),
+//      not 'flow-ext-id-reply' (old name that never fired)
 //
 // Exports:
 //   - initScreenControl(Chat, Orb, sendToAI): initialize
-//   - parseScreenControl(text): detect and route scroll/click/gesture commands
+//   - parseScreenControl(text): detect and route commands
 //   - sendToExtension(action, payload): send command to extension
 
-let _extId = null;
-let _pendingReplies = new Map();
-let _replyTimeouts = new Map();
+let _extId         = null;
+let _extReady      = false;
+let _pendingReplies  = new Map();
+let _replyTimeouts   = new Map();
 
 // ────────────────────────────────────────────────────────────────────────────
-// REQUEST EXTENSION ID (from content.js via postMessage)
+// LISTEN FOR MESSAGES FROM CONTENT.JS / BACKGROUND RELAY
 // ────────────────────────────────────────────────────────────────────────────
-
-async function _requestExtId() {
-  const maxRetries = 3;
-  for (let i = 0; i < maxRetries; i++) {
-    window.postMessage({ source: 'flow-ext-id-request' }, '*');
-    await new Promise(r => setTimeout(r, 500 + i * 1000));
-    if (_extId) break;
-  }
-}
 
 window.addEventListener('message', (event) => {
-  if (event.data.source === 'flow-ext-id-reply') {
-    _extId = event.data.extensionId;
+  if (!event.data) return;
+
+  // content.js broadcasts this on load AND on request — this is the real source name
+  if (event.data.source === 'flow-ext-id') {
+    _extId    = event.data.extensionId;
+    _extReady = true;
     console.log('[Flow SC] Extension connected ✓ ID:', _extId);
-  } else if (event.data.source === 'flow-control-reply') {
-    // Route reply to pending handler if exists
-    const replyId = event.data.replyId;
-    if (_pendingReplies.has(replyId)) {
-      const handler = _pendingReplies.get(replyId);
-      clearTimeout(_replyTimeouts.get(replyId));
-      _pendingReplies.delete(replyId);
-      _replyTimeouts.delete(replyId);
+    return;
+  }
+
+  // Reply from background via content.js relay
+  if (event.data.source === 'flow-ext-reply') {
+    const { msgId } = event.data;
+    if (_pendingReplies.has(msgId)) {
+      const handler = _pendingReplies.get(msgId);
+      clearTimeout(_replyTimeouts.get(msgId));
+      _pendingReplies.delete(msgId);
+      _replyTimeouts.delete(msgId);
       if (handler) handler(event.data);
     }
   }
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// SEND TO EXTENSION (via postMessage relay)
+// REQUEST EXTENSION ID
+// ────────────────────────────────────────────────────────────────────────────
+
+async function _requestExtId() {
+  for (let i = 0; i < 5; i++) {
+    if (_extReady) return;
+    window.postMessage({ source: 'flow-ext-id-request' }, '*');
+    await new Promise(r => setTimeout(r, 600 + i * 500));
+    if (_extReady) return;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// SEND TO EXTENSION (via postMessage → content.js → background.js)
 // ────────────────────────────────────────────────────────────────────────────
 
 function _send(action, payload, onReply) {
-  if (!_extId) {
+  if (!_extReady || !_extId) {
     console.warn('[Flow SC] Extension not connected. Retrying...');
-    _requestExtId().then(() => _send(action, payload, onReply));
+    _requestExtId().then(() => {
+      if (_extReady) _send(action, payload, onReply);
+      else console.error('[Flow SC] Extension unavailable — install the Flow extension.');
+    });
     return;
   }
 
-  const replyId = Math.random().toString(36).slice(2, 11);
+  const msgId = Math.random().toString(36).slice(2, 11);
 
   try {
     window.postMessage({
-      source: 'flow-control-page',
-      replyId: replyId,
-      action: action,
-      payload: payload
+      source:  'flow-control-page',
+      msgId,
+      action,
+      payload
     }, '*');
 
     if (onReply) {
-      _pendingReplies.set(replyId, onReply);
-      _replyTimeouts.set(replyId, setTimeout(() => {
-        _pendingReplies.delete(replyId);
-        _replyTimeouts.delete(replyId);
-      }, 3000));
+      _pendingReplies.set(msgId, onReply);
+      _replyTimeouts.set(msgId, setTimeout(() => {
+        _pendingReplies.delete(msgId);
+        _replyTimeouts.delete(msgId);
+      }, 5000));
     }
   } catch (err) {
     console.error('[Flow SC] Send error:', err.message);
@@ -76,7 +93,7 @@ function _send(action, payload, onReply) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// MODULE EXPORTS
+// EXPORTS
 // ────────────────────────────────────────────────────────────────────────────
 
 export async function initScreenControl(Chat, Orb, sendToAI) {
@@ -85,35 +102,28 @@ export async function initScreenControl(Chat, Orb, sendToAI) {
 }
 
 export function parseScreenControl(text) {
-  // Detect scroll commands: "scroll up", "scroll down", "scroll left", "scroll right"
   const scrollRx = /scroll\s+(up|down|left|right|top|bottom)|\b(up|down|left|right)\s+scroll/i;
   const scrollMatch = text.match(scrollRx);
   if (scrollMatch) {
     const direction = (scrollMatch[1] || scrollMatch[2]).toLowerCase();
-    sendToExtension('scroll', { 
-      direction: direction,
-      distance: 100 
-    });
-    return true;  // Command was handled
-  }
-
-  // Detect click commands: "click", "tap"
-  const clickRx = /\bclick\b|\btap\b/i;
-  if (clickRx.test(text)) {
-    sendToExtension('click', { x: null, y: null });
+    sendToExtension('scroll', { direction, amount: 400 });
     return true;
   }
 
-  // Detect gesture control commands: "start gesture control", "stop gesture control"
+  const clickRx = /\bclick\b|\btap\b/i;
+  if (clickRx.test(text)) {
+    sendToExtension('click', { target: '' });
+    return true;
+  }
+
   if (/start\s+gesture|gesture\s+control|gesture\s+mode/i.test(text)) {
-    return 'gesture-setup';  // Signal to trigger gesture.start()
+    return 'gesture-setup';
   }
 
   if (/stop\s+gesture|end\s+gesture/i.test(text)) {
-    return 'gesture-stop';  // Signal to trigger gesture.stop()
+    return 'gesture-stop';
   }
 
-  // Not a screen control command
   return null;
 }
 
