@@ -1,38 +1,25 @@
 {
   "version": 2,
   "functions": {
-    "api/chat.js": {
-      "maxDuration": 10
-    },
-    "api/vision.js": {
-      "maxDuration": 10
-    },
-    "api/imagine.js": {
-      "maxDuration": 10
-    },
-    "api/search.js": {
-      "maxDuration": 10
-    },
-    "api/rag.js": {
-      "maxDuration": 10
-    },
-    "api/memory.js": {
-      "maxDuration": 10
-    },
-    "api/memory-bulk.js": {
-      "maxDuration": 10
-    },
-    "api/github.js": {
-      "maxDuration": 10
-    },
-    "api/token.js": {
-      "maxDuration": 5
-    },
-    "api/debug.js": {
-      "maxDuration": 5
-    },
-    "api/intel.js": {
-      "maxDuration": 10
+    "api/chat.js":        { "maxDuration": 10 },
+    "api/vision.js":      { "maxDuration": 10 },
+    "api/imagine.js":     { "maxDuration": 10 },
+    "api/search.js":      { "maxDuration": 10 },
+    "api/rag.js":         { "maxDuration": 10 },
+    "api/memory.js":      { "maxDuration": 10 },
+    "api/memory-bulk.js": { "maxDuration": 10 },
+    "api/github.js":      { "maxDuration": 10 },
+    "api/token.js":       { "maxDuration": 5  },
+    "api/debug.js":       { "maxDuration": 5  },
+    "api/intel.js":       { "maxDuration": 10 }
+  },
+  "headers": [
+    {
+      "source": "/mediapipe/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Cross-Origin-Resource-Policy", "value": "cross-origin" }
+      ]
     }
-  }
+  ]
 }
