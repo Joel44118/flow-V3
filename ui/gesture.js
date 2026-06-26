@@ -1,12 +1,7 @@
-// ui/gesture.js (v10)
+// ui/gesture.js (v11)
 // Hand gesture control using MediaPipe Hands
-// FIX: Use jsdelivr (CORS-safe) + load camera_utils.js separately
-//
-// Exports:
-//   - Gesture: object with start/stop methods
-//   - initGesture(Chat, Orb): initialize
-//   - start(videoEl): load MediaPipe and begin tracking
-//   - stop(): cleanup
+// FIX: Load hands.js + camera_utils.js from /mediapipe/ (same-origin Vercel static files)
+//      locateFile points WASM assets to same /mediapipe/ path — zero CORS issues
 
 import { sendToExtension } from './screencontrol.js';
 
@@ -29,31 +24,25 @@ let _hands       = null;
 let _camera      = null;
 let _animationId = null;
 let _active      = false;
+let _lockedX     = 0.5;
+let _lockedY     = 0.5;
 
-let _lockedX = 0.5;
-let _lockedY = 0.5;
-
-// CDN base — jsdelivr has proper CORS headers unlike unpkg
-const MP_VERSION = '0.4.1646424926';
-const MP_BASE    = `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MP_VERSION}`;
-const CAM_BASE   = `https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862`;
+// Same-origin paths served by Vercel from /mediapipe/ folder in repo root
+const MP_BASE = '/mediapipe';
 
 function _loadScript(src) {
   return new Promise((resolve, reject) => {
-    // Avoid double-loading
     if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src   = src;
-    s.async = true;
+    const s   = document.createElement('script');
+    s.src     = src;
+    s.async   = true;
     s.onload  = resolve;
     s.onerror = () => reject(new Error(`Failed to load: ${src}`));
     document.head.appendChild(s);
   });
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// START
-// ────────────────────────────────────────────────────────────────────────────
+// ── START ────────────────────────────────────────────────────────────────────
 
 export async function start(videoEl) {
   try {
@@ -74,15 +63,15 @@ export async function start(videoEl) {
       );
     }
 
-    // Load hands + camera utils from jsdelivr (CORS-safe)
+    // Load from same-origin /mediapipe/ — no CORS, no CDN
     await _loadScript(`${MP_BASE}/hands.js`);
-    await _loadScript(`${CAM_BASE}/camera_utils.js`);
+    await _loadScript(`${MP_BASE}/camera_utils.js`);
 
     if (!window.Hands || !window.Camera) {
       throw new Error('MediaPipe Hands or Camera not available after load');
     }
 
-    // Setup canvas
+    // Setup canvas overlay on top of video
     _canvas           = document.createElement('canvas');
     _canvas.id        = 'gesture-canvas';
     _canvas.width     = _video.videoWidth  || 640;
@@ -94,7 +83,7 @@ export async function start(videoEl) {
     container.style.position = 'relative';
     container.appendChild(_canvas);
 
-    // Init hands detector
+    // Init hands detector — locateFile points WASM files to same /mediapipe/ path
     _hands = new window.Hands({
       locateFile: (file) => `${MP_BASE}/${file}`
     });
@@ -130,9 +119,7 @@ export async function start(videoEl) {
 
   } catch (err) {
     console.error('[Gesture] Load error:', err.message);
-    if (_Chat) {
-      _Chat.add(`⚠️ Gesture setup failed: ${err.message}`, 'bot');
-    }
+    if (_Chat) _Chat.add(`⚠️ Gesture setup failed: ${err.message}`, 'bot');
     _active = false;
     throw err;
   }
@@ -140,19 +127,13 @@ export async function start(videoEl) {
 
 function _onResults(results) {
   if (!_active || !_canvas) return;
-
   _ctx.clearRect(0, 0, _canvas.width, _canvas.height);
 
   const landmarks = results.multiHandLandmarks?.[0];
-
-  if (!landmarks) {
-    _drawLabel('👋 Show hand');
-    return;
-  }
+  if (!landmarks) { _drawLabel('👋 Show hand'); return; }
 
   const fingers = _countExtendedFingers(landmarks);
   _dispatchGesture(fingers, landmarks);
-
   _drawSkeleton(landmarks);
   _drawCursor();
   _drawLabel(`${fingers} finger${fingers !== 1 ? 's' : ''}`);
@@ -176,28 +157,16 @@ function _dispatchGesture(fingers, landmarks) {
 
   switch (fingers) {
     case 1:
-      sendToExtension('cursor_move', {
-        x: Math.round(tipX * window.innerWidth),
-        y: Math.round(tipY * window.innerHeight)
-      });
+      sendToExtension('cursor_move', { x: tipX, y: tipY });
       break;
     case 2:
-      sendToExtension('scroll', {
-        direction: tipY < 0.5 ? 'up' : 'down',
-        distance:  80
-      });
+      sendToExtension('scroll', { direction: tipY < 0.5 ? 'up' : 'down', amount: 80 });
       break;
     case 3:
-      sendToExtension('click', {
-        x: Math.round(tipX * window.innerWidth),
-        y: Math.round(tipY * window.innerHeight)
-      });
+      sendToExtension('gesture_click', { x: tipX, y: tipY });
       break;
     case 5:
-      sendToExtension('right_click', {
-        x: Math.round(tipX * window.innerWidth),
-        y: Math.round(tipY * window.innerHeight)
-      });
+      sendToExtension('right_click', { x: tipX, y: tipY });
       break;
   }
 }
@@ -210,20 +179,16 @@ function _drawSkeleton(landmarks) {
     [0,13],[13,14],[14,15],[15,16],
     [0,17],[17,18],[18,19],[19,20]
   ];
-
   _ctx.strokeStyle = '#0f0';
   _ctx.lineWidth   = 2;
   _ctx.fillStyle   = '#0f0';
-
   connections.forEach(([s, e]) => {
-    const p1 = landmarks[s];
-    const p2 = landmarks[e];
+    const p1 = landmarks[s], p2 = landmarks[e];
     _ctx.beginPath();
     _ctx.moveTo(p1.x * _canvas.width, p1.y * _canvas.height);
     _ctx.lineTo(p2.x * _canvas.width, p2.y * _canvas.height);
     _ctx.stroke();
   });
-
   landmarks.forEach((lm) => {
     _ctx.beginPath();
     _ctx.arc(lm.x * _canvas.width, lm.y * _canvas.height, 4, 0, Math.PI * 2);
@@ -234,12 +199,10 @@ function _drawSkeleton(landmarks) {
 function _drawCursor() {
   const sx = _lockedX * _canvas.width;
   const sy = _lockedY * _canvas.height;
-
-  _ctx.fillStyle = 'rgba(0,150,255,0.6)';
+  _ctx.fillStyle   = 'rgba(0,150,255,0.6)';
   _ctx.beginPath();
   _ctx.arc(sx, sy, 12, 0, Math.PI * 2);
   _ctx.fill();
-
   _ctx.strokeStyle = 'rgba(0,200,255,1)';
   _ctx.lineWidth   = 3;
   _ctx.beginPath();
