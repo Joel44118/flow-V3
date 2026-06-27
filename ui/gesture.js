@@ -104,22 +104,28 @@ export async function start(videoEl) {
     await _loadScript('camera_utils.js');
     if (!window.Hands || !window.Camera) throw new Error('MediaPipe not available after load');
 
-    // Canvas wrapper — sibling after video, never inside it
+    // Canvas wrapper — appended INSIDE the video's parent (vision-window div)
+    // using inset:0 so it perfectly overlays the video regardless of where
+    // the floating window is on screen.
+    // NEVER use offsetLeft/offsetTop here — vision-window is position:fixed
+    // so those values are always 0 → causes the jump-to-far-left bug.
+    const videoParent = _video.parentElement;  // the .vision-window div
+    videoParent.style.position = 'relative';
+
     const vw = _video.offsetWidth  || 320;
     const vh = _video.offsetHeight || 240;
 
     _wrapper = document.createElement('div');
     Object.assign(_wrapper.style, {
       position: 'absolute', pointerEvents: 'none', zIndex: '10000',
-      top:  _video.offsetTop  + 'px',
-      left: _video.offsetLeft + 'px',
-      width: vw + 'px', height: vh + 'px',
+      inset: '0',           // fills the container perfectly, no coordinate math
     });
-    _video.parentElement.style.position = 'relative';
-    _video.after(_wrapper);
+    videoParent.appendChild(_wrapper);  // child of vision-window, not a sibling
 
     _canvas = document.createElement('canvas');
-    _canvas.width = vw; _canvas.height = vh;
+    // Use actual video resolution once loaded; fall back to offsetWidth
+    _canvas.width  = _video.videoWidth  || vw;
+    _canvas.height = _video.videoHeight || vh;
     Object.assign(_canvas.style, {
       position: 'absolute', top: 0, left: 0, width: '100%', height: '100%'
     });
