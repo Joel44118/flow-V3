@@ -2,8 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Flow AI">
+  <meta name="theme-color" content="#38bdf8">
   <title>Flow AI</title>
+  <link rel="manifest" href="/manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
@@ -47,8 +53,6 @@
 
   <!-- Input bar -->
   <div class="input-panel">
-
-    <!-- Vision popup toggle -->
     <div id="vision-popup-wrap">
       <button id="vision-toggle-btn" title="Vision tools">👁</button>
       <div id="vision-popup">
@@ -59,7 +63,6 @@
       </div>
     </div>
 
-    <!-- File upload always visible -->
     <button id="file-btn" title="Upload file">📎</button>
     <input type="file" id="file-input" multiple
       accept="image/*,video/*,audio/*,.pdf,.txt,.md,.js,.ts,.jsx,.tsx,.py,.html,.css,.json,.csv,.xml,.yaml,.yml,.sh,.log,.sql,.doc,.docx"
@@ -75,9 +78,14 @@
 
     <button id="mic-btn">🎤</button>
     <button id="send-btn">➤</button>
-
   </div>
 
   <script type="module" src="app.js"></script>
+  <script>
+    // Register PWA service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  </script>
 </body>
 </html>
