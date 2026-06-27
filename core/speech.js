@@ -76,6 +76,57 @@ function _resetState(runOnDone = true) {
   _onDone = null;
 }
 
+
+// ── Flow voice picker ─────────────────────────────────────────────────────
+// Tries male voices in priority order. Cached after first successful pick.
+let _cachedVoice = null;
+
+function _getFlowVoice() {
+  if (_cachedVoice) return _cachedVoice;
+
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return null;  // voices not loaded yet — browser default
+
+  // Preferred voice names in priority order (male, natural-sounding)
+  const PREF = [
+    // Chrome desktop (Windows/Mac/Linux)
+    'Google UK English Male',
+    'Microsoft Ryan Online (Natural) - English (United Kingdom)',
+    'Microsoft Guy Online (Natural) - English (United States)',
+    'Microsoft Davis Online (Natural) - English (United States)',
+    'Google US English',
+    // Android Chrome / Android WebView
+    'English United States',
+    // iOS / Safari (male)
+    'Daniel',     // UK male — available on iOS and macOS
+    'Aaron',      // US male — iOS 16+
+    'Fred',       // US male — iOS classic
+    // Generic fallback keywords
+    'Male',
+    'male',
+  ];
+
+  for (const name of PREF) {
+    const match = voices.find(v =>
+      v.name.toLowerCase().includes(name.toLowerCase()) && v.lang.startsWith('en')
+    );
+    if (match) { _cachedVoice = match; return match; }
+  }
+
+  // Last resort: any English voice that isn't obviously female
+  const FEMALE_WORDS = ['female','woman','zira','hazel','susan','karen','moira','samantha','victoria','tessa','fiona'];
+  const notFemale = voices.find(v =>
+    v.lang.startsWith('en') &&
+    !FEMALE_WORDS.some(w => v.name.toLowerCase().includes(w))
+  );
+  if (notFemale) { _cachedVoice = notFemale; return notFemale; }
+
+  return null;  // let browser decide
+}
+
+// Voices load async — clear cache when they change so we repick
+window.speechSynthesis.onvoiceschanged = () => { _cachedVoice = null; };
+
 function _speak(text, fromChar, onDone, wrap) {
   const slice = text.slice(fromChar).trim();
   if (!slice) { _resetState(true); return; }
@@ -91,6 +142,11 @@ function _speak(text, fromChar, onDone, wrap) {
   u.rate     = 0.96;
   u.pitch    = 1;
   u.volume   = 1;
+
+  // ── Voice selection — always male, always consistent ─────────────────
+  // Priority list: best male voices across Chrome desktop, Android, iOS
+  // We pick once and cache it so the same voice is used every utterance.
+  u.voice = _getFlowVoice();
 
   u.onboundary = (e) => {
     if (e.name === "word") {
