@@ -1,36 +1,21 @@
-// ui/screencontrol.js (v7)
-// Routes screen control commands from Flow text/voice to the extension
-// All commands route: postMessage → content.js → chrome.runtime → background.js
-//
-// FIX: Listen for 'flow-ext-id' (what content.js actually broadcasts),
-//      not 'flow-ext-id-reply' (old name that never fired)
-//
-// Exports:
-//   - initScreenControl(Chat, Orb, sendToAI): initialize
-//   - parseScreenControl(text): detect and route commands
-//   - sendToExtension(action, payload): send command to extension
+// ui/screencontrol.js (v8)
+// FIX: parseScreenControl now handles read/type/click/scroll with _chatAdd feedback
+// All commands: postMessage → content.js → background.js → target tab
 
-let _extId         = null;
-let _extReady      = false;
-let _pendingReplies  = new Map();
-let _replyTimeouts   = new Map();
-
-// ────────────────────────────────────────────────────────────────────────────
-// LISTEN FOR MESSAGES FROM CONTENT.JS / BACKGROUND RELAY
-// ────────────────────────────────────────────────────────────────────────────
+let _extId       = null;
+let _extReady    = false;
+let _chatAdd     = null;
+let _pendingReplies = new Map();
+let _replyTimeouts  = new Map();
 
 window.addEventListener('message', (event) => {
   if (!event.data) return;
-
-  // content.js broadcasts this on load AND on request — this is the real source name
   if (event.data.source === 'flow-ext-id') {
     _extId    = event.data.extensionId;
     _extReady = true;
     console.log('[Flow SC] Extension connected ✓ ID:', _extId);
     return;
   }
-
-  // Reply from background via content.js relay
   if (event.data.source === 'flow-ext-reply') {
     const { msgId } = event.data;
     if (_pendingReplies.has(msgId)) {
@@ -43,90 +28,115 @@ window.addEventListener('message', (event) => {
   }
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// REQUEST EXTENSION ID
-// ────────────────────────────────────────────────────────────────────────────
-
 async function _requestExtId() {
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 6; i++) {
     if (_extReady) return;
     window.postMessage({ source: 'flow-ext-id-request' }, '*');
-    await new Promise(r => setTimeout(r, 600 + i * 500));
+    await new Promise(r => setTimeout(r, 700 + i * 400));
     if (_extReady) return;
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// SEND TO EXTENSION (via postMessage → content.js → background.js)
-// ────────────────────────────────────────────────────────────────────────────
-
 function _send(action, payload, onReply) {
-  if (!_extReady || !_extId) {
-    console.warn('[Flow SC] Extension not connected. Retrying...');
+  if (!_extReady) {
     _requestExtId().then(() => {
       if (_extReady) _send(action, payload, onReply);
-      else console.error('[Flow SC] Extension unavailable — install the Flow extension.');
+      else _chatAdd?.('⚠️ Flow extension not connected. Make sure it\'s installed and reload.', 'bot');
     });
     return;
   }
 
   const msgId = Math.random().toString(36).slice(2, 11);
+  window.postMessage({ source: 'flow-control-page', msgId, action, payload }, '*');
 
-  try {
-    window.postMessage({
-      source:  'flow-control-page',
-      msgId,
-      action,
-      payload
-    }, '*');
-
-    if (onReply) {
-      _pendingReplies.set(msgId, onReply);
-      _replyTimeouts.set(msgId, setTimeout(() => {
-        _pendingReplies.delete(msgId);
-        _replyTimeouts.delete(msgId);
-      }, 5000));
-    }
-  } catch (err) {
-    console.error('[Flow SC] Send error:', err.message);
+  if (onReply) {
+    _pendingReplies.set(msgId, onReply);
+    _replyTimeouts.set(msgId, setTimeout(() => {
+      _pendingReplies.delete(msgId);
+      _replyTimeouts.delete(msgId);
+      onReply({ ok: false, error: 'Timeout — no response from target tab' });
+    }, 7000));
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// EXPORTS
-// ────────────────────────────────────────────────────────────────────────────
-
 export async function initScreenControl(Chat, Orb, sendToAI) {
+  _chatAdd = Chat?.add?.bind(Chat);
   await _requestExtId();
   return { sendToExtension };
 }
 
+// ── Command parser ─────────────────────────────────────────────────────────
+
 export function parseScreenControl(text) {
-  const scrollRx = /scroll\s+(up|down|left|right|top|bottom)|\b(up|down|left|right)\s+scroll/i;
-  const scrollMatch = text.match(scrollRx);
-  if (scrollMatch) {
-    const direction = (scrollMatch[1] || scrollMatch[2]).toLowerCase();
-    sendToExtension('scroll', { direction, amount: 400 });
+  const t = text.toLowerCase().trim();
+
+  // Gesture triggers
+  if (/start\s+gesture|gesture\s+control|gesture\s+mode|open\s+gesture/i.test(t)) return 'gesture-setup';
+  if (/stop\s+gesture|end\s+gesture|close\s+gesture/i.test(t))                    return 'gesture-stop';
+
+  // Scroll — match "scroll up/down", "scroll to top/bottom", "go up/down"
+  const scrollM = t.match(/scroll\s+(up|down|left|right|top|bottom)|go\s+(up|down)|page\s+(up|down)/i);
+  if (scrollM) {
+    const dir = (scrollM[1] || scrollM[2] || scrollM[3]).toLowerCase();
+    const amount = /top|bottom/.test(dir) ? 9999 : 500;
+    sendToExtension('scroll', { direction: dir, amount });
+    _chatAdd?.(`⬆️ Scrolling ${dir}…`, 'bot');
     return true;
   }
 
-  const clickRx = /\bclick\b|\btap\b/i;
-  if (clickRx.test(text)) {
-    sendToExtension('click', { target: '' });
+  // Click — "click [target]"
+  const clickM = t.match(/\bclick(?:\s+on)?\s+(.+)|^tap\s+(.+)/i);
+  if (clickM) {
+    const target = (clickM[1] || clickM[2] || '').trim();
+    sendToExtension('click', { target }, (r) => {
+      _chatAdd?.(r.ok ? `✅ Clicked "${r.result?.clicked || target}"` : `⚠️ Click failed: ${r.error}`, 'bot');
+    });
+    _chatAdd?.(`🖱️ Clicking "${target || 'focused element'}"…`, 'bot');
     return true;
   }
 
-  if (/start\s+gesture|gesture\s+control|gesture\s+mode/i.test(text)) {
-    return 'gesture-setup';
+  // Type — "type [text]" or "type [text] in [field]"
+  const typeM = t.match(/\btype\s+(.+?)(?:\s+in(?:to)?\s+(.+))?$/i);
+  if (typeM) {
+    const txt   = typeM[1].trim();
+    const field = typeM[2]?.trim() || '';
+    sendToExtension('type', { text: txt, field }, (r) => {
+      _chatAdd?.(r.ok ? `⌨️ Typed "${txt}"` : `⚠️ Type failed: ${r.error}`, 'bot');
+    });
+    _chatAdd?.(`⌨️ Typing "${txt}"…`, 'bot');
+    return true;
   }
 
-  if (/stop\s+gesture|end\s+gesture/i.test(text)) {
-    return 'gesture-stop';
+  // Read page
+  if (/\bread\s+(the\s+)?page|\bread\s+(the\s+)?screen|what(?:'s|\s+is)\s+on\s+(the\s+)?page/i.test(t)) {
+    sendToExtension('read', {}, (r) => {
+      if (!r.ok) { _chatAdd?.(`⚠️ Read failed: ${r.error}`, 'bot'); return; }
+      const content = r.result?.text || '';
+      const title   = r.result?.title || '';
+      _chatAdd?.(`📄 **${title}**\n\n${content.slice(0, 1200)}${content.length > 1200 ? '\n\n_…(truncated)_' : ''}`, 'bot');
+    });
+    _chatAdd?.('📖 Reading the page…', 'bot');
+    return true;
   }
+
+  // Navigate
+  const navM = t.match(/\bgo\s+to\s+(?:https?:\/\/)?([^\s]+\.[^\s]+)/i);
+  if (navM) {
+    const url = navM[1].startsWith('http') ? navM[1] : 'https://' + navM[1];
+    sendToExtension('navigate', { url }, (r) => {
+      _chatAdd?.(r.ok ? `🌐 Navigating to ${url}` : `⚠️ Navigate failed: ${r.error}`, 'bot');
+    });
+    _chatAdd?.(`🌐 Going to ${url}…`, 'bot');
+    return true;
+  }
+
+  // Back / refresh
+  if (/\bgo\s+back\b/i.test(t))   { sendToExtension('back',    {}, r => _chatAdd?.(r.ok ? '⬅️ Went back' : `⚠️ ${r.error}`, 'bot')); return true; }
+  if (/\brefresh\b|\breload\b/i.test(t)) { sendToExtension('refresh', {}, r => _chatAdd?.(r.ok ? '🔄 Refreshed' : `⚠️ ${r.error}`, 'bot')); return true; }
 
   return null;
 }
 
-export function sendToExtension(action, payload) {
-  _send(action, payload);
+export function sendToExtension(action, payload, onReply) {
+  _send(action, payload || {}, onReply);
 }
