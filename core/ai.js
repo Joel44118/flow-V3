@@ -17,6 +17,7 @@ import { getSkillContext } from "./skills.js";
 import { getExtractedMemoryContext } from "./memextract.js";
 import { Projects } from "./projects.js";
 import { getAgentContext, restoreAgent } from "./agent.js";
+import { getFeedbackContext } from "./feedback.js";
 
 // UI refs injected at init (avoids circular imports)
 let _chat = null;
@@ -26,7 +27,7 @@ export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 // Restore persisted agent on boot
 restoreAgent();
 
-function buildPrompt(weather, ragContext, skillContext, extractedMemory) {
+function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbackCtx) {
   const p = Memory.getProfile();
   const ragBlock = ragContext
     ? `\nKNOWLEDGE BASE (relevant to this query):\n${ragContext}\n`
@@ -34,6 +35,10 @@ function buildPrompt(weather, ragContext, skillContext, extractedMemory) {
 
   const extractedBlock = extractedMemory
     ? `\nJOEL'S KNOWN CONTEXT (from past conversations):\n${extractedMemory}\n`
+    : "";
+
+  const feedbackBlock = feedbackCtx
+    ? `\nJOEL'S FEEDBACK (learn from this — highest priority):\n${feedbackCtx}\n`
     : "";
 
   const projectsCtx = Projects.toPromptContext();
@@ -53,7 +58,7 @@ function buildPrompt(weather, ragContext, skillContext, extractedMemory) {
   return `${CONFIG.PERSONALITY}
 
 ${selfKnowledgeBlock()}
-${ragBlock}${agentBlock}${skillBlock}${extractedBlock}${projectsBlock}
+${feedbackBlock}${ragBlock}${agentBlock}${skillBlock}${extractedBlock}${projectsBlock}
 LIVE CONTEXT:
 Time: ${getTime()}
 Date: ${getDate()}
@@ -121,7 +126,7 @@ export async function sendMessage(overrideText, opts = {}) {
     const extractedMemory = getExtractedMemoryContext();
 
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory) },
+      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext()) },
       ...Memory.forAPI(),
     ];
 
@@ -167,7 +172,7 @@ export async function sendToAI(text) {
     const extractedMemory = getExtractedMemoryContext();
 
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory) },
+      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext()) },
       ...Memory.forAPI(),
       { role: "user", content: text },
     ];
