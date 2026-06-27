@@ -1,9 +1,11 @@
-// ui/gesture.js (v15)
+// ui/gesture.js (v16)
 // FIXES:
-// - EMA smoothing on all landmarks — eliminates wobble
-// - Strict gesture state machine — point vs pinch vs scroll never bleed
-// - Purple skeleton (#a78bfa) + cyan joints (#38bdf8)
-// - Electron IPC for OS cursor when available, extension fallback for browser
+// - modelComplexity: 0 (was 1) — much faster, less lag
+// - EMA alpha 0.5 (was 0.35) — snappier tracking
+// - TWO-FINGER SWIPE for scroll (index + middle extended, no thumb)
+//   replaces pinch-slide which was too ambiguous
+// - Electron dot: reads real screen size via IPC so coordinates map correctly
+// - Canvas fix: appended inside video container with inset:0
 
 import { sendToExtension } from './screencontrol.js';
 
@@ -19,63 +21,74 @@ let _hands = null, _camera = null, _animId = null;
 let _active = false, _wrapper = null;
 
 // ── EMA smoothing ─────────────────────────────────────────────────────────
-// Reduces landmark jitter without adding lag
-const EMA_ALPHA = 0.35;  // lower = smoother but laggier; 0.35 is a good balance
-let _smoothed = null;    // smoothed landmark array, same shape as MediaPipe output
+const EMA = 0.5;   // higher = snappier but slightly more jitter
+let _smoothed = null;
 
-function _smooth(landmarks) {
-  if (!_smoothed || _smoothed.length !== landmarks.length) {
-    // First frame — initialise directly
-    _smoothed = landmarks.map(p => ({ x: p.x, y: p.y, z: p.z }));
+function _smooth(lm) {
+  if (!_smoothed || _smoothed.length !== lm.length) {
+    _smoothed = lm.map(p => ({ x: p.x, y: p.y, z: p.z || 0 }));
     return _smoothed;
   }
-  for (let i = 0; i < landmarks.length; i++) {
-    _smoothed[i].x += EMA_ALPHA * (landmarks[i].x - _smoothed[i].x);
-    _smoothed[i].y += EMA_ALPHA * (landmarks[i].y - _smoothed[i].y);
-    _smoothed[i].z += EMA_ALPHA * ((landmarks[i].z || 0) - (_smoothed[i].z || 0));
+  for (let i = 0; i < lm.length; i++) {
+    _smoothed[i].x += EMA * (lm[i].x - _smoothed[i].x);
+    _smoothed[i].y += EMA * (lm[i].y - _smoothed[i].y);
+    _smoothed[i].z += EMA * ((lm[i].z || 0) - _smoothed[i].z);
   }
   return _smoothed;
 }
 
 // ── Gesture state machine ─────────────────────────────────────────────────
-// States: IDLE → POINTING → PINCH_HOLD → SCROLL → PALM
-// Strict transitions prevent bleed between gestures
-const STATE = { IDLE: 0, POINTING: 1, PINCH_HOLD: 2, SCROLL: 3, PALM: 4 };
-let _state          = STATE.IDLE;
-let _pinchFrames    = 0;      // consecutive frames thumb+index are close
-let _releasedFrames = 0;      // consecutive frames pinch is open (debounce)
-let _pinchAnchorY   = null;   // y at which pinch started (for scroll delta)
-let _lastScrollDir  = null;
-let _palmCooldown   = 0;
-let _curX           = 0.5;    // normalised cursor position (0..1)
-let _curY           = 0.5;
+// IDLE → POINTING (1 finger) → PINCH_HOLD → (release) → click fired
+//       → TWO_FINGER (scroll)
+//       → PALM → right-click
+const G = { IDLE: 0, POINTING: 1, PINCH_HOLD: 2, TWO_FINGER: 3, PALM: 4 };
+let _state         = G.IDLE;
+let _pinchFrames   = 0;
+let _releaseFrames = 0;
+let _palmCooldown  = 0;
+let _twoFingerBase = null;  // y position where two-finger gesture started
+let _curX = 0.5, _curY = 0.5;
 
-// Tuning constants — tested values
-const PINCH_ON_DIST    = 0.048;  // thumb-index dist to enter pinch
-const PINCH_OFF_DIST   = 0.072;  // must open wider than this to exit pinch
-const CLICK_FRAMES_MIN = 8;      // hold pinch this many frames for click
-const SCROLL_TRIGGER_Y = 0.055;  // y-travel while pinched before entering scroll
-const SCROLL_STEP      = 100;    // pixels per scroll event
-const RELEASE_FRAMES   = 4;      // open frames before exiting pinch state
-const POINT_MIN_EXT    = 1;      // at least 1 finger extended to move cursor
-const POINT_MAX_EXT    = 2;      // allow 1 or 2 fingers for pointing
+// Constants
+const PINCH_ON    = 0.045;   // thumb-index normalised distance to enter pinch
+const PINCH_OFF   = 0.075;   // must open wider than this to exit pinch
+const CLICK_HOLD  = 7;       // frames to hold pinch before firing click
+const REL_FRAMES  = 4;       // open frames to confirm pinch released
+const SCROLL_DEAD = 0.02;    // minimum y-travel for two-finger scroll trigger
 
 const PROXY = '/api/mediapipe?f=';
 const IS_ELECTRON = !!window.__flowElectron;
 
-function _sendGesture(action, payload) {
-  if (IS_ELECTRON) window.__flowElectron.send(action, payload);
-  else sendToExtension(action, payload);
+// Screen dimensions — resolved once, updated if Electron responds
+let _sw = window.innerWidth;
+let _sh = window.innerHeight;
+
+async function _resolveScreenSize() {
+  if (IS_ELECTRON) {
+    try {
+      const sz = await window.__flowElectron.getScreenSize();
+      _sw = sz.width;
+      _sh = sz.height;
+      console.log('[Gesture] Electron screen:', _sw, 'x', _sh);
+    } catch (_) {}
+  } else {
+    _sw = window.screen.width;
+    _sh = window.screen.height;
+  }
 }
 
-// ── Script loader ─────────────────────────────────────────────────────────
+function _act(action, payload) {
+  if (IS_ELECTRON) window.__flowElectron.send(action, payload);
+  else             sendToExtension(action, payload);
+}
+
 function _loadScript(filename) {
   const src = PROXY + filename;
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[data-mp="${filename}"]`)) { resolve(); return; }
     const s = document.createElement('script');
     s.src = src; s.dataset.mp = filename; s.async = true;
-    s.onload = resolve;
+    s.onload  = resolve;
     s.onerror = () => reject(new Error(`Failed to load: ${filename}`));
     document.head.appendChild(s);
   });
@@ -85,18 +98,20 @@ function _loadScript(filename) {
 export async function start(videoEl) {
   try {
     if (_active) return;
-    _active = true;
-    _video  = videoEl;
+    _active   = true;
+    _video    = videoEl;
     _smoothed = null;
-    _state    = STATE.IDLE;
+    _state    = G.IDLE;
+
+    await _resolveScreenSize();
 
     if (_Chat) _Chat.add(
       '🎥 **Gesture Control Loading...**\n\n' +
-      (IS_ELECTRON ? '🖥️ **Electron mode** — controls OS cursor\n\n' : '') +
+      (IS_ELECTRON ? '🖥️ **Desktop mode** — controls OS cursor\n\n' : '') +
       '**Gestures:**\n' +
-      '☝️ **1–2 fingers** = Move cursor\n' +
-      '🤏 **Pinch & hold** = Click\n' +
-      '🤏↕ **Pinch & slide** = Scroll\n' +
+      '☝️ **1 finger** = Move cursor\n' +
+      '🤏 **Pinch** = Click\n' +
+      '✌️ **2 fingers swipe** = Scroll up/down\n' +
       '✋ **Open palm** = Right-click\n\n' +
       '_Loading MediaPipe..._', 'bot');
 
@@ -104,40 +119,33 @@ export async function start(videoEl) {
     await _loadScript('camera_utils.js');
     if (!window.Hands || !window.Camera) throw new Error('MediaPipe not available after load');
 
-    // Canvas wrapper — appended INSIDE the video's parent (vision-window div)
-    // using inset:0 so it perfectly overlays the video regardless of where
-    // the floating window is on screen.
-    // NEVER use offsetLeft/offsetTop here — vision-window is position:fixed
-    // so those values are always 0 → causes the jump-to-far-left bug.
-    const videoParent = _video.parentElement;  // the .vision-window div
+    // ── Canvas overlay — inside video container, inset:0 ─────────────────
+    const videoParent = _video.parentElement;
     videoParent.style.position = 'relative';
-
-    const vw = _video.offsetWidth  || 320;
-    const vh = _video.offsetHeight || 240;
 
     _wrapper = document.createElement('div');
     Object.assign(_wrapper.style, {
-      position: 'absolute', pointerEvents: 'none', zIndex: '10000',
-      inset: '0',           // fills the container perfectly, no coordinate math
+      position: 'absolute', pointerEvents: 'none',
+      zIndex: '10000', inset: '0',
     });
-    videoParent.appendChild(_wrapper);  // child of vision-window, not a sibling
+    videoParent.appendChild(_wrapper);
 
+    const vw = _video.offsetWidth  || 320;
+    const vh = _video.offsetHeight || 240;
     _canvas = document.createElement('canvas');
-    // Use actual video resolution once loaded; fall back to offsetWidth
     _canvas.width  = _video.videoWidth  || vw;
     _canvas.height = _video.videoHeight || vh;
-    Object.assign(_canvas.style, {
-      position: 'absolute', top: 0, left: 0, width: '100%', height: '100%'
-    });
+    Object.assign(_canvas.style, { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' });
     _ctx = _canvas.getContext('2d', { willReadFrequently: true });
     _wrapper.appendChild(_canvas);
 
+    // ── MediaPipe Hands — complexity 0 for real-time speed ────────────────
     _hands = new window.Hands({ locateFile: f => PROXY + f });
     _hands.setOptions({
-      maxNumHands: 1,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.6,
+      maxNumHands:            1,
+      modelComplexity:        0,    // 0 = fast, 1 = accurate — use 0 for real-time
+      minDetectionConfidence: 0.65,
+      minTrackingConfidence:  0.55,
     });
     _hands.onResults(_onResults);
 
@@ -149,9 +157,9 @@ export async function start(videoEl) {
 
     if (_Chat) _Chat.add(
       '✅ **Gesture Control Ready!**\n\n' +
-      '• ☝️ Point (1–2 fingers) → move cursor\n' +
-      '• 🤏 Pinch + hold still → click\n' +
-      '• 🤏↕ Pinch + slide up/down → scroll\n' +
+      '• ☝️ Point (1 finger) → move cursor\n' +
+      '• 🤏 Pinch thumb+index → click\n' +
+      '• ✌️ Two fingers + swipe up/down → scroll\n' +
       '• ✋ Open palm → right-click\n\n' +
       '_Say "stop gesture control" to exit._', 'bot');
 
@@ -165,142 +173,133 @@ export async function start(videoEl) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-function _dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function _d(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
-function _countExtended(lm) {
-  // Thumb: compare tip x vs IP x (mirrored video)
-  const thumbExt = lm[4].x < lm[3].x;
+// Count fingers: which fingertips are above their PIP joint
+// Index=8, Middle=12, Ring=16, Pinky=20 / PIPs: 6,10,14,18
+// Thumb counted separately (x-axis comparison, works mirrored)
+function _fingers(lm) {
+  const thumbExt = lm[4].x < lm[3].x;   // mirrored feed: tip left of IP = extended
   let n = thumbExt ? 1 : 0;
-  // Other fingers: tip y < pip y means extended
   const tips = [8, 12, 16, 20];
   const pips = [6, 10, 14, 18];
-  for (let i = 0; i < tips.length; i++) {
-    if (lm[tips[i]].y < lm[pips[i]].y) n++;
-  }
+  for (let i = 0; i < 4; i++) if (lm[tips[i]].y < lm[pips[i]].y - 0.02) n++;
   return n;
 }
 
-// ── Results handler ───────────────────────────────────────────────────────
+// Check specifically: index + middle extended, ring + pinky closed, no thumb
+// = the "peace / scroll" gesture
+function _isTwoFingerScroll(lm) {
+  const thumbClosed = lm[4].x > lm[3].x;
+  const indexExt    = lm[8].y  < lm[6].y  - 0.02;
+  const middleExt   = lm[12].y < lm[10].y - 0.02;
+  const ringClosed  = lm[16].y > lm[14].y;
+  const pinkyClosed = lm[20].y > lm[18].y;
+  return thumbClosed && indexExt && middleExt && ringClosed && pinkyClosed;
+}
+
+// ── Results ───────────────────────────────────────────────────────────────
 function _onResults(results) {
   if (!_active || !_canvas) return;
   _ctx.clearRect(0, 0, _canvas.width, _canvas.height);
 
   const raw = results.multiHandLandmarks?.[0];
   if (!raw) {
-    _smoothed = null;
-    _state = STATE.IDLE;
-    _pinchFrames = 0; _releasedFrames = 0;
+    _smoothed = null; _state = G.IDLE;
+    _pinchFrames = 0; _releaseFrames = 0; _twoFingerBase = null;
     _drawLabel('👋 Show hand');
     return;
   }
 
-  const lm  = _smooth(raw);   // EMA-smoothed landmarks
-  const ext = _countExtended(lm);
-  const pd  = _dist(lm[4], lm[8]);  // thumb-index distance
-  const sw  = IS_ELECTRON ? screen.width  : window.innerWidth;
-  const sh  = IS_ELECTRON ? screen.height : window.innerHeight;
+  const lm  = _smooth(raw);
+  const pd  = _d(lm[4], lm[8]);
+  const ext = _fingers(lm);
+  const twoFinger = _isTwoFingerScroll(lm);
 
   // ── State machine ────────────────────────────────────────────────────
   switch (_state) {
 
-    case STATE.IDLE:
-    case STATE.POINTING: {
-      if (pd < PINCH_ON_DIST) {
-        // Entering pinch
-        _state = STATE.PINCH_HOLD;
-        _pinchFrames  = 1;
-        _releasedFrames = 0;
-        _pinchAnchorY = lm[8].y;
+    case G.IDLE:
+    case G.POINTING: {
+      if (twoFinger) {
+        _state = G.TWO_FINGER;
+        _twoFingerBase = lm[8].y;
+      } else if (pd < PINCH_ON) {
+        _state = G.PINCH_HOLD;
+        _pinchFrames   = 1;
+        _releaseFrames = 0;
       } else if (ext === 5 && _palmCooldown <= 0) {
-        // Open palm
-        _state = STATE.PALM;
-        _sendGesture('right_click', { x: Math.round(_curX * sw), y: Math.round(_curY * sh) });
-        _palmCooldown = 30;
-        setTimeout(() => { _state = STATE.IDLE; }, 500);
-      } else if (ext >= POINT_MIN_EXT && ext <= POINT_MAX_EXT) {
-        // Pointing — update cursor
-        _state = STATE.POINTING;
-        _curX = lm[8].x;
-        _curY = lm[8].y;
-        _sendGesture('cursor_move', {
-          x: Math.round(_curX * sw),
-          y: Math.round(_curY * sh),
-        });
+        _state = G.PALM;
+        _act('right_click', { x: Math.round(_curX * _sw), y: Math.round(_curY * _sh) });
+        _palmCooldown = 25;
+        setTimeout(() => { if (_state === G.PALM) _state = G.IDLE; }, 500);
+      } else if (ext >= 1 && ext <= 2 && !twoFinger) {
+        _state = G.POINTING;
+        _curX  = lm[8].x;
+        _curY  = lm[8].y;
+        _act('cursor_move', { x: Math.round(_curX * _sw), y: Math.round(_curY * _sh) });
       } else {
-        _state = STATE.IDLE;
+        _state = G.IDLE;
       }
       break;
     }
 
-    case STATE.PINCH_HOLD: {
-      if (pd > PINCH_OFF_DIST) {
-        _releasedFrames++;
-        if (_releasedFrames >= RELEASE_FRAMES) {
-          // Pinch released — fire click if we never entered scroll
-          _sendGesture('gesture_click', {
-            x: Math.round(_curX * sw),
-            y: Math.round(_curY * sh),
-          });
-          _state = STATE.IDLE;
-          _pinchFrames = 0; _releasedFrames = 0;
-          _pinchAnchorY = null;
+    case G.PINCH_HOLD: {
+      if (pd > PINCH_OFF) {
+        _releaseFrames++;
+        if (_releaseFrames >= REL_FRAMES) {
+          // Released — fire click
+          _act('gesture_click', { x: Math.round(_curX * _sw), y: Math.round(_curY * _sh) });
+          _state = G.IDLE; _pinchFrames = 0; _releaseFrames = 0;
+          _drawClickFlash();
         }
       } else {
-        _releasedFrames = 0;
+        _releaseFrames = 0;
         _pinchFrames++;
-        const dy = lm[8].y - _pinchAnchorY;
-        if (Math.abs(dy) > SCROLL_TRIGGER_Y) {
-          // Slid enough — switch to scroll mode
-          _state = STATE.SCROLL;
-          _lastScrollDir = dy < 0 ? 'up' : 'down';
-        }
       }
       break;
     }
 
-    case STATE.SCROLL: {
-      if (pd > PINCH_OFF_DIST) {
-        _releasedFrames++;
-        if (_releasedFrames >= RELEASE_FRAMES) {
-          _state = STATE.IDLE;
-          _pinchFrames = 0; _releasedFrames = 0;
-          _pinchAnchorY = null;
-        }
+    case G.TWO_FINGER: {
+      if (!twoFinger) {
+        // Left the two-finger gesture
+        _state = G.IDLE; _twoFingerBase = null;
       } else {
-        _releasedFrames = 0;
-        const dy = lm[8].y - _pinchAnchorY;
-        const dir = dy < 0 ? 'up' : 'down';
-        _lastScrollDir = dir;
-        _sendGesture('scroll', { direction: dir, amount: SCROLL_STEP });
+        const dy = lm[8].y - _twoFingerBase;
+        if (Math.abs(dy) > SCROLL_DEAD) {
+          const dir = dy < 0 ? 'up' : 'down';
+          _act('scroll', { direction: dir, amount: 120 });
+          // Rolling anchor — scroll continuously as finger moves
+          _twoFingerBase += dy * 0.3;
+        }
       }
       break;
     }
 
-    case STATE.PALM:
-      // Wait for cooldown to reset (handled above)
+    case G.PALM:
+      // hold briefly then reset
       break;
   }
 
   if (_palmCooldown > 0) _palmCooldown--;
 
-  // ── Draw ─────────────────────────────────────────────────────────────
   _drawSkeleton(lm);
   _drawCursor();
-  _drawLabel(_stateLabel(ext, pd));
+  _drawLabel(_label(ext, twoFinger, pd));
 }
 
-function _stateLabel(ext, pd) {
+function _label(ext, two, pd) {
+  if (two) return '✌️ Scroll';
   switch (_state) {
-    case STATE.POINTING:   return `☝️ ${ext} finger${ext !== 1 ? 's' : ''}`;
-    case STATE.PINCH_HOLD: return `🤏 Hold to click…`;
-    case STATE.SCROLL:     return `↕ Scroll ${_lastScrollDir || ''}`;
-    case STATE.PALM:       return `✋ Right-click`;
-    default:               return `${ext} finger${ext !== 1 ? 's' : ''}`;
+    case G.POINTING:   return `☝️ ${ext} finger${ext !== 1 ? 's' : ''}`;
+    case G.PINCH_HOLD: return `🤏 Click (${_pinchFrames}/${CLICK_HOLD})`;
+    case G.PALM:       return '✋ Right-click';
+    default:           return `${ext} finger${ext !== 1 ? 's' : ''}`;
   }
 }
 
-// ── Draw helpers ──────────────────────────────────────────────────────────
-const CONNECTIONS = [
+// ── Drawing ───────────────────────────────────────────────────────────────
+const BONES = [
   [0,1],[1,2],[2,3],[3,4],
   [0,5],[5,6],[6,7],[7,8],
   [0,9],[9,10],[10,11],[11,12],
@@ -311,30 +310,25 @@ const CONNECTIONS = [
 
 function _drawSkeleton(lm) {
   const cw = _canvas.width, ch = _canvas.height;
-  // Bones — Flow purple
   _ctx.strokeStyle = '#a78bfa';
   _ctx.lineWidth   = 2.5;
   _ctx.lineCap     = 'round';
-  for (const [s, e] of CONNECTIONS) {
+  for (const [s, e] of BONES) {
     _ctx.beginPath();
     _ctx.moveTo(lm[s].x * cw, lm[s].y * ch);
     _ctx.lineTo(lm[e].x * cw, lm[e].y * ch);
     _ctx.stroke();
   }
-  // Joints — cyan
   for (const p of lm) {
     const x = p.x * cw, y = p.y * ch;
     _ctx.fillStyle = '#38bdf8';
-    _ctx.beginPath(); _ctx.arc(x, y, 4.5, 0, Math.PI * 2); _ctx.fill();
-    // White core
-    _ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    _ctx.beginPath(); _ctx.arc(x, y, 1.8, 0, Math.PI * 2); _ctx.fill();
+    _ctx.beginPath(); _ctx.arc(x, y, 4, 0, Math.PI * 2); _ctx.fill();
+    _ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    _ctx.beginPath(); _ctx.arc(x, y, 1.5, 0, Math.PI * 2); _ctx.fill();
   }
-  // Fingertip highlight — slightly bigger
   for (const tip of [4, 8, 12, 16, 20]) {
     const x = lm[tip].x * cw, y = lm[tip].y * ch;
-    _ctx.strokeStyle = '#a78bfa';
-    _ctx.lineWidth   = 1.5;
+    _ctx.strokeStyle = '#c4b5fd'; _ctx.lineWidth = 1.5;
     _ctx.beginPath(); _ctx.arc(x, y, 7, 0, Math.PI * 2); _ctx.stroke();
   }
 }
@@ -342,57 +336,50 @@ function _drawSkeleton(lm) {
 function _drawCursor() {
   const cx = _curX * _canvas.width;
   const cy = _curY * _canvas.height;
-  const pinching = _state === STATE.PINCH_HOLD || _state === STATE.SCROLL;
-  const scrolling = _state === STATE.SCROLL;
+  const scrolling = _state === G.TWO_FINGER;
+  const clicking  = _state === G.PINCH_HOLD;
+  const color     = scrolling ? '#facc15' : clicking ? '#4ade80' : '#a78bfa';
+  const radius    = clicking ? 18 : 13;
 
-  const color = scrolling  ? '#facc15'
-              : pinching   ? '#4ade80'
-              : '#a78bfa';
-
-  // Outer ring
-  _ctx.strokeStyle = color;
-  _ctx.lineWidth   = 2.5;
   _ctx.globalAlpha = 0.85;
-  _ctx.beginPath(); _ctx.arc(cx, cy, pinching ? 18 : 13, 0, Math.PI * 2); _ctx.stroke();
-  // Fill
-  _ctx.fillStyle   = color;
-  _ctx.globalAlpha = 0.2;
-  _ctx.beginPath(); _ctx.arc(cx, cy, pinching ? 18 : 13, 0, Math.PI * 2); _ctx.fill();
-  // Inner dot
+  _ctx.strokeStyle = color; _ctx.lineWidth = 2.5;
+  _ctx.beginPath(); _ctx.arc(cx, cy, radius, 0, Math.PI * 2); _ctx.stroke();
+  _ctx.fillStyle = color; _ctx.globalAlpha = 0.18;
+  _ctx.beginPath(); _ctx.arc(cx, cy, radius, 0, Math.PI * 2); _ctx.fill();
   _ctx.globalAlpha = 1;
-  _ctx.fillStyle   = '#fff';
-  _ctx.beginPath(); _ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); _ctx.fill();
+  _ctx.fillStyle = '#fff';
+  _ctx.beginPath(); _ctx.arc(cx, cy, 3, 0, Math.PI * 2); _ctx.fill();
+}
+
+function _drawClickFlash() {
+  const cx = _curX * _canvas.width, cy = _curY * _canvas.height;
+  _ctx.globalAlpha = 0.85;
+  _ctx.fillStyle = '#4ade80';
+  _ctx.beginPath(); _ctx.arc(cx, cy, 22, 0, Math.PI * 2); _ctx.fill();
+  _ctx.globalAlpha = 1;
+  _ctx.fillStyle = '#fff'; _ctx.font = 'bold 12px system-ui'; _ctx.textAlign = 'center'; _ctx.textBaseline = 'middle';
+  _ctx.fillText('CLICK', cx, cy);
+  _ctx.textBaseline = 'alphabetic';
 }
 
 function _drawLabel(text) {
   _ctx.globalAlpha = 1;
-  // Pill background
-  const metrics = _ctx.measureText(text);
-  const pw = metrics.width + 20, ph = 26, px = 8, py = 8;
-  _ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  _roundRect(px, py, pw, ph, 8);
-  _ctx.fill();
-  // Text
-  _ctx.fillStyle = '#a78bfa';
-  _ctx.font      = 'bold 13px system-ui,sans-serif';
-  _ctx.textAlign = 'left';
-  _ctx.textBaseline = 'middle';
-  _ctx.fillText(text, px + 10, py + ph / 2);
+  const pad = 10, ph = 24, py = 8;
+  _ctx.font = 'bold 13px system-ui,sans-serif';
+  const pw = _ctx.measureText(text).width + pad * 2;
+  _ctx.fillStyle = 'rgba(0,0,0,0.42)';
+  _roundRect(8, py, pw, ph, 8); _ctx.fill();
+  _ctx.fillStyle = '#a78bfa'; _ctx.textAlign = 'left'; _ctx.textBaseline = 'middle';
+  _ctx.fillText(text, 8 + pad, py + ph / 2);
   _ctx.textBaseline = 'alphabetic';
 }
 
 function _roundRect(x, y, w, h, r) {
   _ctx.beginPath();
-  _ctx.moveTo(x + r, y);
-  _ctx.lineTo(x + w - r, y);
-  _ctx.arcTo(x + w, y, x + w, y + r, r);
-  _ctx.lineTo(x + w, y + h - r);
-  _ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
-  _ctx.lineTo(x + r, y + h);
-  _ctx.arcTo(x, y + h, x, y + h - r, r);
-  _ctx.lineTo(x, y + r);
-  _ctx.arcTo(x, y, x + r, y, r);
-  _ctx.closePath();
+  _ctx.moveTo(x+r,y); _ctx.lineTo(x+w-r,y); _ctx.arcTo(x+w,y,x+w,y+r,r);
+  _ctx.lineTo(x+w,y+h-r); _ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  _ctx.lineTo(x+r,y+h); _ctx.arcTo(x,y+h,x,y+h-r,r);
+  _ctx.lineTo(x,y+r); _ctx.arcTo(x,y,x+r,y,r); _ctx.closePath();
 }
 
 function _animate() { if (_active) _animId = requestAnimationFrame(_animate); }
@@ -402,8 +389,7 @@ export function stop() {
   if (_animId)  cancelAnimationFrame(_animId);
   if (_camera)  _camera.stop();
   if (_wrapper) _wrapper.remove();
-  _smoothed = null;
-  _state    = STATE.IDLE;
+  _smoothed = null; _state = G.IDLE;
   _video = _canvas = _ctx = _hands = _camera = _wrapper = null;
 }
 
