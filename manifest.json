@@ -1,14 +1,19 @@
 {
   "name": "Flow AI",
   "short_name": "Flow",
-  "description": "Your personal AI assistant — voice, gesture, and screen control",
+  "description": "Your personal AI assistant",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#020617",
-  "theme_color": "#38bdf8",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#060a1a",
+  "theme_color": "#060a1a",
   "orientation": "any",
+  "prefer_related_applications": false,
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }
