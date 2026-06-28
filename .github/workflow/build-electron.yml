@@ -1,0 +1,44 @@
+name: Build Flow Desktop App
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'flow-electron/**'
+      - '.github/workflows/build-electron.yml'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: flow-electron
+        run: npm install
+
+      - name: Install robotjs
+        working-directory: flow-electron
+        run: npm install @jitsi/robotjs --ignore-scripts
+        continue-on-error: true
+
+      - name: Build Windows portable exe
+        working-directory: flow-electron
+        run: npm run build-win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flow-AI-Windows
+          path: flow-electron/dist/*.exe
+          retention-days: 30
