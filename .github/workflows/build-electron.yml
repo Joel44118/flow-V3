@@ -16,46 +16,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node 20
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install dependencies
+      - name: Install Electron + builder only (no robotjs)
         working-directory: flow-electron
-        run: npm install
+        run: npm install --ignore-scripts
+        env:
+          npm_config_ignore_scripts: true
 
-      - name: Install robotjs (best effort)
+      - name: Build portable exe
         working-directory: flow-electron
-        run: npm install @jitsi/robotjs --ignore-scripts
-        continue-on-error: true
-
-      - name: Check icon exists
-        working-directory: flow-electron
-        shell: bash
-        run: |
-          if [ ! -f icon.png ]; then
-            echo "icon.png missing — copying from repo root"
-            cp ../icon-512.png icon.png || cp ../icon-192.png icon.png || echo "no icon found, build may warn"
-          fi
-
-      - name: Build Windows portable exe
-        working-directory: flow-electron
-        run: npx electron-builder --win portable --x64
+        shell: cmd
+        run: npx --yes electron-builder --win portable --x64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: List dist folder
+      - name: Show dist contents
         working-directory: flow-electron
-        shell: bash
-        run: ls -la dist/ || echo "dist folder empty"
+        shell: cmd
+        run: dir dist\ /s /b 2>nul || echo dist folder is empty
 
-      - name: Upload exe
+      - name: Upload exe artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Flow-AI-Windows-exe
-          path: |
-            flow-electron/dist/*.exe
-            flow-electron/dist/**/*.exe
+          name: Flow-AI-Windows
+          path: flow-electron/dist/*.exe
           if-no-files-found: warn
           retention-days: 30
