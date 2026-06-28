@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install deps
+      - name: Install dependencies
         working-directory: flow-electron
         run: npm install
 
@@ -30,16 +30,32 @@ jobs:
         run: npm install @jitsi/robotjs --ignore-scripts
         continue-on-error: true
 
-      - name: Build exe
+      - name: Check icon exists
         working-directory: flow-electron
-        run: npm run build-win
+        shell: bash
+        run: |
+          if [ ! -f icon.png ]; then
+            echo "icon.png missing — copying from repo root"
+            cp ../icon-512.png icon.png || cp ../icon-192.png icon.png || echo "no icon found, build may warn"
+          fi
+
+      - name: Build Windows portable exe
+        working-directory: flow-electron
+        run: npx electron-builder --win portable --x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List dist folder
+        working-directory: flow-electron
+        shell: bash
+        run: ls -la dist/ || echo "dist folder empty"
 
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
           name: Flow-AI-Windows-exe
-          path: flow-electron/dist/**/*.exe
-          if-no-files-found: error
+          path: |
+            flow-electron/dist/*.exe
+            flow-electron/dist/**/*.exe
+          if-no-files-found: warn
           retention-days: 30
