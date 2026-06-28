@@ -359,6 +359,9 @@ brainFile.addEventListener("change", async e => {
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 (async () => {
+  // Auth gate — blocks until correct PIN entered
+  await initAuth();
+
   await loadFromCloud();
   Chat.loadHistory();
   Alarms.init((t) => Speech.speak(t));
@@ -367,11 +370,22 @@ brainFile.addEventListener("change", async e => {
   startWakeListener();
   startGoalDeadlineWatcher((msg) => Speech.speak(msg), (msg, who) => Chat.add(msg, who));
 
-  const hour     = new Date().getHours();
-  const greeting = hour < 12 ? "Morning" : hour < 17 ? "Afternoon" : "Evening";
-  const name     = Memory.getProfile().nickname || Memory.getProfile().name || "Boss";
-  const boot     = `${greeting}, ${name}. Flow online.`;
-  Chat.add(boot, "bot");
-  Orb.setState("speaking");
-  Speech.speak(boot, () => Orb.setState("idle"));
+  // Greeting throttle — only greet if >5 hours since last greeting
+  const GREET_KEY      = "flow_last_greeted";
+  const GREET_INTERVAL = 5 * 60 * 60 * 1000; // 5 hours
+  const lastGreeted    = parseInt(localStorage.getItem(GREET_KEY) || "0", 10);
+  const shouldGreet    = Date.now() - lastGreeted > GREET_INTERVAL;
+
+  if (shouldGreet) {
+    const hour     = new Date().getHours();
+    const greeting = hour < 12 ? "Morning" : hour < 17 ? "Afternoon" : "Evening";
+    const name     = Memory.getProfile().nickname || Memory.getProfile().name || "Boss";
+    const boot     = `${greeting}, ${name}. Flow online.`;
+    Chat.add(boot, "bot");
+    Orb.setState("speaking");
+    Speech.speak(boot, () => Orb.setState("idle"));
+    localStorage.setItem(GREET_KEY, String(Date.now()));
+  } else {
+    Orb.setState("idle");
+  }
 })();
