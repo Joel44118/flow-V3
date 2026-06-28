@@ -48,6 +48,7 @@
     <button class="brain-action" id="brain-export">Export Brain</button>
     <button class="brain-action" id="brain-import">Import Brain</button>
     <button class="brain-action" id="brain-clear">Clear Memory</button>
+    <button class="brain-action" id="brain-resetpin">Reset PIN</button>
     <input type="file" id="brain-file" accept=".json">
   </div>
 
@@ -56,11 +57,10 @@
     <div id="vision-popup-wrap">
       <button id="vision-toggle-btn" title="Vision tools">👁</button>
       <div id="vision-popup">
-        <button class="vpop-btn" id="btn-camera" title="Camera">📷 <span>Camera</span></button>
-        <button class="vpop-btn" id="btn-screen" title="Share Screen">🖥️ <span>Screen</span></button>
-        <button class="vpop-btn" id="btn-yolo"   title="Object Detection">🔍 <span>YOLO</span></button>
-        <button class="vpop-btn" id="btn-face"   title="Learn My Face">👤 <span>Face</span></button>
-        <button class="vpop-btn" id="btn-install" title="Install App">📲 <span>Install App</span></button>
+        <button class="vpop-btn" id="btn-camera" title="Camera">📷<span>Camera</span></button>
+        <button class="vpop-btn" id="btn-screen" title="Share Screen">🖥️<span>Screen</span></button>
+        <button class="vpop-btn" id="btn-yolo"   title="Object Detection">🔍<span>YOLO</span></button>
+        <button class="vpop-btn" id="btn-face"   title="Learn My Face">👤<span>Face</span></button>
       </div>
     </div>
 
@@ -81,79 +81,11 @@
     <button id="send-btn">➤</button>
   </div>
 
-  <!-- PWA install banner (auto-prompt for supported browsers) -->
-  <div id="pwa-install-banner">
-    <p>📲 Install <strong>Flow AI</strong> as an app for better voice &amp; gesture control</p>
-    <button id="pwa-install-btn">INSTALL APP</button>
-    <button id="pwa-dismiss-btn">maybe later</button>
-  </div>
-
-  <!-- Manual install steps for Android Chrome (Vivo / older Chrome) -->
-  <div id="pwa-manual-steps">
-    <h3>📲 ADD FLOW TO HOME SCREEN</h3>
-    <ol>
-      <li>Tap the <strong>⋮ menu</strong> (3 dots) at top-right of Chrome</li>
-      <li>Tap <strong>"Add to Home screen"</strong></li>
-      <li>Tap <strong>"Add"</strong> to confirm</li>
-      <li>Open Flow from your home screen — full app mode!</li>
-    </ol>
-    <button id="pwa-manual-close">GOT IT</button>
-  </div>
-
   <script type="module" src="app.js"></script>
-
   <script>
-    // ── PWA Service Worker ──────────────────────────────────────────────────
+    // Register PWA service worker
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
-    }
-
-    // ── PWA Install logic ───────────────────────────────────────────────────
-    let _deferredPrompt = null;
-    const banner  = document.getElementById('pwa-install-banner');
-    const manual  = document.getElementById('pwa-manual-steps');
-    const installBtn = document.getElementById('pwa-install-btn');
-    const dismissBtn = document.getElementById('pwa-dismiss-btn');
-    const manualClose = document.getElementById('pwa-manual-close');
-    const vPopInstall = document.getElementById('btn-install');
-
-    // Catch the browser's native install prompt
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      _deferredPrompt = e;
-      // Show banner after 4s so user has time to see Flow first
-      setTimeout(() => { banner.classList.add('show'); }, 4000);
-    });
-
-    function _triggerInstall() {
-      if (_deferredPrompt) {
-        // Native prompt available
-        _deferredPrompt.prompt();
-        _deferredPrompt.userChoice.then(() => {
-          _deferredPrompt = null;
-          banner.classList.remove('show');
-        });
-      } else {
-        // No native prompt (older Android Chrome, Vivo, etc.) — show manual steps
-        banner.classList.remove('show');
-        manual.classList.add('show');
-      }
-    }
-
-    installBtn?.addEventListener('click', _triggerInstall);
-    vPopInstall?.addEventListener('click', _triggerInstall);
-    dismissBtn?.addEventListener('click', () => banner.classList.remove('show'));
-    manualClose?.addEventListener('click', () => manual.classList.remove('show'));
-
-    // Already installed — hide install option
-    window.addEventListener('appinstalled', () => {
-      banner.classList.remove('show');
-      if (vPopInstall) vPopInstall.style.display = 'none';
-    });
-
-    // If opened from home screen (standalone), hide install button
-    if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
-      if (vPopInstall) vPopInstall.style.display = 'none';
     }
   </script>
 </body>
