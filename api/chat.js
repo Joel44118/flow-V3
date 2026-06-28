@@ -242,6 +242,46 @@ async function tryHuggingFace(messages, intent, token) {
 }
 
 // ── HANDLER ───────────────────────────────────────────────────────────────
+
+// ── 1b. NVIDIA DIRECT API — free 1000 req/month at build.nvidia.com ───────
+// Add NVIDIA_API_KEY in Vercel → Settings → Environment Variables
+// Get free key at: https://build.nvidia.com → Sign in → Get API Key
+const NV_MODELS = {
+  code:     'nvidia/llama-3.1-nemotron-70b-instruct',
+  research: 'nvidia/llama-3.1-nemotron-70b-instruct',
+  chat:     'nvidia/llama-3.1-nemotron-70b-instruct',
+  creative: 'nvidia/llama-3.1-nemotron-70b-instruct',
+  pdf:      'nvidia/llama-3.1-nemotron-70b-instruct',
+};
+const NV_TOKENS = { code: 3000, research: 1500, chat: 600, creative: 800, pdf: 1000 };
+
+async function tryNvidia(messages, intent, key) {
+  const model     = NV_MODELS[intent] || NV_MODELS.chat;
+  const maxTokens = NV_TOKENS[intent] || 600;
+  const ctrl = new AbortController();
+  const t    = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const r = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+      method:  'POST',
+      headers: {
+        'Authorization': `Bearer ${key}`,
+        'Content-Type':  'application/json',
+      },
+      body: JSON.stringify({ model, max_tokens: maxTokens, messages, stream: false }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (r.status === 429) { console.warn('[Flow] NVIDIA rate limit'); throw new Error('rate limit'); }
+    const data = await r.json();
+    if (!r.ok || !data.choices?.length) throw new Error(data.detail || data.error?.message || `HTTP ${r.status}`);
+    return { reply: cleanReply(data.choices[0].message.content), model: `NVIDIA:${model}` };
+  } catch (e) {
+    clearTimeout(t);
+    console.warn(`[Flow] NVIDIA ${e.message}`);
+    throw e;
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -250,11 +290,12 @@ export default async function handler(req, res) {
   if (req.method !== 'POST')    return res.status(405).json({ error: 'POST only' });
 
   const CB_KEY = process.env.CEREBRAS_API_KEY;
+  const NV_KEY = process.env.NVIDIA_API_KEY;
   const OR_KEY = process.env.OPENROUTER_API_KEY;
   const GR_KEY = process.env.GROQ_API_KEY;
   const HF_KEY = process.env.HF_TOKEN;
 
-  if (!CB_KEY && !OR_KEY && !GR_KEY && !HF_KEY) {
+  if (!CB_KEY && !NV_KEY && !OR_KEY && !GR_KEY && !HF_KEY) {
     return res.status(500).json({ error: 'No AI provider configured.' });
   }
 
@@ -274,7 +315,7 @@ export default async function handler(req, res) {
     });
   }
 
-  console.log(`[Flow] intent=${intent} | CB=${!!CB_KEY} OR=${!!OR_KEY} Groq=${!!GR_KEY} HF=${!!HF_KEY}`);
+  console.log(`[Flow] intent=${intent} | CB=${!!CB_KEY} NV=${!!NV_KEY} OR=${!!OR_KEY} Groq=${!!GR_KEY} HF=${!!HF_KEY}`);
 
   const errors = [];
 
@@ -285,6 +326,12 @@ export default async function handler(req, res) {
   }
 
   // OpenRouter first for code (Nemotron), fallback for others
+  // NVIDIA direct API — Nemotron 70B, best for code + research
+  if (NV_KEY) {
+    try   { const r = await tryNvidia(trimmed, intent, NV_KEY); return res.status(200).json({ ...r, intent }); }
+    catch (e) { errors.push(`NVIDIA: ${e.message}`); }
+  }
+
   if (OR_KEY) {
     try   { const r = await tryOpenRouter(trimmed, intent, OR_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`OpenRouter: ${e.message}`); }
