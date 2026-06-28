@@ -33,6 +33,8 @@ import { setGlobeBackground } from "./ui/particles.js";
 import { fetchIntel, buildIntelPrompt } from "./core/intel.js";
 import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
 import { Projects } from "./core/projects.js";
+import { initAuth, resetPin } from "./ui/auth.js";
+import { initFeedback } from "./core/feedback.js";
 import { initProjects, handleProjectCommand } from "./ui/projects.js";
 import { initScreenControl, parseScreenControl } from "./ui/screencontrol.js";
 import { Gesture, initGesture } from "./ui/gesture.js";
@@ -356,6 +358,13 @@ brainFile.addEventListener("change", async e => {
   catch(err) { Chat.addError(err); }
   e.target.value = "";
 });
+
+// Reset PIN
+const resetPinBtn = document.getElementById("brain-resetpin");
+if (resetPinBtn) resetPinBtn.addEventListener("click", () => resetPin());
+
+// Init feedback (RLHF learning)
+initFeedback(Chat);
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 (async () => {
