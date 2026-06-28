@@ -59,6 +59,6 @@ export function startAutoSync() {
       const raw = localStorage.getItem("flow_v3_" + name);
       if (raw) payload[key] = JSON.parse(raw);
     }
-    navigator.sendBeacon("/api/memory-bulk", JSON.stringify(payload));
+    navigator.sendBeacon("/api/memory", JSON.stringify({ bulk: payload }));
   });
 }
