@@ -28,7 +28,7 @@ export function initImagine(chat, orb) { _chat = chat; _orb = orb; }
 async function getToken() {
   if (_hfToken) return _hfToken;
   try {
-    const r    = await fetch("/api/token");
+    const r    = await fetch("/api/utils?action=token");
     const data = await r.json();
     if (data.token) { _hfToken = data.token; return _hfToken; }
     throw new Error("token not set");
