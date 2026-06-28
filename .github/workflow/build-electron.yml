@@ -13,24 +13,24 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install dependencies
+      - name: Install deps
         working-directory: flow-electron
         run: npm install
 
-      - name: Install robotjs
+      - name: Install robotjs (best effort)
         working-directory: flow-electron
         run: npm install @jitsi/robotjs --ignore-scripts
         continue-on-error: true
 
-      - name: Build Windows portable exe
+      - name: Build exe
         working-directory: flow-electron
         run: npm run build-win
         env:
@@ -39,6 +39,7 @@ jobs:
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
-          name: Flow-AI-Windows
-          path: flow-electron/dist/*.exe
+          name: Flow-AI-Windows-exe
+          path: flow-electron/dist/**/*.exe
+          if-no-files-found: error
           retention-days: 30
