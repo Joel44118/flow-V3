@@ -29,9 +29,7 @@ function createWindow() {
     height:          Math.min(800,  Math.round(height * 0.85)),
     minWidth:        480,
     minHeight:       360,
-    // Clean title bar — macOS traffic lights, Windows borderless
-    titleBarStyle:   process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-    frame:           false,
+    frame:           false,      // use custom titlebar injected via preload
     backgroundColor: '#060a1a',
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),
@@ -39,7 +37,7 @@ function createWindow() {
       nodeIntegration:  false,
     },
     icon: path.join(__dirname, 'icon.png'),
-    show: false,   // prevent white flash on startup
+    show: false,
   });
 
   // Always load the live Vercel URL — auto-updates with every push
