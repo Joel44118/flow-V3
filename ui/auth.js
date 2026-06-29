@@ -1,12 +1,37 @@
-// ui/auth.js — Flow password panel
-// First visit: create a PIN (4–8 digits or passphrase)
-// Every visit after: must enter PIN to unlock
-// Auto-locks after 5 hours of inactivity or on reload
-// PIN stored as SHA-256 hash in localStorage — never plain text
+// ui/auth.js (v2) — Flow password panel
+// PIN stored as SHA-256 hash in localStorage + KV (cross-device sync)
+// Auto-locks after 5 hours
 
 const LOCK_KEY    = "flow_lock_hash";
 const UNLOCK_KEY  = "flow_unlocked_until";
-const UNLOCK_HRS  = 5;   // hours before re-locking
+const UNLOCK_HRS  = 5;
+
+// Save PIN hash to KV for cross-device persistence
+async function _saveHashToCloud(hash) {
+  try {
+    await fetch("/api/memory", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ key: "flow_pin_hash", value: hash }),
+    });
+  } catch(_) {}
+}
+
+// Load PIN hash from KV (fallback: localStorage)
+async function _loadHashFromCloud() {
+  try {
+    const r = await fetch("/api/memory?key=flow_pin_hash");
+    if (r.ok) {
+      const d = await r.json();
+      if (d.value && typeof d.value === "string") {
+        // Sync to localStorage too
+        localStorage.setItem(LOCK_KEY, d.value);
+        return d.value;
+      }
+    }
+  } catch(_) {}
+  return localStorage.getItem(LOCK_KEY);
+}
 
 // ── SHA-256 hash (browser native, no libraries) ───────────────────────────
 async function _hash(str) {
@@ -134,9 +159,10 @@ function _buildPanel(mode) {
 
 // ── Main export ───────────────────────────────────────────────────────────
 export async function initAuth() {
-  const stored = localStorage.getItem(LOCK_KEY);
+  // Load PIN from cloud (cross-device) with localStorage fallback
+  const stored = await _loadHashFromCloud();
 
-  // Already unlocked within 5 hours — skip panel
+  // Already unlocked within 5 hours on this device — skip panel
   if (stored && _isUnlocked()) return;
 
   return new Promise((resolve) => {
@@ -152,6 +178,7 @@ export async function initAuth() {
         if (val !== con)    { err.textContent = "PINs don't match."; return; }
         const h = await _hash(val);
         localStorage.setItem(LOCK_KEY, h);
+        await _saveHashToCloud(h);  // sync to cloud for cross-device
         _setUnlocked();
         document.getElementById("flow-auth-panel")?.remove();
         resolve();
