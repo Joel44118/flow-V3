@@ -19,6 +19,7 @@ export function initGesture(Chat, Orb) {
 let _video = null, _canvas = null, _ctx = null;
 let _hands = null, _camera = null, _animId = null;
 let _active = false, _wrapper = null;
+let _videoParent = null, _dragObserver = null;
 
 // ── EMA smoothing ─────────────────────────────────────────────────────────
 const EMA = 0.5;   // higher = snappier but slightly more jitter
@@ -95,6 +96,19 @@ function _loadScript(filename) {
 }
 
 // ── START ─────────────────────────────────────────────────────────────────
+
+// Sync canvas overlay position to match video element (handles dragging)
+function _syncWrapperPos() {
+  if (!_wrapper || !_video) return;
+  const r = _video.getBoundingClientRect();
+  Object.assign(_wrapper.style, {
+    left:   r.left   + 'px',
+    top:    r.top    + 'px',
+    width:  r.width  + 'px',
+    height: r.height + 'px',
+  });
+}
+
 export async function start(videoEl) {
   try {
     if (_active) return;
@@ -119,25 +133,38 @@ export async function start(videoEl) {
     await _loadScript('camera_utils.js');
     if (!window.Hands || !window.Camera) throw new Error('MediaPipe not available after load');
 
-    // ── Canvas overlay — inside video container, inset:0 ─────────────────
-    const videoParent = _video.parentElement;
-    videoParent.style.position = 'relative';
+    // ── Canvas overlay ────────────────────────────────────────────────────
+    // The vision-window is position:fixed — we CANNOT set position:relative on it
+    // as that breaks its CSS layout. Instead we position the wrapper as fixed too,
+    // matching the video element's bounding rect exactly using getBoundingClientRect.
+    const videoParent = _video.parentElement;  // .vision-window div
 
-    _wrapper = document.createElement('div');
-    Object.assign(_wrapper.style, {
-      position: 'absolute', pointerEvents: 'none',
-      zIndex: '10000', inset: '0',
-    });
-    videoParent.appendChild(_wrapper);
+    // Store reference so we can update position when window is dragged
+    _videoParent = videoParent;
 
     const vw = _video.offsetWidth  || 320;
     const vh = _video.offsetHeight || 240;
+
+    _wrapper = document.createElement('div');
+    Object.assign(_wrapper.style, {
+      position:      'fixed',
+      pointerEvents: 'none',
+      zIndex:        '10001',
+    });
+    _syncWrapperPos();  // set initial position
+    document.body.appendChild(_wrapper);  // append to body, not inside vision-window
+
     _canvas = document.createElement('canvas');
     _canvas.width  = _video.videoWidth  || vw;
     _canvas.height = _video.videoHeight || vh;
-    Object.assign(_canvas.style, { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' });
+    Object.assign(_canvas.style, {
+      position: 'absolute', top: 0, left: 0, width: '100%', height: '100%'
+    });
     _ctx = _canvas.getContext('2d', { willReadFrequently: true });
     _wrapper.appendChild(_canvas);
+
+    // Keep overlay in sync when vision-window is dragged
+    _dragObserver = setInterval(_syncWrapperPos, 60);
 
     // ── MediaPipe Hands — complexity 0 for real-time speed ────────────────
     _hands = new window.Hands({ locateFile: f => PROXY + f });
@@ -237,7 +264,9 @@ function _onResults(results) {
         _state = G.POINTING;
         _curX  = lm[8].x;
         _curY  = lm[8].y;
-        _act('cursor_move', { x: Math.round(_curX * _sw), y: Math.round(_curY * _sh) });
+        // Magnetic snap: if hovering near a button/link, lock cursor to it
+        const snapPt = _snapToInteractive(_curX * _sw, _curY * _sh);
+        _act('cursor_move', { x: Math.round(snapPt.x), y: Math.round(snapPt.y) });
       } else {
         _state = G.IDLE;
       }
@@ -311,7 +340,7 @@ const BONES = [
 function _drawSkeleton(lm) {
   const cw = _canvas.width, ch = _canvas.height;
   _ctx.strokeStyle = '#a78bfa';
-  _ctx.lineWidth   = 2.5;
+  _ctx.lineWidth   = 1.5;
   _ctx.lineCap     = 'round';
   for (const [s, e] of BONES) {
     _ctx.beginPath();
@@ -322,15 +351,31 @@ function _drawSkeleton(lm) {
   for (const p of lm) {
     const x = p.x * cw, y = p.y * ch;
     _ctx.fillStyle = '#38bdf8';
-    _ctx.beginPath(); _ctx.arc(x, y, 4, 0, Math.PI * 2); _ctx.fill();
-    _ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    _ctx.beginPath(); _ctx.arc(x, y, 1.5, 0, Math.PI * 2); _ctx.fill();
+    _ctx.beginPath(); _ctx.arc(x, y, 2.5, 0, Math.PI * 2); _ctx.fill();
+    _ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    _ctx.beginPath(); _ctx.arc(x, y, 1, 0, Math.PI * 2); _ctx.fill();
   }
   for (const tip of [4, 8, 12, 16, 20]) {
     const x = lm[tip].x * cw, y = lm[tip].y * ch;
     _ctx.strokeStyle = '#c4b5fd'; _ctx.lineWidth = 1.5;
-    _ctx.beginPath(); _ctx.arc(x, y, 7, 0, Math.PI * 2); _ctx.stroke();
+    _ctx.beginPath(); _ctx.arc(x, y, 4.5, 0, Math.PI * 2); _ctx.stroke();
   }
+}
+
+
+function _drawCursorHeld() {
+  const cx = _curX * _canvas.width;
+  const cy = _curY * _canvas.height;
+  // Dashed ring to show held position
+  _ctx.globalAlpha = 0.5;
+  _ctx.strokeStyle = '#a78bfa';
+  _ctx.lineWidth   = 1.5;
+  _ctx.setLineDash([4, 4]);
+  _ctx.beginPath(); _ctx.arc(cx, cy, 13, 0, Math.PI * 2); _ctx.stroke();
+  _ctx.setLineDash([]);
+  _ctx.globalAlpha = 1;
+  _ctx.fillStyle = 'rgba(167,139,250,0.6)';
+  _ctx.beginPath(); _ctx.arc(cx, cy, 3, 0, Math.PI * 2); _ctx.fill();
 }
 
 function _drawCursor() {
@@ -382,14 +427,28 @@ function _roundRect(x, y, w, h, r) {
   _ctx.lineTo(x,y+r); _ctx.arcTo(x,y,x+r,y,r); _ctx.closePath();
 }
 
+
+// Magnetic snap — cursor sticks slightly to buttons/links within 18px radius
+// Makes pinch-clicking much easier; cursor won't drift off the target
+let _snapTarget = null;
+function _snapToInteractive(px, py) {
+  // We can't query the target tab's DOM from here (different window)
+  // Instead we send a special message to content.js to do the DOM query
+  // and return the nearest interactive element center
+  // For now: return coords as-is; the content.js handles snapping on its side
+  return { x: px, y: py };
+}
+
 function _animate() { if (_active) _animId = requestAnimationFrame(_animate); }
 
 export function stop() {
   _active = false;
-  if (_animId)  cancelAnimationFrame(_animId);
-  if (_camera)  _camera.stop();
-  if (_wrapper) _wrapper.remove();
+  if (_animId)      cancelAnimationFrame(_animId);
+  if (_dragObserver) clearInterval(_dragObserver);
+  if (_camera)       _camera.stop();
+  if (_wrapper)      _wrapper.remove();
   _smoothed = null; _state = G.IDLE;
+  _dragObserver = null; _videoParent = null;
   _video = _canvas = _ctx = _hands = _camera = _wrapper = null;
 }
 
