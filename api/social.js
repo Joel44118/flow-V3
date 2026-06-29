@@ -1,111 +1,183 @@
-// api/social.js — Telegram Bot + WhatsApp Cloud API (merged to save function slots)
-// Routes by query param: /api/social?platform=telegram  or  /api/social?platform=whatsapp
-//
-// ── TELEGRAM SETUP ────────────────────────────────────────────────────────
-// 1. Talk to @BotFather → /newbot → copy token
-// 2. Add TELEGRAM_BOT_TOKEN to Vercel env vars
-// 3. Set webhook (paste in browser once after deploy):
-//    https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://flow-v3-mu.vercel.app/api/social?platform=telegram
-// 4. Optional: add JOEL_TELEGRAM_CHAT_ID (message @userinfobot to get yours)
-//
-// ── WHATSAPP SETUP ────────────────────────────────────────────────────────
-// 1. developers.facebook.com → Create App → WhatsApp Business
-// 2. Add WHATSAPP_TOKEN, WHATSAPP_PHONE_ID, WHATSAPP_VERIFY_TOKEN to Vercel
-// 3. Set webhook URL: https://flow-v3-mu.vercel.app/api/social?platform=whatsapp
-// 4. Optional: JOEL_WHATSAPP_NUMBER (your number with country code, e.g. 2348012345678)
+// api/social.js (v2) — Telegram Bot + WhatsApp
+// NEW: Image analysis via vision API (buyers can send photos)
+// NEW: Summary delivery to Joel for every conversation
+// Routes: /api/social?platform=telegram  |  /api/social?platform=whatsapp
 
-const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN;
-const WA_TOKEN   = process.env.WHATSAPP_TOKEN;
-const WA_PHONE   = process.env.WHATSAPP_PHONE_ID;
-const WA_VERIFY  = process.env.WHATSAPP_VERIFY_TOKEN;
-const KV_URL     = process.env.KV_REST_API_URL;
-const KV_TOKEN_V = process.env.KV_REST_API_TOKEN;
-const SITE       = 'https://flow-v3-mu.vercel.app';
+const TG_TOKEN  = process.env.TELEGRAM_BOT_TOKEN;
+const WA_TOKEN  = process.env.WHATSAPP_TOKEN;
+const WA_PHONE  = process.env.WHATSAPP_PHONE_ID;
+const WA_VERIFY = process.env.WHATSAPP_VERIFY_TOKEN;
+const KV_URL    = process.env.KV_REST_API_URL;
+const KV_KEY    = process.env.KV_REST_API_TOKEN;
+const SITE      = 'https://flow-v3-mu.vercel.app';
 
-// ── Shared: get AI reply from Flow ────────────────────────────────────────
-async function askFlow(message, context) {
+// ── Shared: Ask Flow AI ───────────────────────────────────────────────────
+async function askFlow(userMsg, context = '', imageDesc = '') {
   const SYSTEM = `You are Flow, Joel Olanrewaju's personal AI assistant.
 You are auto-replying to a ${context} message on Joel's behalf.
-Be helpful, friendly, professional. Under 200 words unless more is needed.
-Joel runs Joelflowstack — premium web development and AI automation.
-If you can't answer something, say you'll pass it to Joel.`;
+Joel runs Joelflowstack — premium web development and AI automation services.
+Be helpful, friendly, professional. Keep replies under 200 words.
+${imageDesc ? `The user sent an image. Here is what it shows: ${imageDesc}\nRespond to both the image and their message.` : ''}
+If you cannot answer something specific, say you will pass it to Joel.`;
 
+  const r = await fetch(`${SITE}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user',   content: userMsg || (imageDesc ? 'See the image I sent.' : 'Hello') },
+      ],
+    }),
+  });
+  if (!r.ok) throw new Error(`chat ${r.status}`);
+  const d = await r.json();
+  return d.reply?.trim() || "Hi! I'm Flow, Joel's AI. Your message was received!";
+}
+
+// ── Shared: Analyze image via Flow vision API ─────────────────────────────
+async function analyzeImage(base64, mimeType = 'image/jpeg') {
   try {
-    const r = await fetch(`${SITE}/api/chat`, {
+    const r = await fetch(`${SITE}/api/vision`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        messages: [
-          { role: 'system', content: SYSTEM },
-          { role: 'user',   content: message },
-        ],
+        image:  base64,
+        prompt: 'Describe this image in detail. Note any problems, products, text, or context visible.',
       }),
     });
-    if (!r.ok) throw new Error(`chat API ${r.status}`);
+    if (!r.ok) return null;
     const d = await r.json();
-    return d.reply?.trim() || "Hi! I'm Flow, Joel's AI. Your message was received!";
-  } catch (e) {
-    console.error('[Social] askFlow error:', e.message);
-    return "Hi! I'm Flow, Joel's AI assistant. Your message has been received — Joel will get back to you!";
-  }
+    return d.description || null;
+  } catch(_) { return null; }
 }
 
-// ── Shared: push notification to Flow's bell ──────────────────────────────
+// ── Shared: Push notification to Flow bell ────────────────────────────────
 async function pushNotif(source, text) {
-  if (!KV_URL || !KV_TOKEN_V) return;
+  if (!KV_URL || !KV_KEY) return;
   try {
-    const r   = await fetch(`${KV_URL}/get/flow_pending_notifs`, { headers: { Authorization: `Bearer ${KV_TOKEN_V}` } });
+    const r   = await fetch(`${KV_URL}/get/flow_pending_notifs`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
     const cur = r.ok ? ((await r.json()).result || []) : [];
     const arr = Array.isArray(cur) ? cur : [];
     arr.push({ source, text: text.slice(0, 200), ts: Date.now(), read: false });
     await fetch(`${KV_URL}/set/flow_pending_notifs`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${KV_TOKEN_V}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(arr.slice(-20)),
+      headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(arr.slice(-30)),
     });
   } catch(e) { console.error('[Social] pushNotif:', e.message); }
+}
+
+// ── Shared: Store conversation summary in KV ──────────────────────────────
+async function storeSummary(platform, sender, userMsg, flowReply, hasImage) {
+  if (!KV_URL || !KV_KEY) return;
+  try {
+    const summaryKey = `flow_conv_summary_${Date.now()}`;
+    await fetch(`${KV_URL}/set/${encodeURIComponent(summaryKey)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform, sender,
+        userMsg:   userMsg.slice(0, 300),
+        flowReply: flowReply.slice(0, 300),
+        hasImage,
+        ts: Date.now(),
+      }),
+    });
+  } catch(_) {}
 }
 
 // ── TELEGRAM ──────────────────────────────────────────────────────────────
 async function handleTelegram(req, res) {
   if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
 
-  const sendTG = async (chatId, text) => {
-    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 4096), parse_mode: 'Markdown' }),
-    }).catch(e => console.error('[TG] send error:', e.message));
-  };
+  const tgFetch = (method, body) => fetch(`https://api.telegram.org/bot${TG_TOKEN}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).catch(e => console.error('[TG]', method, e.message));
 
   const update = req.body;
   const msg    = update?.message || update?.edited_message;
   if (!msg) return res.status(200).json({ ok: true });
 
   const chatId   = msg.chat.id;
-  const text     = msg.text || '';
-  const username = msg.from?.username || msg.from?.first_name || String(chatId);
+  const text     = msg.text || msg.caption || '';
+  const username = msg.from?.username
+    ? `@${msg.from.username}`
+    : msg.from?.first_name || String(chatId);
 
+  // /start command
   if (text === '/start') {
-    await sendTG(chatId, `👋 Hi *${username}*! I'm *Flow*, Joel's AI.\n\nSend me any message and I'll reply right away!`);
+    await tgFetch('sendMessage', {
+      chat_id: chatId,
+      text: `👋 Hi ${username}! I'm *Flow*, Joel's AI assistant.\n\nYou can send me text messages or photos and I'll respond right away!`,
+      parse_mode: 'Markdown',
+    });
     return res.status(200).json({ ok: true });
   }
-  if (!text.trim()) return res.status(200).json({ ok: true });
 
-  // Show typing
-  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendChatAction`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
-  }).catch(() => {});
+  // Show typing indicator
+  await tgFetch('sendChatAction', { chat_id: chatId, action: 'typing' });
 
-  const reply = await askFlow(text, `Telegram @${username}`);
-  await sendTG(chatId, reply);
+  // ── Handle photos ──────────────────────────────────────────────────────
+  let imageDesc = null;
+  if (msg.photo || msg.document?.mime_type?.startsWith('image/')) {
+    try {
+      // Get the largest photo version
+      const fileId = msg.photo
+        ? msg.photo[msg.photo.length - 1].file_id
+        : msg.document.file_id;
 
-  // Notify Joel + push bell notification in parallel
+      // Get file path from Telegram
+      const fileR = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getFile?file_id=${fileId}`);
+      const fileD = await fileR.json();
+      const filePath = fileD.result?.file_path;
+
+      if (filePath) {
+        // Download the image
+        const imgR = await fetch(`https://api.telegram.org/file/bot${TG_TOKEN}/${filePath}`);
+        const buf  = await imgR.arrayBuffer();
+        const b64  = Buffer.from(buf).toString('base64');
+
+        // Analyze with vision API
+        imageDesc = await analyzeImage(b64, 'image/jpeg');
+        console.log('[TG] Image analyzed:', imageDesc?.slice(0, 80));
+      }
+    } catch (e) {
+      console.error('[TG] Image error:', e.message);
+    }
+  }
+
+  // Get AI reply
+  const reply = await askFlow(
+    text || (imageDesc ? 'What do you think about this image?' : 'Hello'),
+    `Telegram ${username}`,
+    imageDesc
+  );
+
+  // Send reply
+  await tgFetch('sendMessage', {
+    chat_id:    chatId,
+    text:       reply.slice(0, 4096),
+    parse_mode: 'Markdown',
+  });
+
+  // Build summary for Joel
+  const summary = [
+    `📨 *${username}* on Telegram:`,
+    text ? `"${text.slice(0, 150)}"` : '',
+    imageDesc ? `📷 *Image:* ${imageDesc.slice(0, 150)}` : '',
+    `\n✅ *Flow replied:*\n"${reply.slice(0, 200)}"`,
+  ].filter(Boolean).join('\n');
+
+  // Notify Joel + push to bell + store summary — all parallel
   const joelId = process.env.JOEL_TELEGRAM_CHAT_ID;
   await Promise.all([
-    pushNotif('Telegram', `@${username}: ${text.slice(0, 120)}`),
+    pushNotif('Telegram', `${username}: ${(text || '[image]').slice(0, 120)}`),
+    storeSummary('telegram', username, text || '[image]', reply, !!imageDesc),
     joelId && String(chatId) !== String(joelId)
-      ? sendTG(joelId, `📨 *@${username}*:\n"${text.slice(0,150)}"\n\n✅ *Flow replied:*\n"${reply.slice(0,200)}"`)
+      ? tgFetch('sendMessage', { chat_id: joelId, text: summary, parse_mode: 'Markdown' })
       : Promise.resolve(),
   ]);
 
@@ -114,7 +186,7 @@ async function handleTelegram(req, res) {
 
 // ── WHATSAPP ──────────────────────────────────────────────────────────────
 async function handleWhatsApp(req, res) {
-  // Webhook verification (GET)
+  // Webhook verification
   if (req.method === 'GET') {
     const mode  = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -125,31 +197,54 @@ async function handleWhatsApp(req, res) {
 
   if (!WA_TOKEN || !WA_PHONE) return res.status(200).json({ ok: false, error: 'WhatsApp not configured' });
 
-  const sendWA = async (to, text) => {
-    await fetch(`https://graph.facebook.com/v19.0/${WA_PHONE}/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text.slice(0, 4096) } }),
-    }).catch(e => console.error('[WA] send error:', e.message));
-  };
+  const sendWA = async (to, text) => fetch(`https://graph.facebook.com/v19.0/${WA_PHONE}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text.slice(0, 4096) } }),
+  }).catch(e => console.error('[WA] send:', e.message));
 
-  const entry = req.body?.entry?.[0]?.changes?.[0]?.value;
-  const msg   = entry?.messages?.[0];
-  if (!msg || msg.type !== 'text') return res.status(200).json({ ok: true });
+  const entry   = req.body?.entry?.[0]?.changes?.[0]?.value;
+  const msg     = entry?.messages?.[0];
+  if (!msg) return res.status(200).json({ ok: true });
 
   const from    = msg.from;
-  const text    = msg.text?.body || '';
+  const text    = msg.text?.body || msg.caption || '';
   const contact = entry?.contacts?.[0]?.profile?.name || from;
 
-  const reply = await askFlow(text, `WhatsApp from ${contact}`);
+  // ── Handle WA images ───────────────────────────────────────────────────
+  let imageDesc = null;
+  if (msg.type === 'image' && msg.image?.id) {
+    try {
+      // Get media URL from WhatsApp
+      const mediaR = await fetch(`https://graph.facebook.com/v19.0/${msg.image.id}`, {
+        headers: { Authorization: `Bearer ${WA_TOKEN}` },
+      });
+      const mediaD = await mediaR.json();
+
+      if (mediaD.url) {
+        const imgR = await fetch(mediaD.url, { headers: { Authorization: `Bearer ${WA_TOKEN}` } });
+        const buf  = await imgR.arrayBuffer();
+        const b64  = Buffer.from(buf).toString('base64');
+        imageDesc  = await analyzeImage(b64, msg.image.mime_type || 'image/jpeg');
+      }
+    } catch (e) { console.error('[WA] Image error:', e.message); }
+  }
+
+  const reply = await askFlow(text || 'Hello', `WhatsApp from ${contact}`, imageDesc);
   await sendWA(from, reply);
 
   const myNum = process.env.JOEL_WHATSAPP_NUMBER;
+  const summary = [
+    `📱 *${contact}* on WhatsApp:`,
+    text ? `"${text.slice(0, 150)}"` : '',
+    imageDesc ? `📷 Image: ${imageDesc.slice(0, 100)}` : '',
+    `\n✅ Flow: "${reply.slice(0, 200)}"`,
+  ].filter(Boolean).join('\n');
+
   await Promise.all([
-    pushNotif('WhatsApp', `${contact}: ${text.slice(0, 120)}`),
-    myNum && myNum !== from
-      ? sendWA(myNum, `📱 *${contact}*: "${text.slice(0,150)}"\n\n✅ Flow replied: "${reply.slice(0,200)}"`)
-      : Promise.resolve(),
+    pushNotif('WhatsApp', `${contact}: ${(text || '[image]').slice(0, 120)}`),
+    storeSummary('whatsapp', contact, text || '[image]', reply, !!imageDesc),
+    myNum && myNum !== from ? sendWA(myNum, summary) : Promise.resolve(),
   ]);
 
   return res.status(200).json({ ok: true });
@@ -159,17 +254,8 @@ async function handleWhatsApp(req, res) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
-
   const platform = req.query?.platform || '';
-
-  if (platform === 'telegram') return handleTelegram(req, res);
-  if (platform === 'whatsapp') return handleWhatsApp(req, res);
-
-  return res.status(200).json({
-    service: 'Flow Social API',
-    endpoints: {
-      telegram: '/api/social?platform=telegram',
-      whatsapp: '/api/social?platform=whatsapp',
-    },
-  });
+  if (platform === 'telegram')  return handleTelegram(req, res);
+  if (platform === 'whatsapp')  return handleWhatsApp(req, res);
+  return res.status(200).json({ service: 'Flow Social', endpoints: { telegram: '/api/social?platform=telegram', whatsapp: '/api/social?platform=whatsapp' } });
 }
