@@ -232,10 +232,22 @@ function _onResults(results) {
 
   const raw = results.multiHandLandmarks?.[0];
   if (!raw) {
+    // Hand left — hold cursor at last known position, just reset gesture state
     _smoothed = null; _state = G.IDLE;
     _pinchFrames = 0; _releaseFrames = 0; _twoFingerBase = null;
-    _drawLabel('👋 Show hand');
-    return;
+    _ctx.clearRect(0, 0, _canvas.width, _canvas.height);
+    // Draw dashed ring to show where cursor is held
+    const hx = _curX * _canvas.width, hy = _curY * _canvas.height;
+    _ctx.globalAlpha = 0.55;
+    _ctx.strokeStyle = '#a78bfa'; _ctx.lineWidth = 1.5;
+    _ctx.setLineDash([4, 5]);
+    _ctx.beginPath(); _ctx.arc(hx, hy, 13, 0, Math.PI * 2); _ctx.stroke();
+    _ctx.setLineDash([]);
+    _ctx.fillStyle = 'rgba(167,139,250,0.7)';
+    _ctx.beginPath(); _ctx.arc(hx, hy, 3, 0, Math.PI * 2); _ctx.fill();
+    _ctx.globalAlpha = 1;
+    _syncWrapperPos();
+    return;  // cursor stays at _curX/_curY — no cursor_move sent
   }
 
   const lm  = _smooth(raw);
@@ -351,14 +363,14 @@ function _drawSkeleton(lm) {
   for (const p of lm) {
     const x = p.x * cw, y = p.y * ch;
     _ctx.fillStyle = '#38bdf8';
-    _ctx.beginPath(); _ctx.arc(x, y, 2.5, 0, Math.PI * 2); _ctx.fill();
+    _ctx.beginPath(); _ctx.arc(x, y, 2, 0, Math.PI * 2); _ctx.fill();
     _ctx.fillStyle = 'rgba(255,255,255,0.9)';
     _ctx.beginPath(); _ctx.arc(x, y, 1, 0, Math.PI * 2); _ctx.fill();
   }
   for (const tip of [4, 8, 12, 16, 20]) {
     const x = lm[tip].x * cw, y = lm[tip].y * ch;
     _ctx.strokeStyle = '#c4b5fd'; _ctx.lineWidth = 1.5;
-    _ctx.beginPath(); _ctx.arc(x, y, 4.5, 0, Math.PI * 2); _ctx.stroke();
+    _ctx.beginPath(); _ctx.arc(x, y, 3.5, 0, Math.PI * 2); _ctx.stroke();
   }
 }
 
