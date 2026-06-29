@@ -186,30 +186,38 @@ export const Speech = {
     const clean = stripForSpeech(text);
     if (!clean || clean === "here is the code") { if (onDone) onDone(); return; }
 
-    if (_activeWrap && _activeWrap !== wrap) _setButtons(_activeWrap, "idle");
+    // ── Stop everything currently playing — one clean slate ──────────────
+    _isSpeaking = false;
+    _isPaused   = false;
+    if (_audioEl) {
+      try { _audioEl.pause(); _audioEl.src = ''; } catch(_) {}
+      _audioEl = null;
+    }
+    window.speechSynthesis.cancel();
+
+    if (_activeWrap && _activeWrap !== wrap) _setButtons(_activeWrap, 'idle');
     _fullText   = clean;
     _charOffset = 0;
+    _activeWrap = wrap;
+    _onDone     = onDone || null;
 
-    // Cancel any currently playing speech first (prevents dual voice)
-    if (_audioEl) { _audioEl.pause(); _audioEl.src = ''; _audioEl = null; }
-    window.speechSynthesis.cancel();
+    // ── LOCK speaking immediately (synchronous) before any await ──────────
+    // This prevents browser TTS from starting during the ElevenLabs fetch
+    _isSpeaking = true;
 
-    // Cancel anything currently playing
-    if (_audioEl) { try { _audioEl.pause(); } catch(_){} _audioEl = null; }
-    window.speechSynthesis.cancel();
-    _isSpeaking = false;
+    // ── Try ElevenLabs first ──────────────────────────────────────────────
+    // _elAvailable is cached after first check — no network roundtrip per speak
+    if (_elAvailable === null) await _checkEL();  // only fetches once per session
 
-    // Try ElevenLabs (same voice every device)
-    const elOk = await _checkEL();
-    if (elOk) {
-      // Set lock BEFORE async fetch so browser TTS doesn't start during await
-      _isSpeaking = true;
+    if (_elAvailable) {
       const ok = await _speakElevenLabs(clean, onDone, wrap);
-      if (ok) return;          // ElevenLabs took over — done
-      _isSpeaking = false;     // ElevenLabs failed — unlock for browser TTS
+      if (ok) return;  // ElevenLabs playing — done
+      // ElevenLabs failed this call — fall through to browser TTS
     }
 
-    // Browser TTS fallback (only reaches here if ElevenLabs failed/not set)
+    // ── Browser TTS fallback ──────────────────────────────────────────────
+    // Only runs if ElevenLabs is not configured OR failed this specific call
+    _isSpeaking = false;  // reset so _fallbackBrowserTTS can set it
     _fallbackBrowserTTS(clean, 0, onDone, wrap);
   },
 
