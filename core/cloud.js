@@ -29,6 +29,11 @@ async function cloudSet(key, value) {
 }
 
 export async function loadFromCloud() {
+  // Supabase cross-device sync (runs silently in background)
+  try {
+    const { Storage } = await import('./storage.js');
+    Storage.syncFromCloud().catch(() => {});
+  } catch(_) {}
   for (const [name, key] of Object.entries(KEYS)) {
     const cloud = await cloudGet(key);
     if (!cloud) continue;
