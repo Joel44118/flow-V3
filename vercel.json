@@ -11,8 +11,8 @@
     "api/intel.js":     { "maxDuration": 10 },
     "api/mediapipe.js": { "maxDuration": 10 },
     "api/tts.js":       { "maxDuration": 10 },
-    "api/whatsapp.js":  { "maxDuration": 10 },
-    "api/telegram.js":  { "maxDuration": 10 }
+    "api/social.js":    { "maxDuration": 15 },
+    "api/tg-setup.js":  { "maxDuration": 10 }
   },
   "headers": [
     {
