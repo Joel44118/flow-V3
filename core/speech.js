@@ -136,6 +136,8 @@ function _getFlowVoice() {
 window.speechSynthesis.onvoiceschanged = () => { _cachedVoice = null; };
 
 function _fallbackBrowserTTS(text, fromChar, onDone, wrap) {
+  // Block if ElevenLabs audio is actively playing
+  if (_audioEl && !_audioEl.paused && !_audioEl.ended) return;
   const slice = text.slice(fromChar).trim();
   if (!slice) { _resetState(true); return; }
 
@@ -192,14 +194,22 @@ export const Speech = {
     if (_audioEl) { _audioEl.pause(); _audioEl.src = ''; _audioEl = null; }
     window.speechSynthesis.cancel();
 
-    // Try ElevenLabs first (same voice on every device)
+    // Cancel anything currently playing
+    if (_audioEl) { try { _audioEl.pause(); } catch(_){} _audioEl = null; }
+    window.speechSynthesis.cancel();
+    _isSpeaking = false;
+
+    // Try ElevenLabs (same voice every device)
     const elOk = await _checkEL();
     if (elOk) {
+      // Set lock BEFORE async fetch so browser TTS doesn't start during await
+      _isSpeaking = true;
       const ok = await _speakElevenLabs(clean, onDone, wrap);
-      if (ok) return;
+      if (ok) return;          // ElevenLabs took over — done
+      _isSpeaking = false;     // ElevenLabs failed — unlock for browser TTS
     }
 
-    // Fallback to browser TTS
+    // Browser TTS fallback (only reaches here if ElevenLabs failed/not set)
     _fallbackBrowserTTS(clean, 0, onDone, wrap);
   },
 
