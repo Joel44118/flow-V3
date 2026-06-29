@@ -34,6 +34,7 @@ import { fetchIntel, buildIntelPrompt } from "./core/intel.js";
 import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
 import { Projects } from "./core/projects.js";
 import { initAuth, resetPin } from "./ui/auth.js";
+import { initNotifications } from "./ui/notifications.js";
 import { initFeedback } from "./core/feedback.js";
 import { initProjects, handleProjectCommand } from "./ui/projects.js";
 import { initScreenControl, parseScreenControl } from "./ui/screencontrol.js";
@@ -365,6 +366,7 @@ if (resetPinBtn) resetPinBtn.addEventListener("click", () => resetPin());
 
 // Init feedback (RLHF learning)
 initFeedback(Chat);
+initNotifications(Chat);
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 (async () => {
