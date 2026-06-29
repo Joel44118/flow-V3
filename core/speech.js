@@ -188,6 +188,10 @@ export const Speech = {
     _fullText   = clean;
     _charOffset = 0;
 
+    // Cancel any currently playing speech first (prevents dual voice)
+    if (_audioEl) { _audioEl.pause(); _audioEl.src = ''; _audioEl = null; }
+    window.speechSynthesis.cancel();
+
     // Try ElevenLabs first (same voice on every device)
     const elOk = await _checkEL();
     if (elOk) {
