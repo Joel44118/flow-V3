@@ -8,41 +8,33 @@ on:
       - '.github/workflows/build-electron.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install Electron + builder only (no robotjs)
+      - name: Install dependencies
         working-directory: flow-electron
         run: npm install --ignore-scripts
-        env:
-          npm_config_ignore_scripts: true
 
-      - name: Build portable exe
+      - name: Build installer
         working-directory: flow-electron
-        shell: cmd
-        run: npx --yes electron-builder --win portable --x64 --publish never
+        run: npx electron-builder --win --x64 --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Show dist contents
-        working-directory: flow-electron
-        shell: cmd
-        run: dir dist\ /s /b 2>nul || echo dist folder is empty
-
-      - name: Upload exe artifact
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: Flow-AI-Windows
+          name: Flow-AI-Installer
           path: flow-electron/dist/*.exe
           if-no-files-found: warn
           retention-days: 30
