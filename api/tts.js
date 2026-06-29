@@ -29,7 +29,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         text:           text.slice(0, 500),
         model_id:       "eleven_multilingual_v2",
-        voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.0 },
+        voice_settings: { stability: 0.55, similarity_boost: 0.75, style: 0.0, speed: 0.85 },
       }),
     });
 
