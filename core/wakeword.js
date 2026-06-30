@@ -58,9 +58,17 @@ function _buildWakeRec() {
 
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const res = e.results[i];
-      let all = "";
-      for (let a = 0; a < res.length; a++) all += " " + res[a].transcript.toLowerCase();
-      if (!CONFIG.WAKE_REGEX?.test(all)) continue;
+
+      // Check EACH alternative independently — concatenating them into one
+      // string let unrelated alternatives dilute/contaminate a real match.
+      // Picking the first alternative that matches keeps that alternative's
+      // own transcript intact for the inline-command extraction below.
+      let matchedAlt = null;
+      for (let a = 0; a < res.length; a++) {
+        const t = res[a].transcript.toLowerCase();
+        if (CONFIG.WAKE_REGEX?.test(t)) { matchedAlt = a; break; }
+      }
+      if (matchedAlt === null) continue;
 
       _wakeLock = true;
       document.getElementById("wake-indicator")?.classList.add("active");
@@ -68,7 +76,7 @@ function _buildWakeRec() {
       playActivationBeep();
 
       const inlineCmd = res.isFinal
-        ? res[0].transcript.toLowerCase()
+        ? res[matchedAlt].transcript.toLowerCase()
             .replace(WAKE_STRIP_RX, "")
             .replace(/[.,!?]/g, "")
             .trim()
@@ -173,10 +181,10 @@ export function startCommandListen() {
   const micBtn = document.getElementById("mic-btn");
 
   cmdRec = new SR();
-  cmdRec.lang           = "en-US";
-  cmdRec.continuous     = true;
-  cmdRec.interimResults = true;
-  cmdRec.maxAlternatives = 1;
+  cmdRec.lang            = "en-US";
+  cmdRec.continuous      = true;
+  cmdRec.interimResults  = true;
+  cmdRec.maxAlternatives = 5;   // was 1 — pick best-confidence alt instead of Chrome's top guess only
 
   _orbFn?.("listening");
   if (micBtn) micBtn.textContent = "⏹";
@@ -186,7 +194,7 @@ export function startCommandListen() {
 
   function _resetSilenceTimer() {
     if (_silenceTimer) clearTimeout(_silenceTimer);
-    _silenceTimer = setTimeout(_finish, 3000);
+    _silenceTimer = setTimeout(_finish, 4200);  // was 3000 — gives more room for natural pauses
   }
 
   function _finish() {
@@ -213,8 +221,17 @@ export function startCommandListen() {
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
-      if (r.isFinal) _transcript += " " + r[0].transcript;
-      else interim = r[0].transcript;
+
+      // Pick the alternative with the highest reported confidence, not just
+      // index 0 — Chrome's "most likely" ordering and actual confidence score
+      // can disagree, especially with background noise or accents.
+      let best = r[0];
+      for (let a = 1; a < r.length; a++) {
+        if ((r[a].confidence || 0) > (best.confidence || 0)) best = r[a];
+      }
+
+      if (r.isFinal) _transcript += " " + best.transcript;
+      else interim = best.transcript;
     }
     if (interim || e.results[e.resultIndex]?.isFinal) _resetSilenceTimer();
   };
