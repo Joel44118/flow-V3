@@ -250,12 +250,44 @@ async function handleWhatsApp(req, res) {
   return res.status(200).json({ ok: true });
 }
 
+// ── FLOW SENTINEL RELAY ─────────────────────────────────────────────────
+// Lets the Electron desktop app ask Flow to ping Joel on Telegram, without
+// the bot token ever existing on Joel's machine. The desktop app only ever
+// sends plain text here; this route is the only thing that touches TG_TOKEN.
+async function handleSentinelPing(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
+  if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
+
+  const joelId = process.env.JOEL_TELEGRAM_CHAT_ID;
+  if (!joelId) return res.status(200).json({ ok: false, error: 'JOEL_TELEGRAM_CHAT_ID not set' });
+
+  const { text } = req.body || {};
+  if (!text?.trim()) return res.status(400).json({ ok: false, error: 'text required' });
+
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: joelId, text: text.slice(0, 4096), parse_mode: 'Markdown' }),
+    });
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    console.error('[Sentinel relay]', e.message);
+    return res.status(502).json({ ok: false, error: e.message });
+  }
+}
+
 // ── MAIN HANDLER ──────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
   const platform = req.query?.platform || '';
-  if (platform === 'telegram')  return handleTelegram(req, res);
-  if (platform === 'whatsapp')  return handleWhatsApp(req, res);
-  return res.status(200).json({ service: 'Flow Social', endpoints: { telegram: '/api/social?platform=telegram', whatsapp: '/api/social?platform=whatsapp' } });
+  if (platform === 'telegram')      return handleTelegram(req, res);
+  if (platform === 'whatsapp')      return handleWhatsApp(req, res);
+  if (platform === 'sentinel-ping') return handleSentinelPing(req, res);
+  return res.status(200).json({ service: 'Flow Social', endpoints: {
+    telegram: '/api/social?platform=telegram',
+    whatsapp: '/api/social?platform=whatsapp',
+    sentinelPing: '/api/social?platform=sentinel-ping',
+  } });
 }
