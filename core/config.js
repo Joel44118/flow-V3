@@ -36,7 +36,12 @@ RULES — never break:
   // greeting AND "flow" itself, so this trades a little false-positive risk
   // (harmless — it just opens the mic and times out after 3s) for much
   // better recall on quiet/far-away audio.
-  WAKE_REGEX:    /\b(?:hey|hay|hi|yo|ay|okay|ok|k)\b[\s,]{0,3}\bfl\w{0,5}\b/i,
+  // Wake pattern — wider net for how Web Speech API actually mishears
+  // "Hey Flow" in practice: "a/hay/hey/ay/yo/okay" + up to 2 filler words/punctuation + "flo*"
+  // "flo*" alone (without a trigger word) is no longer required to also match "they/say/play" etc,
+  // because those gave false POSITIVES before. This version trades a few more false negatives
+  // for far fewer accidental triggers, and widens the "flow" misheard-spelling set.
+  WAKE_REGEX: /\b(?:hey|hay|hi+|yo|ay|okay|ok|k|hyy|ei|eh)\b[\s,.!]{0,4}\b(?:flow|flo|floe|floh|floor|flue|flew|flu|flau)\w{0,3}\b/i,
   WEATHER_TTL:   10 * 60 * 1000,
 
   ORB: {
