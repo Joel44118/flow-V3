@@ -1,8 +1,8 @@
-// flow-electron/main.js (v3)
+// flow-electron/main.js (v4)
 // Single instance + native title bar + overlay gesture window +
-// system tray + cache clear + auto-updater
+// system tray + cache clear + auto-updater + FLOW SENTINEL
 
-const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCapturer, powerMonitor } = require('electron');
 const path = require('path');
 
 // ── Single instance — prevents double windows on double-click ─────────────
@@ -19,6 +19,13 @@ try {
   robot.setMouseDelay(0); robot.setKeyboardDelay(0);
   console.log('[Flow] robotjs ✓ OS cursor control active');
 } catch(e) { console.warn('[Flow] robotjs not found:', e.message); }
+
+// ── active-win — lightweight active window title polling for Sentinel ─────
+let activeWin = null;
+try {
+  activeWin = require('active-win');
+  console.log('[Flow] active-win ✓ Sentinel context tracking available');
+} catch(e) { console.warn('[Flow] active-win not found — Sentinel disabled:', e.message); }
 
 // ── Auto-updater ──────────────────────────────────────────────────────────
 let autoUpdater = null;
@@ -42,12 +49,10 @@ function createWindow() {
     height:   Math.min(820,  Math.round(height * 0.88)),
     minWidth: 480,
     minHeight: 360,
-    // Native Windows title bar overlay — buttons are OUTSIDE Flow's interface
-    // Real OS chrome, not HTML buttons
     titleBarStyle:   'hidden',
     titleBarOverlay: {
-      color:       '#060a1a',  // Flow background color
-      symbolColor: '#38bdf8',  // cyan minimize/maximize/close symbols
+      color:       '#060a1a',
+      symbolColor: '#38bdf8',
       height:      32,
     },
     backgroundColor: '#060a1a',
@@ -60,21 +65,11 @@ function createWindow() {
     show: false,
   });
 
-  // ── Clear cache on EVERY launch ───────────────────────────────────────
-  // This is the permanent fix for stale content on first open
-  // Service worker handles offline — Electron always gets fresh content
   mainWin.webContents.session.clearCache()
-    .then(() => mainWin.webContents.session.clearStorageData({
-      storages: ['serviceworkers'],  // force fresh SW registration too
-    }))
-    .then(() => {
-      mainWin.loadURL('https://flow-v3-mu.vercel.app');
-    })
-    .catch(() => {
-      mainWin.loadURL('https://flow-v3-mu.vercel.app');
-    });
+    .then(() => mainWin.webContents.session.clearStorageData({ storages: ['serviceworkers'] }))
+    .then(() => { mainWin.loadURL('https://flow-v3-mu.vercel.app'); })
+    .catch(() => { mainWin.loadURL('https://flow-v3-mu.vercel.app'); });
 
-  // Auto-grant all permissions — no annoying popups
   mainWin.webContents.session.setPermissionRequestHandler(
     (_wc, perm, cb) =>
       cb(['media','microphone','camera','notifications','geolocation'].includes(perm))
@@ -83,18 +78,15 @@ function createWindow() {
   mainWin.once('ready-to-show', () => {
     mainWin.show();
     mainWin.setTitle('Flow AI');
-    // Check for updates 4s after launch (background, silent)
     if (autoUpdater) setTimeout(() => autoUpdater.checkForUpdatesAndNotify().catch(() => {}), 4000);
   });
 
-  // Keyboard shortcuts
   mainWin.webContents.on('before-input-event', (_e, input) => {
     if (input.type !== 'keyDown') return;
     if (input.key === 'F12') mainWin.webContents.toggleDevTools();
     if (input.key === 'F5')  mainWin.webContents.reload();
   });
 
-  // Close → hide to tray (keeps Flow running, "Hey Flow" always listening)
   mainWin.on('close', e => {
     if (!app.isQuitting) { e.preventDefault(); mainWin.hide(); }
   });
@@ -103,8 +95,6 @@ function createWindow() {
 }
 
 // ── Overlay window — gesture dot across ALL apps ──────────────────────────
-// Transparent, always-on-top, click-through window covering full screen
-// The purple dot appears on top of EVERYTHING — Chrome, File Explorer, etc.
 function createOverlay() {
   const { width, height } = screen.getPrimaryDisplay().bounds;
 
@@ -125,7 +115,7 @@ function createOverlay() {
   });
 
   overlayWin.setIgnoreMouseEvents(true, { forward: true });
-  overlayWin.setAlwaysOnTop(true, 'screen-saver');  // above everything
+  overlayWin.setAlwaysOnTop(true, 'screen-saver');
 
   overlayWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!DOCTYPE html>
 <html><head><style>
@@ -145,13 +135,29 @@ body{background:transparent;overflow:hidden;width:100vw;height:100vh}
 #dot.click{border-color:rgba(74,222,128,0.95);background:rgba(74,222,128,0.22);}
 #dot.scroll{border-color:rgba(250,204,21,0.95);background:rgba(250,204,21,0.18);}
 #dot.held{border-style:dashed;opacity:0.5;}
+#sentinel-badge{
+  position:fixed;top:14px;right:14px;
+  font-family:system-ui,sans-serif;font-size:11px;font-weight:600;
+  color:#a78bfa;background:rgba(15,10,30,0.85);
+  border:1px solid rgba(167,139,250,0.4);border-radius:20px;
+  padding:5px 12px;display:none;align-items:center;gap:6px;
+  letter-spacing:.03em;
+}
+#sentinel-badge.show{display:flex;}
+#sentinel-dot{width:6px;height:6px;border-radius:50%;background:#a78bfa;
+  animation:pulse 1.6s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 </style></head>
-<body><div id="dot"></div>
+<body>
+<div id="dot"></div>
+<div id="sentinel-badge"><span id="sentinel-dot"></span>Flow is watching</div>
 <script>
 const dot = document.getElementById('dot');
+const badge = document.getElementById('sentinel-badge');
 const {ipcRenderer} = require('electron');
 ipcRenderer.on('dot-move',  (_,x,y,s) => { dot.style.display='block'; dot.style.left=x+'px'; dot.style.top=y+'px'; dot.className=s||''; });
 ipcRenderer.on('dot-hide',  ()        => { dot.style.display='none'; });
+ipcRenderer.on('sentinel-state', (_, active) => { badge.className = active ? 'show' : ''; });
 </script></body></html>`));
 
   overlayWin.on('closed', () => { overlayWin = null; });
@@ -168,10 +174,24 @@ function createTray() {
       { label: 'Open Flow',  click: () => { mainWin?.show(); mainWin?.focus(); } },
       { label: 'Reload',     click: () => { mainWin?.show(); mainWin?.webContents.reload(); } },
       { type: 'separator' },
+      { label: sentinelEnabled ? 'Disable Sentinel' : 'Enable Sentinel', click: () => toggleSentinel(!sentinelEnabled) },
+      { type: 'separator' },
       { label: 'Quit',       click: () => { app.isQuitting = true; app.quit(); } },
     ]));
     tray.on('click', () => mainWin?.isVisible() ? mainWin.focus() : mainWin?.show());
   } catch(e) { console.warn('[Flow] Tray:', e.message); }
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Flow',  click: () => { mainWin?.show(); mainWin?.focus(); } },
+    { label: 'Reload',     click: () => { mainWin?.show(); mainWin?.webContents.reload(); } },
+    { type: 'separator' },
+    { label: sentinelEnabled ? '🟣 Sentinel: ON (click to pause)' : 'Sentinel: OFF (click to enable)', click: () => toggleSentinel(!sentinelEnabled) },
+    { type: 'separator' },
+    { label: 'Quit',       click: () => { app.isQuitting = true; app.quit(); } },
+  ]));
 }
 
 // ── IPC: Gesture / cursor control ─────────────────────────────────────────
@@ -218,8 +238,191 @@ ipcMain.on('win_minimize', () => mainWin?.minimize());
 ipcMain.on('win_maximize', () => { if (!mainWin) return; mainWin.isMaximized() ? mainWin.unmaximize() : mainWin.maximize(); });
 ipcMain.on('win_close',    () => mainWin?.hide());
 
+// ═══════════════════════════════════════════════════════════════════════
+// FLOW SENTINEL — ambient context awareness, the Electron-only advantage
+//
+// A website cannot do this. A PWA cannot do this. This requires genuine
+// OS-level access that only the desktop app has:
+//
+//   1. Polls the active window title every ~12s (cheap — no screenshots
+//      unless something actually warrants a closer look)
+//   2. Detects two trigger conditions:
+//        a) "stuck" — same window title unchanged for 8+ minutes while
+//           the screen is NOT locked/idle (suggests Joel might be stuck
+//           debugging, staring at an error, etc.)
+//        b) explicit ask — Joel can trigger "what am I looking at?" any
+//           time via a hotkey or from Flow's own UI
+//   3. On trigger, captures a screenshot via desktopCapturer (Electron-only
+//      API — a browser tab cannot screenshot the OS desktop) and sends it
+//      to Flow's EXISTING /api/vision.js pipeline — no new AI plumbing
+//   4. Surfaces the result as a Flow chat message INSIDE the app if Joel
+//      is at the PC, and via the EXISTING Telegram bot
+//      (JOEL_TELEGRAM_CHAT_ID) if the system has been idle for 5+ minutes
+//      — closing the loop between "ambient watcher" and "Joel, anywhere"
+//
+// STRICT CONSENT: starts OFF by default. Joel must explicitly enable it
+// from Flow's UI or tray menu. The overlay shows a persistent "Flow is
+// watching" badge with a pulsing dot whenever Sentinel is active — never
+// silent, always visibly indicated, instantly toggleable.
+// ═══════════════════════════════════════════════════════════════════════
+
+let sentinelEnabled   = false;
+let sentinelInterval  = null;
+let lastWindowTitle   = null;
+let lastWindowChangeAt = Date.now();
+let lastNudgeAt        = 0;
+const STUCK_THRESHOLD_MS = 8 * 60 * 1000;   // 8 minutes unchanged = "stuck"
+const NUDGE_COOLDOWN_MS  = 20 * 60 * 1000;  // don't nudge more than once per 20 min
+const POLL_MS            = 12 * 1000;
+
+function setSentinelBadge(active) {
+  overlayWin?.webContents.send('sentinel-state', active);
+}
+
+async function captureScreenshotBase64() {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 1280, height: 800 },
+    });
+    const primary = sources[0];
+    if (!primary) return null;
+    return primary.thumbnail.toJPEG(70).toString('base64');
+  } catch (e) {
+    console.warn('[Sentinel] screenshot failed:', e.message);
+    return null;
+  }
+}
+
+async function askVisionAPI(base64, prompt) {
+  try {
+    const r = await fetch('https://flow-v3-mu.vercel.app/api/vision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64, prompt }),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d.description || null;
+  } catch (e) {
+    console.warn('[Sentinel] vision API failed:', e.message);
+    return null;
+  }
+}
+
+// Sends Joel a direct Telegram message via api/social.js's sentinel-ping
+// route. The bot token lives only on Vercel — this call carries plain text
+// only, never any credential.
+async function notifyJoelViaTelegram(text) {
+  try {
+    const r = await fetch('https://flow-v3-mu.vercel.app/api/social?platform=sentinel-ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const d = await r.json();
+    if (!d.ok) console.warn('[Sentinel] Telegram relay declined:', d.error);
+  } catch (e) { console.warn('[Sentinel] notify failed:', e.message); }
+}
+
+// Pushes to the same flow_pending_notifs key the bell UI polls — read then
+// write, matching the exact pattern api/social.js already uses for this key.
+async function pushBellNotification(text) {
+  try {
+    const r   = await fetch('https://flow-v3-mu.vercel.app/api/memory?key=flow_pending_notifs');
+    const cur = r.ok ? (await r.json()).value : null;
+    const arr = Array.isArray(cur) ? cur : [];
+    arr.push({ source: 'Sentinel', text: text.slice(0, 200), ts: Date.now(), read: false });
+    await fetch('https://flow-v3-mu.vercel.app/api/memory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'flow_pending_notifs', value: arr.slice(-30) }),
+    });
+  } catch (e) { console.warn('[Sentinel] bell push failed:', e.message); }
+}
+
+async function sentinelTick() {
+  if (!sentinelEnabled || !activeWin) return;
+
+  let win;
+  try { win = await activeWin(); } catch(_) { return; }
+  if (!win) return;
+
+  const title = win.title || win.owner?.name || 'unknown';
+  const idleSeconds = powerMonitor.getSystemIdleTime();
+  const isIdle = idleSeconds > 60; // treat as "away" past 60s idle
+
+  if (title !== lastWindowTitle) {
+    lastWindowTitle    = title;
+    lastWindowChangeAt = Date.now();
+    return; // context just changed — don't trigger on the same tick it changed
+  }
+
+  const unchangedFor = Date.now() - lastWindowChangeAt;
+  const sinceLastNudge = Date.now() - lastNudgeAt;
+
+  if (unchangedFor < STUCK_THRESHOLD_MS) return;
+  if (sinceLastNudge < NUDGE_COOLDOWN_MS) return;
+  if (isIdle) return; // don't analyse a screen nobody's looking at right now
+
+  // Trigger: same window for 8+ min, Joel is present (not idle) — likely stuck
+  console.log('[Sentinel] Stuck pattern detected on:', title);
+  const b64 = await captureScreenshotBase64();
+  if (!b64) return;
+
+  const desc = await askVisionAPI(
+    b64,
+    `Joel has been on the same window ("${title}") for over 8 minutes without switching context. Briefly describe what's on screen, and if there's an obvious error message, stuck state, or something you could help with, say so directly and concisely. If it just looks like normal focused work (writing, reading, designing), say that instead and don't suggest anything is wrong.`
+  );
+  if (!desc) return;
+
+  lastNudgeAt = Date.now();
+
+  // Surface inside Flow if a window exists and is visible; queue for the
+  // bell either way so it's never lost
+  await pushBellNotification(`👁 ${desc.slice(0, 180)}`);
+
+  if (mainWin && mainWin.isVisible()) {
+    mainWin.webContents.send('sentinel-observation', desc);
+  } else {
+    // Joel's away from the Flow window specifically (even if not system-idle)
+    // — also queue a Telegram ping so he sees it without opening Flow
+    await notifyJoelViaTelegram(`👁 Flow noticed: ${desc.slice(0, 180)}`);
+  }
+}
+
+function toggleSentinel(enable) {
+  sentinelEnabled = enable;
+  setSentinelBadge(enable);
+  refreshTrayMenu();
+  mainWin?.webContents.send('sentinel-toggled', enable);
+
+  if (enable && !sentinelInterval) {
+    lastWindowTitle    = null;
+    lastWindowChangeAt = Date.now();
+    sentinelInterval = setInterval(sentinelTick, POLL_MS);
+    console.log('[Sentinel] enabled');
+  } else if (!enable && sentinelInterval) {
+    clearInterval(sentinelInterval);
+    sentinelInterval = null;
+    console.log('[Sentinel] disabled');
+  }
+}
+
+ipcMain.on('sentinel_toggle', (_e, { enabled }) => toggleSentinel(!!enabled));
+ipcMain.handle('sentinel_status', () => ({ enabled: sentinelEnabled, available: !!activeWin }));
+
+// Manual "what am I looking at?" trigger — bypasses the stuck-timer entirely
+ipcMain.handle('sentinel_ask_now', async () => {
+  const b64 = await captureScreenshotBase64();
+  if (!b64) return { ok: false, error: 'Screenshot failed' };
+  const desc = await askVisionAPI(b64, 'Describe what is currently on screen, clearly and concisely.');
+  if (!desc) return { ok: false, error: 'Vision analysis failed' };
+  return { ok: true, description: desc };
+});
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(() => { createWindow(); createOverlay(); createTray(); });
 app.on('activate',         () => { if (!mainWin) createWindow(); else mainWin.show(); });
 app.on('window-all-closed',() => { /* stay in tray */ });
-app.on('before-quit',      () => { app.isQuitting = true; });
+app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); });
