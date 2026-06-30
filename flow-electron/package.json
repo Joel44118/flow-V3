@@ -1,7 +1,7 @@
 {
-  "name": "flow-ai-desktop",
-  "version": "1.0.0",
-  "description": "Flow AI Desktop App",
+  "name": "flow-ai",
+  "version": "1.1.0",
+  "description": "Flow AI Desktop",
   "main": "main.js",
   "scripts": {
     "start":     "electron .",
@@ -11,9 +11,21 @@
     "appId":       "com.joelflowstack.flow",
     "productName": "Flow AI",
     "files":       ["main.js", "preload.js", "icon.png"],
+    "publish": {
+      "provider": "github",
+      "owner":    "Joel44118",
+      "repo":     "flow-V3"
+    },
     "win": {
-      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
       "icon":   "icon.png"
+    },
+    "nsis": {
+      "oneClick":               true,
+      "perMachine":             false,
+      "createDesktopShortcut":  true,
+      "createStartMenuShortcut":true,
+      "shortcutName":           "Flow AI"
     }
   },
   "devDependencies": {
@@ -21,6 +33,7 @@
     "electron-builder": "^24.0.0"
   },
   "dependencies": {
-    "@jitsi/robotjs": "^0.6.12"
+    "electron-updater": "^6.1.8",
+    "@jitsi/robotjs":   "^0.6.12"
   }
 }
