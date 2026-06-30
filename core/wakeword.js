@@ -1,7 +1,19 @@
-// core/wakeword.js (v4)
-// FIX: PWA/desktop app mic permission — SpeechRecognition blocked until
-//      first user gesture. Solution: defer startWakeListener until first
-//      click/keydown/touchstart, then auto-restart if it silently dies.
+// core/wakeword.js (v5) — Deepgram streaming, replaces browser SpeechRecognition
+//
+// WHY: Browser SpeechRecognition (Chrome's built-in engine) has a real accuracy
+// ceiling — struggles with accents, background noise, and distance from mic,
+// regardless of how the matching regex is tuned. Deepgram's Nova-2 model is
+// purpose-built for streaming transcription and is materially more accurate.
+//
+// HOW IT WORKS:
+// 1. Get a short-lived token from /api/tts?action=token (real key stays server-side)
+// 2. Open a WebSocket to Deepgram's streaming endpoint
+// 3. Stream raw mic audio continuously
+// 4. Deepgram sends back transcripts in real time, with confidence + multiple alts
+// 5. Same wake-word matching logic as before, but on much more accurate text
+//
+// FALLBACK: if DEEPGRAM_API_KEY isn't configured, falls back to the old
+// browser SpeechRecognition path automatically — Flow still works either way.
 
 import { CONFIG } from "./config.js";
 import { Speech } from "./speech.js";
@@ -13,13 +25,15 @@ export function init(sendFn, setOrbState) {
   _orbFn  = setOrbState;
 }
 
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let wakeRec   = null;
-let cmdRec    = null;
-let _wakeLock = false;
-let _started  = false;
-
 const WAKE_STRIP_RX = new RegExp(CONFIG.WAKE_REGEX.source, "gi");
+
+let _wakeLock   = false;
+let _started    = false;
+let _mode       = null;     // 'deepgram' | 'browser'
+let _dgSocket   = null;
+let _dgStream   = null;
+let _dgAudioCtx = null;
+let _dgProcessor= null;
 
 // ── Audio beep ────────────────────────────────────────────────────────────
 let _audioCtx = null;
@@ -43,209 +57,281 @@ function playActivationBeep() {
   } catch(e) {}
 }
 
-// ── Wake listener ─────────────────────────────────────────────────────────
-function _buildWakeRec() {
-  if (!SR) return null;
-  const r = new SR();
-  r.continuous      = true;
-  r.interimResults  = true;
-  r.lang            = "en-US";
-  r.maxAlternatives = 8;
-
-  r.onresult = (e) => {
-    if (Speech.isSpeaking()) return;
-    if (_wakeLock) return;
-
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const res = e.results[i];
-
-      // Check EACH alternative independently — concatenating them into one
-      // string let unrelated alternatives dilute/contaminate a real match.
-      // Picking the first alternative that matches keeps that alternative's
-      // own transcript intact for the inline-command extraction below.
-      let matchedAlt = null;
-      for (let a = 0; a < res.length; a++) {
-        const t = res[a].transcript.toLowerCase();
-        if (CONFIG.WAKE_REGEX?.test(t)) { matchedAlt = a; break; }
-      }
-      if (matchedAlt === null) continue;
-
-      _wakeLock = true;
-      document.getElementById("wake-indicator")?.classList.add("active");
-      _orbFn?.("listening");
-      playActivationBeep();
-
-      const inlineCmd = res.isFinal
-        ? res[matchedAlt].transcript.toLowerCase()
-            .replace(WAKE_STRIP_RX, "")
-            .replace(/[.,!?]/g, "")
-            .trim()
-        : "";
-
-      if (inlineCmd.length > 3) {
-        setTimeout(() => {
-          _wakeLock = false;
-          document.getElementById("wake-indicator")?.classList.remove("active");
-          _sendFn(inlineCmd);
-          _orbFn?.("idle");
-        }, 400);
-      } else {
-        _wakeLock = false;
-        startCommandListen();
-      }
-      return;
-    }
-  };
-
-  r.onerror = (e) => {
-    if (e.error !== "no-speech" && e.error !== "aborted")
-      console.warn("[Flow] Wake SR error:", e.error);
-    _wakeLock = false;
-    // If mic was not-allowed in PWA, show indicator
-    if (e.error === "not-allowed") {
-      _showMicDenied();
-    }
-  };
-
-  r.onend = () => {
-    // Restart immediately unless we intentionally stopped for a command
-    if (!cmdRec) {
-      setTimeout(() => {
-        try { wakeRec?.start(); } catch(_) {}
-      }, 120);
-    }
-  };
-
-  return r;
-}
-
 function _showMicDenied() {
   const ind = document.getElementById("wake-indicator");
   if (ind) { ind.textContent = "🎤 Mic blocked — allow mic in browser settings"; ind.classList.add("active"); }
 }
 
-// ── Public start — defers until first user gesture if needed ──────────────
-export function startWakeListener() {
-  if (!SR) { console.warn("[Flow] SpeechRecognition not supported"); return; }
-  if (_started) return;
+// ── Shared: handle a transcript chunk from either engine ──────────────────
+// alternatives: array of { transcript, confidence }
+function _handleTranscript(alternatives, isFinal) {
+  if (Speech.isSpeaking()) return;
+  if (_wakeLock) return;
 
-  function _doStart() {
-    if (_started) return;
-    _started = true;
-
-    // Request mic permission explicitly first (unblocks PWA)
-    navigator.mediaDevices?.getUserMedia({ audio: true })
-      .then(stream => {
-        // Got permission — stop the test stream immediately, SR handles its own
-        stream.getTracks().forEach(t => t.stop());
-        wakeRec = _buildWakeRec();
-        try { wakeRec.start(); console.log("[Flow] Wake listener started ✓"); } catch(e) { console.warn("[Flow] Wake start err:", e); }
-      })
-      .catch(err => {
-        console.warn("[Flow] Mic permission denied:", err);
-        _showMicDenied();
-        // Still try SR anyway (some browsers allow it even without getUserMedia)
-        wakeRec = _buildWakeRec();
-        try { wakeRec.start(); } catch(_) {}
-      });
+  let matched = null;
+  for (const alt of alternatives) {
+    if (CONFIG.WAKE_REGEX?.test(alt.transcript.toLowerCase())) { matched = alt; break; }
   }
+  if (!matched) return;
 
-  // Try immediately (works if user already interacted with page)
-  // If it fails, wait for first gesture
-  try {
-    wakeRec = _buildWakeRec();
-    wakeRec.start();
-    _started = true;
-    console.log("[Flow] Wake listener started immediately ✓");
-  } catch(e) {
-    // NotAllowedError or InvalidStateError — wait for first gesture
-    console.log("[Flow] Wake deferred until gesture...");
-    const events = ["click", "keydown", "touchstart", "pointerdown"];
-    const handler = () => {
-      events.forEach(ev => document.removeEventListener(ev, handler));
-      _doStart();
-    };
-    events.forEach(ev => document.addEventListener(ev, handler, { once: false }));
+  _wakeLock = true;
+  document.getElementById("wake-indicator")?.classList.add("active");
+  _orbFn?.("listening");
+  playActivationBeep();
 
-    // Also try after 2s (user may have already interacted before boot)
-    setTimeout(() => { if (!_started) _doStart(); }, 2000);
+  const inlineCmd = isFinal
+    ? matched.transcript.toLowerCase().replace(WAKE_STRIP_RX, "").replace(/[.,!?]/g, "").trim()
+    : "";
+
+  if (inlineCmd.length > 3) {
+    setTimeout(() => {
+      _wakeLock = false;
+      document.getElementById("wake-indicator")?.classList.remove("active");
+      _sendFn(inlineCmd);
+      _orbFn?.("idle");
+    }, 400);
+  } else {
+    _wakeLock = false;
+    startCommandListen();
   }
 }
 
-// ── Command listener ──────────────────────────────────────────────────────
+// ── DEEPGRAM streaming path ─────────────────────────────────────────────────
+async function _startDeepgram() {
+  try {
+    const tokRes = await fetch("/api/tts?action=token");
+    const tok    = await tokRes.json();
+    if (!tok.configured || !tok.key) return false;  // not configured — fall back
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    _dgStream = stream;
+
+    const url = "wss://api.deepgram.com/v1/listen"
+      + "?model=nova-2"
+      + "&language=en"
+      + "&interim_results=true"
+      + "&endpointing=300"
+      + "&alternatives=5"
+      + "&smart_format=true";
+
+    const socket = new WebSocket(url, ["token", tok.key]);
+    _dgSocket = socket;
+
+    socket.onopen = () => {
+      console.log("[Flow] Deepgram connected ✓");
+      _dgAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const source = _dgAudioCtx.createMediaStreamSource(stream);
+      _dgProcessor = _dgAudioCtx.createScriptProcessor(4096, 1, 1);
+
+      source.connect(_dgProcessor);
+      _dgProcessor.connect(_dgAudioCtx.destination);
+
+      _dgProcessor.onaudioprocess = (e) => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        const input  = e.inputBuffer.getChannelData(0);
+        const pcm16  = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+          const s = Math.max(-1, Math.min(1, input[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        socket.send(pcm16.buffer);
+      };
+    };
+
+    socket.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        const alts = data?.channel?.alternatives;
+        if (!alts?.length) return;
+        const formatted = alts.map(a => ({
+          transcript: a.transcript || "",
+          confidence: a.confidence || 0,
+        })).filter(a => a.transcript);
+        if (!formatted.length) return;
+        _handleTranscript(formatted, !!data.is_final);
+      } catch(_) {}
+    };
+
+    socket.onerror = (e) => {
+      console.warn("[Flow] Deepgram socket error — falling back to browser SR");
+      _teardownDeepgram();
+      _startBrowserSR();
+    };
+
+    socket.onclose = () => {
+      // Reconnect automatically unless we're mid-command-listen
+      if (_mode === "deepgram" && !window.__flowCmdActive) {
+        setTimeout(() => { if (_mode === "deepgram") _startDeepgram(); }, 500);
+      }
+    };
+
+    _mode = "deepgram";
+    return true;
+  } catch (err) {
+    console.warn("[Flow] Deepgram setup failed, falling back:", err.message);
+    return false;
+  }
+}
+
+function _teardownDeepgram() {
+  try { _dgProcessor?.disconnect(); } catch(_) {}
+  try { _dgAudioCtx?.close(); } catch(_) {}
+  try { _dgSocket?.close(); } catch(_) {}
+  try { _dgStream?.getTracks().forEach(t => t.stop()); } catch(_) {}
+  _dgProcessor = _dgAudioCtx = _dgSocket = _dgStream = null;
+}
+
+// ── BROWSER SpeechRecognition fallback path (unchanged logic) ─────────────
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let wakeRec = null;
+let cmdRec  = null;
+
+function _buildWakeRec() {
+  if (!SR) return null;
+  const r = new SR();
+  r.continuous = true; r.interimResults = true; r.lang = "en-US"; r.maxAlternatives = 8;
+
+  r.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      const alts = [];
+      for (let a = 0; a < res.length; a++) alts.push({ transcript: res[a].transcript, confidence: res[a].confidence || 0 });
+      _handleTranscript(alts, res.isFinal);
+    }
+  };
+  r.onerror = (e) => {
+    if (e.error !== "no-speech" && e.error !== "aborted") console.warn("[Flow] Wake SR error:", e.error);
+    if (e.error === "not-allowed") _showMicDenied();
+  };
+  r.onend = () => { if (!cmdRec) setTimeout(() => { try { wakeRec?.start(); } catch(_) {} }, 120); };
+  return r;
+}
+
+function _startBrowserSR() {
+  if (!SR) { console.warn("[Flow] No speech recognition available at all"); return; }
+  _mode = "browser";
+  navigator.mediaDevices?.getUserMedia({ audio: true })
+    .then(stream => {
+      stream.getTracks().forEach(t => t.stop());
+      wakeRec = _buildWakeRec();
+      try { wakeRec.start(); console.log("[Flow] Browser SR wake listener started"); } catch(_) {}
+    })
+    .catch(() => {
+      _showMicDenied();
+      wakeRec = _buildWakeRec();
+      try { wakeRec.start(); } catch(_) {}
+    });
+}
+
+// ── Public: start wake listener — tries Deepgram first, falls back ────────
+export async function startWakeListener() {
+  if (_started) return;
+  _started = true;
+
+  const ok = await _startDeepgram();
+  if (!ok) _startBrowserSR();
+}
+
+// ── Command listener — explicit command after wake word or mic button ─────
 export function startCommandListen() {
-  if (!SR) return;
+  window.__flowCmdActive = true;
+
+  if (_mode === "deepgram" && _dgSocket?.readyState === WebSocket.OPEN) {
+    _runDeepgramCommand();
+  } else if (SR) {
+    _runBrowserCommand();
+  }
+}
+
+function _finishCommand(text, micBtn) {
+  window.__flowCmdActive = false;
+  if (micBtn) micBtn.textContent = "🎤";
+  _orbFn?.("idle");
+  document.getElementById("wake-indicator")?.classList.remove("active");
+
+  const trimmed = text.trim();
+  if (trimmed.length > 1) {
+    const inp = document.getElementById("user-input");
+    if (inp) inp.textContent = trimmed;
+    _sendFn(trimmed);
+  }
+
+  // Resume wake listening
+  setTimeout(() => {
+    if (_mode === "deepgram") { if (!_dgSocket || _dgSocket.readyState !== WebSocket.OPEN) _startDeepgram(); }
+    else { try { wakeRec?.start(); } catch(_) {} }
+  }, 400);
+}
+
+function _runDeepgramCommand() {
+  const micBtn = document.getElementById("mic-btn");
+  _orbFn?.("listening");
+  if (micBtn) micBtn.textContent = "⏹";
+
+  let transcript = "";
+  let silenceTimer = null;
+  const resetSilence = () => {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => {
+      socket.removeEventListener("message", onMsg);
+      _finishCommand(transcript, micBtn);
+    }, 4200);
+  };
+
+  const socket = _dgSocket;
+  function onMsg(msg) {
+    try {
+      const data = JSON.parse(msg.data);
+      const best = data?.channel?.alternatives?.[0];
+      if (!best?.transcript) return;
+      if (data.is_final) transcript += " " + best.transcript;
+      resetSilence();
+    } catch(_) {}
+  }
+  socket.addEventListener("message", onMsg);
+  resetSilence();
+}
+
+function _runBrowserCommand() {
   try { wakeRec?.stop(); } catch(_) {}
   if (cmdRec) { try { cmdRec.abort(); } catch(_) {} cmdRec = null; }
 
   const micBtn = document.getElementById("mic-btn");
-
   cmdRec = new SR();
-  cmdRec.lang            = "en-US";
-  cmdRec.continuous      = true;
-  cmdRec.interimResults  = true;
-  cmdRec.maxAlternatives = 5;   // was 1 — pick best-confidence alt instead of Chrome's top guess only
+  cmdRec.lang = "en-US"; cmdRec.continuous = true; cmdRec.interimResults = true; cmdRec.maxAlternatives = 5;
 
   _orbFn?.("listening");
   if (micBtn) micBtn.textContent = "⏹";
 
-  let _transcript   = "";
+  let _transcript = "";
   let _silenceTimer = null;
-
-  function _resetSilenceTimer() {
+  const resetSilence = () => {
     if (_silenceTimer) clearTimeout(_silenceTimer);
-    _silenceTimer = setTimeout(_finish, 4200);  // was 3000 — gives more room for natural pauses
-  }
-
-  function _finish() {
+    _silenceTimer = setTimeout(finish, 4200);
+  };
+  const finish = () => {
     if (_silenceTimer) { clearTimeout(_silenceTimer); _silenceTimer = null; }
     try { cmdRec?.abort(); } catch(_) {}
     cmdRec = null;
-    if (micBtn) micBtn.textContent = "🎤";
-    _orbFn?.("idle");
-    document.getElementById("wake-indicator")?.classList.remove("active");
-
-    const text = _transcript.trim();
-    if (text.length > 1) {
-      const inp = document.getElementById("user-input");
-      if (inp) inp.textContent = text;
-      _sendFn(text);
-    }
-    // Restart wake listener
-    setTimeout(() => {
-      try { wakeRec?.start(); } catch(_) {}
-    }, 400);
-  }
+    _finishCommand(_transcript, micBtn);
+  };
 
   cmdRec.onresult = (e) => {
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
-
-      // Pick the alternative with the highest reported confidence, not just
-      // index 0 — Chrome's "most likely" ordering and actual confidence score
-      // can disagree, especially with background noise or accents.
       let best = r[0];
-      for (let a = 1; a < r.length; a++) {
-        if ((r[a].confidence || 0) > (best.confidence || 0)) best = r[a];
-      }
-
+      for (let a = 1; a < r.length; a++) if ((r[a].confidence || 0) > (best.confidence || 0)) best = r[a];
       if (r.isFinal) _transcript += " " + best.transcript;
       else interim = best.transcript;
     }
-    if (interim || e.results[e.resultIndex]?.isFinal) _resetSilenceTimer();
+    if (interim || e.results[e.resultIndex]?.isFinal) resetSilence();
   };
+  cmdRec.onerror = (e) => { if (e.error === "no-speech") finish(); else finish(); };
+  cmdRec.onend = () => { if (_silenceTimer) finish(); };
 
-  cmdRec.onerror = (e) => {
-    if (e.error === "no-speech") _finish();
-    else { console.warn("[Flow] cmdRec error:", e.error); _finish(); }
-  };
-
-  cmdRec.onend = () => { if (_silenceTimer) _finish(); };
-
-  _resetSilenceTimer();
+  resetSilence();
   try { cmdRec.start(); } catch(e) {
-    console.error("[Flow] cmdRec start failed:", e);
     if (micBtn) micBtn.textContent = "🎤";
     _orbFn?.("idle");
   }
