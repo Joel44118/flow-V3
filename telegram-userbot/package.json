@@ -1,0 +1,16 @@
+{
+  "name": "flow-telegram-userbot",
+  "version": "1.0.0",
+  "description": "Flow personal Telegram auto-reply — always-on listener",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "login": "node login.js"
+  },
+  "dependencies": {
+    "telegram": "^2.22.2",
+    "input": "^1.0.1"
+  },
+  "engines": { "node": ">=18" }
+}
