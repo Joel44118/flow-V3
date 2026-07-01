@@ -35,7 +35,7 @@ import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
 import { Projects } from "./core/projects.js";
 import { initAuth, resetPin } from "./ui/auth.js";
 import { initNotifications } from "./ui/notifications.js";
-import { initSentinel } from "./ui/sentinel.js";
+import { initSentinel, parseReplayCommand } from "./ui/sentinel.js";
 import { initFeedback } from "./core/feedback.js";
 import { initProjects, handleProjectCommand } from "./ui/projects.js";
 import { initScreenControl, parseScreenControl } from "./ui/screencontrol.js";
@@ -231,6 +231,11 @@ async function flowSend(text) {
   try {
     // Intercept pending file push (set by /push command)
     if (await checkPendingPush(text)) return;
+
+    // Watch · Learn · Replicate — Electron-only, safely no-ops elsewhere.
+    // Checked early so a confirmation like "do it" isn't swallowed by a
+    // more generic parser further down the chain.
+    if (await parseReplayCommand(text)) return;
 
     // Knowledge base
     if (/open\s+knowledge(\s+base)?|knowledge\s+base|my\s+knowledge/i.test(text)) {
