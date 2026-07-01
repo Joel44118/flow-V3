@@ -230,6 +230,19 @@ export async function startWakeListener() {
 
   const ok = await _startDeepgram();
   if (!ok) _startBrowserSR();
+
+  // One-time visible confirmation of which engine actually activated —
+  // without this, a silent failure and a working listener look identical
+  // from the chat UI, which is exactly what made this hard to diagnose.
+  setTimeout(() => {
+    if (_mode === "deepgram" && _dgSocket?.readyState === WebSocket.OPEN) {
+      _sendFn?.("__SYSTEM__🎙️ Voice listening active — using Deepgram (high accuracy).");
+    } else if (_mode === "browser" && wakeRec) {
+      _sendFn?.("__SYSTEM__🎙️ Voice listening active — using your browser's built-in speech recognition (Deepgram not configured or unreachable).");
+    } else {
+      _sendFn?.("__SYSTEM__⚠️ Voice listening did not start — no working speech engine was found. Say the wake word won't do anything until this is resolved.");
+    }
+  }, 1800);
 }
 
 // ── Command listener — explicit command after wake word or mic button ─────
@@ -240,6 +253,15 @@ export function startCommandListen() {
     _runDeepgramCommand();
   } else if (SR) {
     _runBrowserCommand();
+  } else {
+    // Genuine dead end — neither engine is usable. This used to fail with
+    // zero feedback, which is exactly what looked like "Flow isn't hearing
+    // me" with no way to tell why. Now it says so directly, in chat.
+    window.__flowCmdActive = false;
+    _orbFn?.("idle");
+    if (_sendFn) {
+      _sendFn("__SYSTEM__⚠️ Voice input isn't available right now — your browser doesn't support speech recognition and Deepgram isn't reachable. Voice commands need either a Chrome-based browser or a working Deepgram connection.");
+    }
   }
 }
 
