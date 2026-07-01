@@ -59,6 +59,34 @@ body {
   padding:0 20px;
   background:linear-gradient(180deg,rgba(6,10,26,0.92) 0%,transparent 100%);
   z-index:20;
+  -webkit-app-region: drag; /* whole bar drags the window in Electron; no-op in browser */
+}
+#win-controls {
+  -webkit-app-region: no-drag; /* buttons must stay clickable, not part of the drag zone */
+  display:flex; align-items:center; gap:10px; margin-left:16px;
+}
+#win-controls button {
+  width:12px; height:12px; border-radius:50%; border:none; cursor:pointer;
+  padding:0; position:relative; transition:filter .15s, transform .15s;
+  background:rgba(56,189,248,0.18); box-shadow:0 0 0 1px rgba(56,189,248,0.35) inset;
+}
+#win-controls button:hover { filter:brightness(1.6); transform:scale(1.12); }
+#win-min::before, #win-max::before, #win-close::before {
+  content:''; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  border:1px solid rgba(56,189,248,0.85);
+}
+#win-min::before   { width:6px; height:0; border-bottom:1px solid rgba(56,189,248,0.85); border-top:none; border-left:none; border-right:none; }
+#win-max::before   { width:6px; height:6px; border-radius:1px; }
+#win-close::before {
+  width:7px; height:7px; border:none; background:none;
+  background-image:linear-gradient(45deg,transparent 45%,rgba(56,189,248,0.9) 45%,rgba(56,189,248,0.9) 55%,transparent 55%),
+                    linear-gradient(-45deg,transparent 45%,rgba(56,189,248,0.9) 45%,rgba(56,189,248,0.9) 55%,transparent 55%);
+}
+#win-close { background:rgba(248,113,113,0.15); box-shadow:0 0 0 1px rgba(248,113,113,0.35) inset; }
+#win-close:hover { background:rgba(248,113,113,0.3); }
+#win-close::before {
+  background-image:linear-gradient(45deg,transparent 45%,rgba(248,113,113,0.95) 45%,rgba(248,113,113,0.95) 55%,transparent 55%),
+                    linear-gradient(-45deg,transparent 45%,rgba(248,113,113,0.95) 45%,rgba(248,113,113,0.95) 55%,transparent 55%);
 }
 #flow-logo {
   font-family:var(--fd); font-size:17px; font-weight:700;
