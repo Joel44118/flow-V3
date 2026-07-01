@@ -19,5 +19,12 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     askNow:   ()         => ipcRenderer.invoke('sentinel_ask_now'),
     onObservation: (cb) => ipcRenderer.on('sentinel-observation', (_e, desc) => cb(desc)),
     onToggled:     (cb) => ipcRenderer.on('sentinel-toggled', (_e, enabled) => cb(enabled)),
+
+    // Watch · Learn · Replicate — records a rolling screenshot+window trail,
+    // then extracts and (with confirmation) replays a short action sequence.
+    learnToggle: (enabled) => ipcRenderer.send('sentinel_learn_toggle', { enabled }),
+    learnStatus: ()        => ipcRenderer.invoke('sentinel_learn_status'),
+    replayPlan:    (instruction)               => ipcRenderer.invoke('sentinel_replay_plan', { instruction }),
+    replayExecute: (action, x, y, text, direction) => ipcRenderer.invoke('sentinel_replay_execute', { action, x, y, text, direction }),
   },
 });
