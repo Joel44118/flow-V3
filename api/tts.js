@@ -57,27 +57,28 @@ async function handleDeepgramToken(req, res) {
   if (!key) return res.status(503).json({ error: "DEEPGRAM_API_KEY not set", configured: false });
 
   try {
-    const projRes = await fetch("https://api.deepgram.com/v1/projects", {
-      headers: { Authorization: `Token ${key}` },
-    });
-    const projects  = await projRes.json();
-    const projectId = projects?.projects?.[0]?.project_id;
-    if (!projectId) throw new Error("No Deepgram project found on this account");
-
-    const grantRes = await fetch(`https://api.deepgram.com/v1/projects/${projectId}/keys`, {
+    // The correct endpoint for a short-lived client-side token is the
+    // dedicated /v1/auth/grant route — NOT a projects lookup followed by a
+    // scoped-key creation call. That two-step flow was fragile (an extra
+    // network hop that could fail independently) and used the wrong mental
+    // model entirely; /v1/auth/grant exists specifically for this.
+    // Default TTL is only 30s, which is far too short for a voice session
+    // that stays open while Joel talks — explicitly requesting a longer TTL.
+    const grantRes = await fetch("https://api.deepgram.com/v1/auth/grant", {
       method:  "POST",
       headers: { Authorization: `Token ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        comment:                 "flow-temp-" + Date.now(),
-        scopes:                  ["usage:write"],
-        time_to_live_in_seconds: 300, // 5 minutes
-      }),
+      body: JSON.stringify({ ttl_seconds: 300 }), // 5 minutes — refreshed by the client before expiry
     });
 
-    if (!grantRes.ok) throw new Error(`Deepgram key grant failed: ${grantRes.status}`);
+    if (!grantRes.ok) {
+      const errText = await grantRes.text();
+      throw new Error(`Deepgram grant failed: ${grantRes.status} ${errText.slice(0, 200)}`);
+    }
     const grant = await grantRes.json();
+    const token = grant.access_token || grant.token || grant.key;
+    if (!token) throw new Error("Deepgram grant returned no token field");
 
-    return res.status(200).json({ configured: true, key: grant.key });
+    return res.status(200).json({ configured: true, key: token });
   } catch (e) {
     console.error("[Flow Deepgram] token error:", e.message);
     return res.status(502).json({ error: e.message, configured: true });
