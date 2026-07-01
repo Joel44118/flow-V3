@@ -11,14 +11,45 @@ const KV_URL    = process.env.KV_REST_API_URL;
 const KV_KEY    = process.env.KV_REST_API_TOKEN;
 const SITE      = 'https://flow-v3-mu.vercel.app';
 
+// ── Shared: per-chat conversation history in KV ───────────────────────────
+// Root cause of "Flow always says Hi": askFlow used to send only the current
+// message with zero prior turns, so every reply looked like the start of a
+// brand-new conversation to the model. This stores the last 12 turns per
+// chat (keyed by platform+chatId) and feeds them back in on every call.
+async function getHistory(histKey) {
+  if (!KV_URL || !KV_KEY) return [];
+  try {
+    const r = await fetch(`${KV_URL}/get/${encodeURIComponent(histKey)}`, {
+      headers: { Authorization: `Bearer ${KV_KEY}` },
+    });
+    const d = r.ok ? await r.json() : null;
+    return Array.isArray(d?.result) ? d.result : [];
+  } catch (_) { return []; }
+}
+
+async function saveHistory(histKey, history) {
+  if (!KV_URL || !KV_KEY) return;
+  try {
+    await fetch(`${KV_URL}/set/${encodeURIComponent(histKey)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(history.slice(-12)),
+    });
+  } catch (_) {}
+}
+
 // ── Shared: Ask Flow AI ───────────────────────────────────────────────────
-async function askFlow(userMsg, context = '', imageDesc = '') {
+async function askFlow(userMsg, context = '', imageDesc = '', histKey = null) {
   const SYSTEM = `You are Flow, Joel Olanrewaju's personal AI assistant.
-You are auto-replying to a ${context} message on Joel's behalf.
+You are continuing an ongoing ${context} conversation on Joel's behalf.
 Joel runs Joelflowstack — premium web development and AI automation services.
 Be helpful, friendly, professional. Keep replies under 200 words.
+This is an ongoing thread — do not re-greet or re-introduce yourself if there is prior conversation history below; just continue naturally.
 ${imageDesc ? `The user sent an image. Here is what it shows: ${imageDesc}\nRespond to both the image and their message.` : ''}
 If you cannot answer something specific, say you will pass it to Joel.`;
+
+  const history = histKey ? await getHistory(histKey) : [];
+  const userContent = userMsg || (imageDesc ? 'See the image I sent.' : 'Hello');
 
   const r = await fetch(`${SITE}/api/chat`, {
     method: 'POST',
@@ -26,13 +57,21 @@ If you cannot answer something specific, say you will pass it to Joel.`;
     body: JSON.stringify({
       messages: [
         { role: 'system', content: SYSTEM },
-        { role: 'user',   content: userMsg || (imageDesc ? 'See the image I sent.' : 'Hello') },
+        ...history,
+        { role: 'user', content: userContent },
       ],
     }),
   });
   if (!r.ok) throw new Error(`chat ${r.status}`);
   const d = await r.json();
-  return d.reply?.trim() || "Hi! I'm Flow, Joel's AI. Your message was received!";
+  const reply = d.reply?.trim() || "I'm Flow, Joel's AI. Your message was received!";
+
+  if (histKey) {
+    const updated = [...history, { role: 'user', content: userContent }, { role: 'assistant', content: reply }];
+    await saveHistory(histKey, updated);
+  }
+
+  return reply;
 }
 
 // ── Shared: Analyze image via Flow vision API ─────────────────────────────
@@ -98,7 +137,18 @@ async function handleTelegram(req, res) {
   }).catch(e => console.error('[TG]', method, e.message));
 
   const update = req.body;
-  const msg    = update?.message || update?.edited_message;
+
+  // Telegram Business connect/disconnect event — just log it, nothing to reply to
+  if (update?.business_connection) {
+    console.log('[TG] Business connection update:', update.business_connection.id, 'enabled:', update.business_connection.is_enabled);
+    return res.status(200).json({ ok: true });
+  }
+
+  // Business messages arrive on a completely separate field from regular
+  // messages — a bot that only checks update.message will silently ignore
+  // these even once connected.
+  const isBusiness = !!update?.business_message;
+  const msg = update?.message || update?.edited_message || update?.business_message;
   if (!msg) return res.status(200).json({ ok: true });
 
   const chatId   = msg.chat.id;
@@ -106,9 +156,10 @@ async function handleTelegram(req, res) {
   const username = msg.from?.username
     ? `@${msg.from.username}`
     : msg.from?.first_name || String(chatId);
+  const histKey  = `flow_tg_hist_${chatId}`;
 
-  // /start command
-  if (text === '/start') {
+  // /start command (not applicable to business messages)
+  if (text === '/start' && !isBusiness) {
     await tgFetch('sendMessage', {
       chat_id: chatId,
       text: `👋 Hi ${username}! I'm *Flow*, Joel's AI assistant.\n\nYou can send me text messages or photos and I'll respond right away!`,
@@ -149,32 +200,45 @@ async function handleTelegram(req, res) {
     }
   }
 
-  // Get AI reply
+  // Get AI reply — histKey gives real conversation memory, fixing the
+  // "always re-greets" issue at its root
   const reply = await askFlow(
     text || (imageDesc ? 'What do you think about this image?' : 'Hello'),
     `Telegram ${username}`,
-    imageDesc
+    imageDesc,
+    histKey
   );
 
-  // Send reply
-  await tgFetch('sendMessage', {
+  // Send reply — business messages must echo back business_connection_id
+  // or Telegram rejects the send
+  const sendPayload = {
     chat_id:    chatId,
     text:       reply.slice(0, 4096),
     parse_mode: 'Markdown',
-  });
+  };
+  if (isBusiness) sendPayload.business_connection_id = update.business_message.business_connection_id;
+  await tgFetch('sendMessage', sendPayload);
 
   // Build summary for Joel
   const summary = [
-    `📨 *${username}* on Telegram:`,
+    `${isBusiness ? '💼' : '📨'} *${username}*${isBusiness ? ' (Business chat)' : ''} on Telegram:`,
     text ? `"${text.slice(0, 150)}"` : '',
     imageDesc ? `📷 *Image:* ${imageDesc.slice(0, 150)}` : '',
     `\n✅ *Flow replied:*\n"${reply.slice(0, 200)}"`,
   ].filter(Boolean).join('\n');
 
-  // Notify Joel + push to bell + store summary — all parallel
+  // Notify Joel + push to bell + store summary — all parallel.
+  // pushNotif() always runs regardless of JOEL_TELEGRAM_CHAT_ID, so the bell
+  // is never silently skipped. The direct-message ping is best-effort on top
+  // of that — if it's skipped, we log exactly why instead of failing quietly.
   const joelId = process.env.JOEL_TELEGRAM_CHAT_ID;
+  if (!joelId) {
+    console.warn('[TG] JOEL_TELEGRAM_CHAT_ID is not set — Joel will only see this via the bell, not a direct Telegram ping.');
+  } else if (String(chatId) === String(joelId)) {
+    console.log('[TG] Message came from Joel\'s own chat_id — skipping self-notification.');
+  }
   await Promise.all([
-    pushNotif('Telegram', `${username}: ${(text || '[image]').slice(0, 120)}`),
+    pushNotif('Telegram', `${isBusiness ? '💼 ' : ''}${username}: ${(text || '[image]').slice(0, 120)}`),
     storeSummary('telegram', username, text || '[image]', reply, !!imageDesc),
     joelId && String(chatId) !== String(joelId)
       ? tgFetch('sendMessage', { chat_id: joelId, text: summary, parse_mode: 'Markdown' })
@@ -230,7 +294,8 @@ async function handleWhatsApp(req, res) {
     } catch (e) { console.error('[WA] Image error:', e.message); }
   }
 
-  const reply = await askFlow(text || 'Hello', `WhatsApp from ${contact}`, imageDesc);
+  const histKey = `flow_wa_hist_${from}`;
+  const reply = await askFlow(text || 'Hello', `WhatsApp from ${contact}`, imageDesc, histKey);
   await sendWA(from, reply);
 
   const myNum = process.env.JOEL_WHATSAPP_NUMBER;
