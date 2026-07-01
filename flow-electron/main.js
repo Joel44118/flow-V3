@@ -416,8 +416,133 @@ ipcMain.handle('sentinel_ask_now', async () => {
   return { ok: true, description: desc };
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// WATCH · LEARN · REPLICATE
+//
+// SCOPE, STATED PLAINLY: this records a rolling trail of (screenshot +
+// active window title) while Sentinel is on, and when Joel asks Flow to
+// replay something, sends that trail to the vision API to extract a short
+// step sequence, then executes those steps through the exact same
+// robot.moveMouse / mouseClick / typeString calls gesture control already
+// uses and has proven reliable.
+//
+// WHAT THIS DELIBERATELY DOES NOT DO: it does not hook real OS-level mouse
+// clicks or keystrokes (a package called uiohook-napi exists for that, but
+// it's a native module requiring compilation — given the real robotjs
+// build friction already hit in this project, adding a second fragile
+// native dependency is a bad trade for a first version). This means replay
+// works on "do the thing I was just doing" style requests grounded in
+// what actually appeared on screen, not on replaying literal pixel-perfect
+// click coordinates from before. That's an honest, real limitation — not
+// hidden, not oversold.
+// ═══════════════════════════════════════════════════════════════════════
+
+const TRAIL_MAX_AGE_MS   = 6 * 60 * 1000; // keep last 6 minutes
+const TRAIL_CAPTURE_MS   = 15 * 1000;     // one frame every 15s while learning
+let trailRecording = false;
+let trailInterval   = null;
+let trail            = []; // [{ ts, title, screenshot(base64, small) }]
+
+async function trailTick() {
+  if (!trailRecording) return;
+  let win;
+  try { win = await activeWin?.(); } catch (_) { win = null; }
+  const title = win?.title || win?.owner?.name || 'unknown';
+  const b64 = await captureScreenshotBase64();
+  if (!b64) return;
+
+  trail.push({ ts: Date.now(), title, screenshot: b64 });
+  const cutoff = Date.now() - TRAIL_MAX_AGE_MS;
+  trail = trail.filter(f => f.ts >= cutoff);
+}
+
+function startTrailRecording() {
+  if (trailRecording) return;
+  trailRecording = true;
+  trail = [];
+  trailInterval = setInterval(trailTick, TRAIL_CAPTURE_MS);
+  trailTick(); // capture one frame immediately, don't wait for the first interval
+  console.log('[Sentinel] Watch & Learn recording started');
+}
+
+function stopTrailRecording() {
+  trailRecording = false;
+  if (trailInterval) clearInterval(trailInterval);
+  trailInterval = null;
+  console.log('[Sentinel] Watch & Learn recording stopped —', trail.length, 'frames kept');
+}
+
+// Ask the AI to turn the last N seconds of the trail into a short,
+// literal step list. Uses the LAST frame as the primary image (most
+// relevant to "what I was just doing") plus the window-title sequence for
+// context, rather than sending every frame — keeps this fast and cheap.
+async function extractStepsFromTrail(instruction) {
+  if (!trail.length) return { ok: false, error: 'No recent activity recorded — enable Sentinel and Watch & Learn first, then try the task once before asking Flow to replay it.' };
+
+  const recent = trail.slice(-4); // last ~60s of frames
+  const titles = [...new Set(recent.map(f => f.title))];
+  const lastFrame = recent[recent.length - 1];
+
+  const desc = await askVisionAPI(
+    lastFrame.screenshot,
+    `Joel asked: "${instruction}". Here is the most recent screenshot of what he was doing. The windows he was active in over the last minute, in order: ${titles.join(' → ')}. ` +
+    `Based on this, describe in 3-6 short numbered steps what action Joel likely wants repeated, in concrete terms (e.g. "1. Click the Send button in the bottom right" or "2. Type the message text"). ` +
+    `If the screenshot doesn't give enough information to know exact click locations, say so plainly instead of guessing coordinates — do not invent precise pixel positions you cannot actually see.`
+  );
+
+  if (!desc) return { ok: false, error: 'Vision analysis failed' };
+  return { ok: true, steps: desc, framesUsed: recent.length, windows: titles };
+}
+
+ipcMain.on('sentinel_learn_toggle', (_e, { enabled }) => {
+  if (enabled) startTrailRecording(); else stopTrailRecording();
+});
+ipcMain.handle('sentinel_learn_status', () => ({ recording: trailRecording, frames: trail.length }));
+
+// This returns the AI's step description back to the renderer — Flow reads
+// it out / shows it in chat and confirms with Joel BEFORE anything is
+// clicked or typed. Replay of the confirmed steps is a separate, explicit
+// second call (sentinel_replay_execute) — this two-step design means Flow
+// never silently starts clicking around on its own.
+ipcMain.handle('sentinel_replay_plan', async (_e, { instruction }) => {
+  return extractStepsFromTrail(instruction);
+});
+
+// Executes ONE concrete action Joel (or the plan-confirmation step) has
+// approved. Reuses the identical robot calls as gesture control — same
+// proven code path, not a new one.
+ipcMain.handle('sentinel_replay_execute', (_e, { action, x, y, text, direction }) => {
+  try {
+    switch (action) {
+      case 'click':
+        robot?.moveMouse(Math.round(x), Math.round(y));
+        robot?.mouseClick('left');
+        moveDot(x, y, 'click');
+        return { ok: true };
+      case 'move':
+        robot?.moveMouse(Math.round(x), Math.round(y));
+        moveDot(x, y, 'point');
+        return { ok: true };
+      case 'type':
+        robot?.typeString(text || '');
+        return { ok: true };
+      case 'scroll': {
+        const lines = 4;
+        const map = { up: [0, -lines], down: [0, lines] };
+        const [dx, dy] = map[direction] || [0, lines];
+        robot?.scrollMouse(dx, dy);
+        return { ok: true };
+      }
+      default:
+        return { ok: false, error: 'Unknown action: ' + action };
+    }
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(() => { createWindow(); createOverlay(); createTray(); });
 app.on('activate',         () => { if (!mainWin) createWindow(); else mainWin.show(); });
 app.on('window-all-closed',() => { /* stay in tray */ });
-app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); });
+app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); });
