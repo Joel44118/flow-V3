@@ -209,6 +209,15 @@ async function flowSend(text) {
   if (!text?.trim()) return;
   text = text.trim();
 
+  // Internal status notices from wakeword.js (voice engine start/fail
+  // messages) use a __SYSTEM__ prefix. These must render as a bot message,
+  // never be echoed as something the user typed or sent to the AI —
+  // otherwise voice-engine diagnostics would look like broken user input.
+  if (text.startsWith("__SYSTEM__")) {
+    Chat.add(text.slice("__SYSTEM__".length), "bot");
+    return;
+  }
+
   // Echo the user's own message + record it to memory FIRST, before any
   // local-command parsing runs. Previously this only happened deep inside
   // sendMessage() in core/ai.js — so if any parser below it threw (more
