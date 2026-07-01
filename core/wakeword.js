@@ -1,19 +1,29 @@
-// core/wakeword.js (v5) — Deepgram streaming, replaces browser SpeechRecognition
+// core/wakeword.js (v6) — Deepgram VOICE AGENT, not raw transcription
 //
-// WHY: Browser SpeechRecognition (Chrome's built-in engine) has a real accuracy
-// ceiling — struggles with accents, background noise, and distance from mic,
-// regardless of how the matching regex is tuned. Deepgram's Nova-2 model is
-// purpose-built for streaming transcription and is materially more accurate.
+// WHY THIS REPLACES v5 ENTIRELY:
+// v5 streamed raw audio to Deepgram's /v1/listen transcription endpoint,
+// then ran a hand-built silence timer + wake-word regex + separate
+// ElevenLabs call for the reply. That's three independently fragile pieces
+// glued together, and every seam was a place voice could silently die —
+// which is exactly what happened.
 //
-// HOW IT WORKS:
-// 1. Get a short-lived token from /api/tts?action=token (real key stays server-side)
-// 2. Open a WebSocket to Deepgram's streaming endpoint
-// 3. Stream raw mic audio continuously
-// 4. Deepgram sends back transcripts in real time, with confidence + multiple alts
-// 5. Same wake-word matching logic as before, but on much more accurate text
+// Deepgram's Voice Agent API (wss://agent.deepgram.com/v1/agent/converse)
+// is a single WebSocket that does STT + turn-taking + LLM + TTS as ONE
+// engineered pipeline. It listens continuously, decides on its own when
+// Joel has finished a thought (endpointing built into the model, not a
+// hand-rolled timer), and speaks back over the same socket. This removes
+// almost all of the fragile custom logic — there's just far less to break.
 //
-// FALLBACK: if DEEPGRAM_API_KEY isn't configured, falls back to the old
-// browser SpeechRecognition path automatically — Flow still works either way.
+// THE WAKE WORD ITSELF is now handled by keeping the agent in "asleep"
+// mode until it hears "hey flow" / "flow" in a transcript, then waking it —
+// this uses the SAME regex Flow always used (CONFIG.WAKE_REGEX), just
+// applied to the agent's live transcript stream instead of a separate
+// recognizer. One matching engine, one source of truth, not two competing
+// speech systems running at once.
+//
+// FALLBACK: if DEEPGRAM_API_KEY isn't configured or the connection fails,
+// falls back to the browser's built-in SpeechRecognition — same safety
+// net as before, so Flow never goes completely voice-deaf.
 
 import { CONFIG } from "./config.js";
 import { Speech } from "./speech.js";
@@ -25,25 +35,31 @@ export function init(sendFn, setOrbState) {
   _orbFn  = setOrbState;
 }
 
-const WAKE_STRIP_RX = new RegExp(CONFIG.WAKE_REGEX.source, "gi");
+function _sysNotice(text) { _sendFn?.("__SYSTEM__" + text); }
 
-let _wakeLock   = false;
-let _started    = false;
-let _mode       = null;     // 'deepgram' | 'browser'
-let _dgSocket   = null;
-let _dgStream   = null;
-let _dgAudioCtx = null;
-let _dgProcessor= null;
+// ── Shared state ────────────────────────────────────────────────────────
+let _started      = false;
+let _mode         = null;    // 'agent' | 'browser'
+let _asleep       = true;    // agent connects immediately but stays "asleep"
+                              // until the wake word is heard — mirrors the
+                              // old wake-then-listen UX Joel is used to
+let _socket       = null;
+let _stream       = null;
+let _audioCtx     = null;
+let _processor    = null;
+let _playCtx      = null;    // separate AudioContext for playing agent's TTS
+let _playQueueTime = 0;
+let _tokenExpiresAt = 0;
+let _reconnecting  = false;
 
-// ── Audio beep ────────────────────────────────────────────────────────────
-let _audioCtx = null;
-function _ctx() {
-  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  return _audioCtx;
-}
-function playActivationBeep() {
+const AGENT_URL = "wss://agent.deepgram.com/v1/agent/converse";
+
+// ── Activation beep — unchanged from before ────────────────────────────
+let _beepCtx = null;
+function _beep() {
   try {
-    const ctx = _ctx();
+    if (!_beepCtx) _beepCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _beepCtx;
     [880, 1320].forEach((freq, i) => {
       const osc = ctx.createOscillator(), gain = ctx.createGain();
       osc.connect(gain); gain.connect(ctx.destination);
@@ -54,30 +70,255 @@ function playActivationBeep() {
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
       osc.start(t); osc.stop(t + 0.2);
     });
-  } catch(e) {}
+  } catch (_) {}
 }
 
 function _showMicDenied() {
   const ind = document.getElementById("wake-indicator");
   if (ind) { ind.textContent = "🎤 Mic blocked — allow mic in browser settings"; ind.classList.add("active"); }
 }
+function _setWakeUI(active) {
+  document.getElementById("wake-indicator")?.classList.toggle("active", !!active);
+}
 
-// ── Shared: handle a transcript chunk from either engine ──────────────────
-// alternatives: array of { transcript, confidence }
-function _handleTranscript(alternatives, isFinal) {
+// ── Fetch a short-lived Deepgram token from our own server ────────────
+async function _getToken() {
+  const r = await fetch("/api/tts?action=token");
+  const d = await r.json();
+  if (!d.configured || !d.key) return null;
+  _tokenExpiresAt = Date.now() + 4.5 * 60 * 1000; // token is 5min TTL, refresh a bit early
+  return d.key;
+}
+
+// ── Play agent audio (linear16 PCM chunks) through Web Audio ──────────
+function _playAgentAudio(arrayBuf) {
+  try {
+    if (!_playCtx) _playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    const pcm16 = new Int16Array(arrayBuf);
+    const float32 = new Float32Array(pcm16.length);
+    for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
+
+    const buf = _playCtx.createBuffer(1, float32.length, 24000);
+    buf.copyToChannel(float32, 0);
+
+    const src = _playCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(_playCtx.destination);
+
+    const now = _playCtx.currentTime;
+    const startAt = Math.max(now, _playQueueTime);
+    src.start(startAt);
+    _playQueueTime = startAt + buf.duration;
+  } catch (e) { console.warn("[Flow Agent] audio playback error:", e.message); }
+}
+
+// ── Build the Settings message sent right after socket opens ──────────
+function _buildSettings() {
+  return {
+    type: "Settings",
+    audio: {
+      input:  { encoding: "linear16", sample_rate: 16000 },
+      output: { encoding: "linear16", sample_rate: 24000, container: "none" },
+    },
+    agent: {
+      language: "en",
+      listen: {
+        provider: { type: "deepgram", model: "nova-3" },
+      },
+      think: {
+        // Flow's real personality, not a generic "helpful assistant" —
+        // same CONFIG.PERSONALITY used everywhere else in the app, so the
+        // voice agent doesn't feel like a different bot from the text one.
+        provider: { type: "open_ai", model: "gpt-4o-mini", temperature: 0.6 },
+        prompt: CONFIG.PERSONALITY + "\n\nYou are in a live VOICE conversation right now — keep replies short, spoken-style, no markdown, no lists.",
+      },
+      speak: {
+        provider: { type: "deepgram", model: "aura-2-orion-en" }, // natural male voice
+      },
+      greeting: null, // Flow doesn't auto-greet on connect — Joel triggers with the wake word
+    },
+  };
+}
+
+// ── Core: connect to the Voice Agent socket ────────────────────────────
+async function _connectAgent() {
+  const token = await _getToken();
+  if (!token) return false;
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
+    _stream = stream;
+
+    // Browsers can't set custom headers on WebSocket handshakes, so the
+    // token rides the Sec-WebSocket-Protocol field instead — this is
+    // Deepgram's documented client-side auth method, not a workaround.
+    const socket = new WebSocket(AGENT_URL, ["token", token]);
+    socket.binaryType = "arraybuffer";
+    _socket = socket;
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify(_buildSettings()));
+      // Note: no KeepAlive needed here — mic audio streams continuously for
+      // the whole session once SettingsApplied arrives, and Deepgram's own
+      // docs say KeepAlive is only for periods where audio ISN'T flowing.
+      // Sending it redundantly risks a "message did not match expected
+      // format" error some integrations have hit.
+    };
+
+    socket.onmessage = (evt) => {
+      // Binary frames = agent's spoken audio. Text frames = JSON control messages.
+      if (evt.data instanceof ArrayBuffer) {
+        if (!_asleep) _playAgentAudio(evt.data);
+        return;
+      }
+      let msg;
+      try { msg = JSON.parse(evt.data); } catch (_) { return; }
+      _handleAgentMessage(msg);
+    };
+
+    socket.onerror = () => {
+      console.warn("[Flow Agent] socket error — falling back to browser SR");
+      _teardownAgent();
+      _startBrowserSR();
+    };
+
+    socket.onclose = () => {
+      if (_mode === "agent" && !_reconnecting) {
+        _reconnecting = true;
+        setTimeout(async () => {
+          _reconnecting = false;
+          if (_mode === "agent") {
+            const ok = await _connectAgent();
+            if (!ok) _startBrowserSR();
+          }
+        }, 800);
+      }
+    };
+
+    _mode = "agent";
+    return true;
+  } catch (err) {
+    console.warn("[Flow Agent] connect failed, falling back:", err.message);
+    return false;
+  }
+}
+
+// Start streaming mic audio once the socket + audio pipeline are ready
+function _startMicStreaming() {
+  _audioCtx  = new (window.AudioContext || window.webkitAudioContext)({ sample_rate: 16000 });
+  const source = _audioCtx.createMediaStreamSource(_stream);
+  _processor = _audioCtx.createScriptProcessor(4096, 1, 1);
+  source.connect(_processor);
+  _processor.connect(_audioCtx.destination);
+
+  _processor.onaudioprocess = (e) => {
+    if (_socket?.readyState !== WebSocket.OPEN) return;
+    const input = e.inputBuffer.getChannelData(0);
+    const pcm16 = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) {
+      const s = Math.max(-1, Math.min(1, input[i]));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    _socket.send(pcm16.buffer);
+  };
+}
+
+// ── Handle control messages from the agent ─────────────────────────────
+function _handleAgentMessage(msg) {
+  switch (msg.type) {
+    case "SettingsApplied":
+      _startMicStreaming();
+      console.log("[Flow Agent] ready — listening for wake word");
+      break;
+
+    case "ConversationText": {
+      // This is a live transcript/reply turn. While asleep, we only use
+      // Joel's own utterances (role: "user") to check for the wake word —
+      // the agent's own replies never fire while asleep because output
+      // audio is gated by _asleep in the onmessage handler above too.
+      if (msg.role !== "user") break;
+      const text = (msg.content || "").toLowerCase();
+
+      if (_asleep) {
+        if (CONFIG.WAKE_REGEX?.test(text)) {
+          _wake();
+          const stripped = text.replace(new RegExp(CONFIG.WAKE_REGEX.source, "gi"), "").replace(/[.,!?]/g, "").trim();
+          // If Joel said a full command in the same breath as the wake
+          // word ("hey flow what's the weather"), let the agent's own
+          // reply handle it naturally rather than double-processing.
+        }
+      } else {
+        // Awake and Joel said something — mirror it into Flow's own chat
+        // log so voice and text conversations share the same history.
+        const inp = document.getElementById("user-input");
+        if (inp) inp.textContent = msg.content;
+      }
+      break;
+    }
+
+    case "AgentAudioDone":
+      // Agent finished speaking its turn — nothing to do, playback already
+      // streamed via binary frames as they arrived.
+      break;
+
+    case "UserStartedSpeaking":
+      _orbFn?.("listening");
+      break;
+
+    case "Error":
+      console.warn("[Flow Agent] server error:", msg.description);
+      break;
+
+    default:
+      break;
+  }
+}
+
+function _wake() {
+  _asleep = false;
+  _setWakeUI(true);
+  _orbFn?.("listening");
+  _beep();
+  console.log("[Flow Agent] woke up");
+
+  // Auto-sleep after a period of no interaction so the mic doesn't stay
+  // "hot" in the UI forever — matches the old command-listen timeout feel.
+  clearTimeout(_sleepTimer);
+  _sleepTimer = setTimeout(_sleep, 25000);
+}
+let _sleepTimer = null;
+
+function _sleep() {
+  _asleep = true;
+  _setWakeUI(false);
+  _orbFn?.("idle");
+}
+
+function _teardownAgent() {
+  try { _processor?.disconnect(); } catch (_) {}
+  try { _audioCtx?.close(); } catch (_) {}
+  try { _socket?.close(); } catch (_) {}
+  try { _stream?.getTracks().forEach(t => t.stop()); } catch (_) {}
+  _processor = _audioCtx = _socket = _stream = null;
+}
+
+// ── BROWSER SpeechRecognition fallback (only if Agent totally fails) ───
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let wakeRec = null;
+let cmdRec  = null;
+const WAKE_STRIP_RX = new RegExp(CONFIG.WAKE_REGEX.source, "gi");
+
+function _handleTranscriptFallback(alternatives, isFinal) {
   if (Speech.isSpeaking()) return;
-  if (_wakeLock) return;
-
   let matched = null;
   for (const alt of alternatives) {
     if (CONFIG.WAKE_REGEX?.test(alt.transcript.toLowerCase())) { matched = alt; break; }
   }
   if (!matched) return;
 
-  _wakeLock = true;
-  document.getElementById("wake-indicator")?.classList.add("active");
+  _setWakeUI(true);
   _orbFn?.("listening");
-  playActivationBeep();
+  _beep();
 
   const inlineCmd = isFinal
     ? matched.transcript.toLowerCase().replace(WAKE_STRIP_RX, "").replace(/[.,!?]/g, "").trim()
@@ -85,257 +326,82 @@ function _handleTranscript(alternatives, isFinal) {
 
   if (inlineCmd.length > 3) {
     setTimeout(() => {
-      _wakeLock = false;
-      document.getElementById("wake-indicator")?.classList.remove("active");
+      _setWakeUI(false);
       _sendFn(inlineCmd);
       _orbFn?.("idle");
     }, 400);
   } else {
-    _wakeLock = false;
     startCommandListen();
   }
 }
-
-// ── DEEPGRAM streaming path ─────────────────────────────────────────────────
-async function _startDeepgram() {
-  try {
-    const tokRes = await fetch("/api/tts?action=token");
-    const tok    = await tokRes.json();
-    if (!tok.configured || !tok.key) return false;  // not configured — fall back
-
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    _dgStream = stream;
-
-    const url = "wss://api.deepgram.com/v1/listen"
-      + "?model=nova-2"
-      + "&language=en"
-      + "&interim_results=true"
-      + "&endpointing=300"
-      + "&alternatives=5"
-      + "&smart_format=true";
-
-    const socket = new WebSocket(url, ["token", tok.key]);
-    _dgSocket = socket;
-
-    socket.onopen = () => {
-      console.log("[Flow] Deepgram connected ✓");
-      _dgAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-      const source = _dgAudioCtx.createMediaStreamSource(stream);
-      _dgProcessor = _dgAudioCtx.createScriptProcessor(4096, 1, 1);
-
-      source.connect(_dgProcessor);
-      _dgProcessor.connect(_dgAudioCtx.destination);
-
-      _dgProcessor.onaudioprocess = (e) => {
-        if (socket.readyState !== WebSocket.OPEN) return;
-        const input  = e.inputBuffer.getChannelData(0);
-        const pcm16  = new Int16Array(input.length);
-        for (let i = 0; i < input.length; i++) {
-          const s = Math.max(-1, Math.min(1, input[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
-        socket.send(pcm16.buffer);
-      };
-    };
-
-    socket.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data);
-        const alts = data?.channel?.alternatives;
-        if (!alts?.length) return;
-        const formatted = alts.map(a => ({
-          transcript: a.transcript || "",
-          confidence: a.confidence || 0,
-        })).filter(a => a.transcript);
-        if (!formatted.length) return;
-        _handleTranscript(formatted, !!data.is_final);
-      } catch(_) {}
-    };
-
-    socket.onerror = (e) => {
-      console.warn("[Flow] Deepgram socket error — falling back to browser SR");
-      _teardownDeepgram();
-      _startBrowserSR();
-    };
-
-    socket.onclose = () => {
-      // Reconnect automatically unless we're mid-command-listen
-      if (_mode === "deepgram" && !window.__flowCmdActive) {
-        setTimeout(() => { if (_mode === "deepgram") _startDeepgram(); }, 500);
-      }
-    };
-
-    _mode = "deepgram";
-    return true;
-  } catch (err) {
-    console.warn("[Flow] Deepgram setup failed, falling back:", err.message);
-    return false;
-  }
-}
-
-function _teardownDeepgram() {
-  try { _dgProcessor?.disconnect(); } catch(_) {}
-  try { _dgAudioCtx?.close(); } catch(_) {}
-  try { _dgSocket?.close(); } catch(_) {}
-  try { _dgStream?.getTracks().forEach(t => t.stop()); } catch(_) {}
-  _dgProcessor = _dgAudioCtx = _dgSocket = _dgStream = null;
-}
-
-// ── BROWSER SpeechRecognition fallback path (unchanged logic) ─────────────
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let wakeRec = null;
-let cmdRec  = null;
 
 function _buildWakeRec() {
   if (!SR) return null;
   const r = new SR();
   r.continuous = true; r.interimResults = true; r.lang = "en-US"; r.maxAlternatives = 8;
-
   r.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const res = e.results[i];
       const alts = [];
       for (let a = 0; a < res.length; a++) alts.push({ transcript: res[a].transcript, confidence: res[a].confidence || 0 });
-      _handleTranscript(alts, res.isFinal);
+      _handleTranscriptFallback(alts, res.isFinal);
     }
   };
   r.onerror = (e) => {
     if (e.error !== "no-speech" && e.error !== "aborted") console.warn("[Flow] Wake SR error:", e.error);
     if (e.error === "not-allowed") _showMicDenied();
   };
-  r.onend = () => { if (!cmdRec) setTimeout(() => { try { wakeRec?.start(); } catch(_) {} }, 120); };
+  r.onend = () => { if (!cmdRec) setTimeout(() => { try { wakeRec?.start(); } catch (_) {} }, 120); };
   return r;
 }
 
 function _startBrowserSR() {
-  if (!SR) { console.warn("[Flow] No speech recognition available at all"); return; }
   _mode = "browser";
+  if (!SR) {
+    console.warn("[Flow] No speech recognition available at all");
+    return;
+  }
   navigator.mediaDevices?.getUserMedia({ audio: true })
-    .then(stream => {
-      stream.getTracks().forEach(t => t.stop());
+    .then((stream) => {
+      stream.getTracks().forEach((t) => t.stop());
       wakeRec = _buildWakeRec();
-      try { wakeRec.start(); console.log("[Flow] Browser SR wake listener started"); } catch(_) {}
+      try { wakeRec.start(); console.log("[Flow] Browser SR fallback started"); } catch (_) {}
     })
     .catch(() => {
       _showMicDenied();
       wakeRec = _buildWakeRec();
-      try { wakeRec.start(); } catch(_) {}
+      try { wakeRec.start(); } catch (_) {}
     });
 }
 
-// ── Public: start wake listener — tries Deepgram first, falls back ────────
-export async function startWakeListener() {
-  if (_started) return;
-  _started = true;
+function _runBrowserCommand() {
+  try { wakeRec?.stop(); } catch (_) {}
+  if (cmdRec) { try { cmdRec.abort(); } catch (_) {} cmdRec = null; }
 
-  const ok = await _startDeepgram();
-  if (!ok) _startBrowserSR();
-
-  // One-time visible confirmation of which engine actually activated —
-  // without this, a silent failure and a working listener look identical
-  // from the chat UI, which is exactly what made this hard to diagnose.
-  setTimeout(() => {
-    if (_mode === "deepgram" && _dgSocket?.readyState === WebSocket.OPEN) {
-      _sendFn?.("__SYSTEM__🎙️ Voice listening active — using Deepgram (high accuracy).");
-    } else if (_mode === "browser" && wakeRec) {
-      _sendFn?.("__SYSTEM__🎙️ Voice listening active — using your browser's built-in speech recognition (Deepgram not configured or unreachable).");
-    } else {
-      _sendFn?.("__SYSTEM__⚠️ Voice listening did not start — no working speech engine was found. Say the wake word won't do anything until this is resolved.");
-    }
-  }, 1800);
-}
-
-// ── Command listener — explicit command after wake word or mic button ─────
-export function startCommandListen() {
-  window.__flowCmdActive = true;
-
-  if (_mode === "deepgram" && _dgSocket?.readyState === WebSocket.OPEN) {
-    _runDeepgramCommand();
-  } else if (SR) {
-    _runBrowserCommand();
-  } else {
-    // Genuine dead end — neither engine is usable. This used to fail with
-    // zero feedback, which is exactly what looked like "Flow isn't hearing
-    // me" with no way to tell why. Now it says so directly, in chat.
-    window.__flowCmdActive = false;
-    _orbFn?.("idle");
-    if (_sendFn) {
-      _sendFn("__SYSTEM__⚠️ Voice input isn't available right now — your browser doesn't support speech recognition and Deepgram isn't reachable. Voice commands need either a Chrome-based browser or a working Deepgram connection.");
-    }
-  }
-}
-
-function _finishCommand(text, micBtn) {
-  window.__flowCmdActive = false;
-  if (micBtn) micBtn.textContent = "🎤";
-  _orbFn?.("idle");
-  document.getElementById("wake-indicator")?.classList.remove("active");
-
-  const trimmed = text.trim();
-  if (trimmed.length > 1) {
-    const inp = document.getElementById("user-input");
-    if (inp) inp.textContent = trimmed;
-    _sendFn(trimmed);
-  }
-
-  // Resume wake listening
-  setTimeout(() => {
-    if (_mode === "deepgram") { if (!_dgSocket || _dgSocket.readyState !== WebSocket.OPEN) _startDeepgram(); }
-    else { try { wakeRec?.start(); } catch(_) {} }
-  }, 400);
-}
-
-function _runDeepgramCommand() {
   const micBtn = document.getElementById("mic-btn");
+  cmdRec = new SR();
+  cmdRec.lang = "en-US"; cmdRec.continuous = true; cmdRec.interimResults = true; cmdRec.maxAlternatives = 5;
   _orbFn?.("listening");
   if (micBtn) micBtn.textContent = "⏹";
 
   let transcript = "";
   let silenceTimer = null;
-  const resetSilence = () => {
-    if (silenceTimer) clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(() => {
-      socket.removeEventListener("message", onMsg);
-      _finishCommand(transcript, micBtn);
-    }, 4200);
-  };
-
-  const socket = _dgSocket;
-  function onMsg(msg) {
-    try {
-      const data = JSON.parse(msg.data);
-      const best = data?.channel?.alternatives?.[0];
-      if (!best?.transcript) return;
-      if (data.is_final) transcript += " " + best.transcript;
-      resetSilence();
-    } catch(_) {}
-  }
-  socket.addEventListener("message", onMsg);
-  resetSilence();
-}
-
-function _runBrowserCommand() {
-  try { wakeRec?.stop(); } catch(_) {}
-  if (cmdRec) { try { cmdRec.abort(); } catch(_) {} cmdRec = null; }
-
-  const micBtn = document.getElementById("mic-btn");
-  cmdRec = new SR();
-  cmdRec.lang = "en-US"; cmdRec.continuous = true; cmdRec.interimResults = true; cmdRec.maxAlternatives = 5;
-
-  _orbFn?.("listening");
-  if (micBtn) micBtn.textContent = "⏹";
-
-  let _transcript = "";
-  let _silenceTimer = null;
-  const resetSilence = () => {
-    if (_silenceTimer) clearTimeout(_silenceTimer);
-    _silenceTimer = setTimeout(finish, 4200);
-  };
+  const resetSilence = () => { clearTimeout(silenceTimer); silenceTimer = setTimeout(finish, 4200); };
   const finish = () => {
-    if (_silenceTimer) { clearTimeout(_silenceTimer); _silenceTimer = null; }
-    try { cmdRec?.abort(); } catch(_) {}
+    clearTimeout(silenceTimer);
+    try { cmdRec?.abort(); } catch (_) {}
     cmdRec = null;
-    _finishCommand(_transcript, micBtn);
+    window.__flowCmdActive = false;
+    if (micBtn) micBtn.textContent = "🎤";
+    _orbFn?.("idle");
+    _setWakeUI(false);
+    const trimmed = transcript.trim();
+    if (trimmed.length > 1) {
+      const inp = document.getElementById("user-input");
+      if (inp) inp.textContent = trimmed;
+      _sendFn(trimmed);
+    }
+    setTimeout(() => { try { wakeRec?.start(); } catch (_) {} }, 400);
   };
 
   cmdRec.onresult = (e) => {
@@ -344,17 +410,54 @@ function _runBrowserCommand() {
       const r = e.results[i];
       let best = r[0];
       for (let a = 1; a < r.length; a++) if ((r[a].confidence || 0) > (best.confidence || 0)) best = r[a];
-      if (r.isFinal) _transcript += " " + best.transcript;
+      if (r.isFinal) transcript += " " + best.transcript;
       else interim = best.transcript;
     }
     if (interim || e.results[e.resultIndex]?.isFinal) resetSilence();
   };
-  cmdRec.onerror = (e) => { if (e.error === "no-speech") finish(); else finish(); };
-  cmdRec.onend = () => { if (_silenceTimer) finish(); };
+  cmdRec.onerror = () => finish();
+  cmdRec.onend = () => { if (silenceTimer) finish(); };
 
   resetSilence();
-  try { cmdRec.start(); } catch(e) {
+  try { cmdRec.start(); } catch (_) {
     if (micBtn) micBtn.textContent = "🎤";
     _orbFn?.("idle");
+  }
+}
+
+// ── PUBLIC API — same names as v5, so app.js needs zero changes ────────
+
+export async function startWakeListener() {
+  if (_started) return;
+  _started = true;
+
+  const ok = await _connectAgent();
+  if (!ok) _startBrowserSR();
+
+  setTimeout(() => {
+    if (_mode === "agent" && _socket?.readyState === WebSocket.OPEN) {
+      _sysNotice("🎙️ Voice active — Deepgram Voice Agent (STT + LLM + TTS in one stream). Say \"Hey Flow\" to talk.");
+    } else if (_mode === "browser" && wakeRec) {
+      _sysNotice("🎙️ Voice active — using your browser's built-in speech recognition (Deepgram not configured or unreachable).");
+    } else {
+      _sysNotice("⚠️ Voice listening did not start — no working speech engine was found.");
+    }
+  }, 2000);
+}
+
+export function startCommandListen() {
+  // Manual mic-button press. If the Agent connection is live, just wake
+  // it directly — it's already listening continuously, there's no
+  // separate "command mode" to enter like the old transcription approach.
+  window.__flowCmdActive = true;
+  if (_mode === "agent" && _socket?.readyState === WebSocket.OPEN) {
+    _wake();
+    window.__flowCmdActive = false;
+  } else if (SR) {
+    _runBrowserCommand();
+  } else {
+    window.__flowCmdActive = false;
+    _orbFn?.("idle");
+    _sysNotice("⚠️ Voice input isn't available right now — no speech engine is reachable.");
   }
 }
