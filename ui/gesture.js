@@ -182,6 +182,7 @@ export async function start(videoEl) {
       '_Say "stop gesture control" to exit._', 'bot');
 
     _animate();
+    if (IS_ELECTRON) window.__flowElectron.send('gesture_start', {});
   } catch (err) {
     console.error('[Gesture]', err.message);
     if (_Chat) _Chat.add(`⚠️ Gesture setup failed: ${err.message}`, 'bot');
@@ -238,6 +239,9 @@ function _onResults(results) {
     _ctx.beginPath(); _ctx.arc(hx, hy, 3, 0, Math.PI * 2); _ctx.fill();
     _ctx.globalAlpha = 1;
     _syncWrapperPos();
+    if (IS_ELECTRON) {
+      window.__flowElectron.send('cursor_held', { x: _curX * _sw, y: _curY * _sh });
+    }
     return;  // cursor stays at _curX/_curY — no cursor_move sent
   }
 
@@ -453,6 +457,7 @@ export function stop() {
   _smoothed = null; _state = G.IDLE;
   _dragObserver = null; _videoParent = null;
   _video = _canvas = _ctx = _hands = _camera = _wrapper = null;
+  if (IS_ELECTRON) window.__flowElectron.send('gesture_stop', {});
 }
 
 Gesture.start = start;
