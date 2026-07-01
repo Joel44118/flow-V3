@@ -26,7 +26,24 @@
     <div id="flow-logo">FLOW <span id="vtag">V3</span></div>
     <div id="wake-indicator">Say <em>"Hey Flow"</em></div>
     <div id="status-wrap"><span id="status-dot"></span><span id="status-label">ONLINE</span></div>
+    <div id="win-controls" style="display:none">
+      <button id="win-min"   title="Minimize" aria-label="Minimize"></button>
+      <button id="win-max"   title="Maximize" aria-label="Maximize"></button>
+      <button id="win-close" title="Close"    aria-label="Close"></button>
+    </div>
   </div>
+
+  <script>
+    // Only present in the Electron desktop app — a browser tab has no
+    // __flowElectron bridge, so this whole block silently does nothing there.
+    if (window.__flowElectron) {
+      const wc = document.getElementById('win-controls');
+      wc.style.display = 'flex';
+      document.getElementById('win-min').onclick   = () => window.__flowElectron.minimize();
+      document.getElementById('win-max').onclick   = () => window.__flowElectron.maximize();
+      document.getElementById('win-close').onclick = () => window.__flowElectron.close();
+    }
+  </script>
 
   <div id="alarm-panel"><div id="alarm-list"></div></div>
 
