@@ -21,6 +21,11 @@ const CAM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@${CAM_VER
 
 const CAM_FILES = new Set(['camera_utils.js']);
 
+// Face Landmarker's model bundle lives on Google's own model storage, a
+// completely different host/package family than the hand-tracking files
+// above — proxied same-origin here for the same CORS-safety reason.
+const FACE_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task';
+
 function handleToken() {
   const token = process.env.HF_TOKEN;
   if (!token) {
@@ -50,6 +55,23 @@ export default async function handler(req) {
   // Only allow known MediaPipe filenames — no path traversal
   if (!file || !/^[\w\-\.]+$/.test(file) || file.includes('..')) {
     return new Response('Bad request', { status: 400 });
+  }
+
+  if (file === 'face_landmarker.task') {
+    try {
+      const res = await fetch(FACE_MODEL_URL);
+      if (!res.ok) return new Response(`Upstream ${res.status} for face_landmarker.task`, { status: res.status });
+      return new Response(res.body, {
+        status: 200,
+        headers: {
+          'Content-Type':                'application/octet-stream',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control':               'public, max-age=31536000, immutable',
+        }
+      });
+    } catch (err) {
+      return new Response('Proxy error: ' + err.message, { status: 502 });
+    }
   }
 
   const upstream = CAM_FILES.has(file)
