@@ -69,10 +69,9 @@ function _buildPanel(mode) {
         type="password"
         placeholder="${isSetup ? "Create PIN (4+ characters)" : "Enter PIN"}"
         autocomplete="current-password"
-        inputmode="numeric"
         maxlength="32">
 
-      ${isSetup ? `<input id="flow-auth-confirm" type="password" placeholder="Confirm PIN" autocomplete="new-password" inputmode="numeric" maxlength="32">` : ""}
+      ${isSetup ? `<input id="flow-auth-confirm" type="password" placeholder="Confirm PIN" autocomplete="new-password" maxlength="32">` : ""}
 
       <button id="flow-auth-btn">${isSetup ? "SET PIN" : "UNLOCK"}</button>
       <div id="flow-auth-err"></div>
