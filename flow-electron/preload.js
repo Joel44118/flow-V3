@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     if (OK.includes(action)) ipcRenderer.send(action, payload);
   },
   getScreenSize: () => ipcRenderer.invoke('get_screen_size'),
+  getBuildInfo:  () => ipcRenderer.invoke('get_build_info'),
   minimize: () => ipcRenderer.send('win_minimize'),
   maximize: () => ipcRenderer.send('win_maximize'),
   close:    () => ipcRenderer.send('win_close'),
