@@ -8,6 +8,7 @@ export function initGesture(Chat, Orb) {
 }
 
 let _video = null, _canvas = null, _ctx = null;
+let _previewInterval = null;
 let _hands = null, _camera = null, _animId = null;
 let _active = false, _wrapper = null;
 let _videoParent = null, _dragObserver = null;
@@ -200,6 +201,27 @@ export async function start(videoEl) {
       width: 640, height: 480,
     });
     await _camera.start();
+
+    // Forward a small preview frame to the Electron overlay window so
+    // there's an actual live camera-in-corner view visible across every
+    // app on the PC — not just the tracking dot. A MediaStream can't be
+    // shared directly across separate Electron BrowserWindows, so this
+    // draws the video to a small offscreen canvas and sends JPEG frames
+    // over IPC instead. 8fps is plenty for a preview thumbnail and keeps
+    // this cheap — the actual hand-tracking loop above runs at full rate
+    // independently of this.
+    if (IS_ELECTRON) {
+      const previewCanvas = document.createElement('canvas');
+      previewCanvas.width = 160; previewCanvas.height = 120;
+      const previewCtx = previewCanvas.getContext('2d');
+      _previewInterval = setInterval(() => {
+        if (!_active || !_video || _video.readyState < 2) return;
+        try {
+          previewCtx.drawImage(_video, 0, 0, 160, 120);
+          window.__flowElectron.send('camera_frame', { dataUrl: previewCanvas.toDataURL('image/jpeg', 0.55) });
+        } catch (_) {}
+      }, 125); // ~8fps
+    }
 
     if (_Chat) _Chat.add(
       '✅ **Gesture Control Ready!**\n\n' +
@@ -480,10 +502,11 @@ export function stop() {
   _active = false;
   if (_animId)      cancelAnimationFrame(_animId);
   if (_dragObserver) clearInterval(_dragObserver);
+  if (_previewInterval) clearInterval(_previewInterval);
   if (_camera)       _camera.stop();
   if (_wrapper)      _wrapper.remove();
   _smoothed = null; _state = G.IDLE;
-  _dragObserver = null; _videoParent = null;
+  _dragObserver = null; _videoParent = null; _previewInterval = null;
   _video = _canvas = _ctx = _hands = _camera = _wrapper = null;
   if (IS_ELECTRON) window.__flowElectron.send('gesture_stop', {});
 }
