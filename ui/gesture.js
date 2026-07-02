@@ -86,6 +86,21 @@ function _loadScript(filename) {
   });
 }
 
+// Waits for the video element to report real, non-zero dimensions.
+// Polls every 50ms, up to 2 seconds — if it genuinely never resolves
+// (camera permission denied mid-stream, etc.), falls back to 320x240
+// rather than hanging the whole gesture-start sequence forever.
+async function _waitForVideoDimensions(video) {
+  for (let i = 0; i < 40; i++) {
+    if (video.videoWidth > 0 && video.videoHeight > 0) {
+      return { w: video.videoWidth, h: video.videoHeight };
+    }
+    await new Promise(r => setTimeout(r, 50));
+  }
+  console.warn('[Gesture] video dimensions never became available — falling back to 320x240');
+  return { w: 320, h: 240 };
+}
+
 // ── START ─────────────────────────────────────────────────────────────────
 
 // Sync canvas overlay position to match video element (handles dragging)
@@ -146,8 +161,21 @@ export async function start(videoEl) {
     document.body.appendChild(_wrapper);  // append to body, not inside vision-window
 
     _canvas = document.createElement('canvas');
-    _canvas.width  = _video.videoWidth  || vw;
-    _canvas.height = _video.videoHeight || vh;
+    // videoWidth/videoHeight are genuinely 0 at this exact point — the
+    // camera stream hasn't started producing frames yet when start() first
+    // runs, it's still asynchronously initializing. Sizing the canvas off
+    // that 0 (even with the `|| vw` fallback, since 0 is falsy so the
+    // fallback DOES trigger — but vw/vh themselves come from
+    // _video.offsetWidth/Height, which can ALSO still be 0 on a
+    // freshly-inserted video element before layout has run) was producing
+    // a canvas with zero real pixel area in practice: everything drawn
+    // onto it "succeeds" with no error, but is completely invisible.
+    // Fix: wait for the video to actually report real dimensions before
+    // creating the canvas, with a bounded retry rather than trusting
+    // whatever's available at this exact instant.
+    const realVW = await _waitForVideoDimensions(_video);
+    _canvas.width  = realVW.w;
+    _canvas.height = realVW.h;
     Object.assign(_canvas.style, {
       position: 'absolute', top: 0, left: 0, width: '100%', height: '100%'
     });
