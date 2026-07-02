@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/chat.js":      { "maxDuration": 10 },
-    "api/vision.js":    { "maxDuration": 10 },
+    "api/vision.js":    { "maxDuration": 15 },
     "api/imagine.js":   { "maxDuration": 10 },
     "api/search.js":    { "maxDuration": 10 },
     "api/rag.js":       { "maxDuration": 10 },
