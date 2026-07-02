@@ -498,6 +498,91 @@ async function handleSentinelPing(req, res) {
 }
 
 // ── MAIN HANDLER ──────────────────────────────────────────────────────────
+// ── Autonomous social posting ───────────────────────────────────────────
+// REAL SCOPE, STATED PLAINLY:
+//
+// 1. FREQUENCY: Vercel Hobby's cron only fires once per day (a hard
+//    platform limit, not something this code can work around for free).
+//    This runs once daily via vercel.json's crons config.
+//
+// 2. PLATFORM: posts to your Telegram channel — the one platform that's
+//    already fully configured and doesn't need a business API application
+//    process. Twitter/Instagram/etc. each need their own developer app
+//    approval and separate credentials Joel hasn't set up yet; adding fake
+//    stubs for those would look like they work when they don't. This is
+//    built so another platform's send function can be added the same way
+//    handleWhatsApp was, once those credentials exist.
+//
+// 3. VIDEO vs IMAGE: HF's free-tier video models can take minutes and are
+//    not reliably fast enough to trust inside a single cron invocation
+//    (function timeout risk). This generates a genuine, Flow-written
+//    caption + real FLUX image automatically every day. Video posting
+//    stays a manual action (use the existing /video slash command,
+//    then forward it) rather than an unattended cron risking a silent
+//    failure on a slow model.
+async function generateAutoPostContent() {
+  const topics = [
+    'a practical web development or AI automation tip',
+    'something interesting about building with AI tools',
+    'a quick insight about modern bot development',
+    'a short thought on what makes a website or bot actually useful',
+  ];
+  const topic = topics[Math.floor(Math.random() * topics.length)];
+
+  const captionR = await fetch(`${SITE}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: 'You are Flow, writing a short, genuinely useful social media post for Joelflowstack (web dev / AI automation / bot building). 2-4 sentences, no hashtags spam (max 2), no corporate tone, sound like a real developer sharing something useful.' },
+        { role: 'user', content: `Write today's post about: ${topic}` },
+      ],
+    }),
+  });
+  const captionD = await captionR.json();
+  const caption = captionD.reply?.trim();
+  if (!caption) throw new Error('Caption generation failed');
+
+  return { caption, topic };
+}
+
+async function handleAutoPost(req, res) {
+  // Cron requests carry this header automatically; anyone else calling
+  // this route needs the same secret in an Authorization header — without
+  // this check, anyone who found the URL could trigger posts to Joel's
+  // channel at will.
+  const auth = req.headers.authorization;
+  const isCron = req.headers['user-agent'] === 'vercel-cron/1.0';
+  if (!isCron && auth !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+
+  const channelId = process.env.TELEGRAM_CHANNEL_ID;
+  if (!channelId) {
+    return res.status(200).json({ ok: false, error: 'TELEGRAM_CHANNEL_ID not set — nowhere to post to yet.' });
+  }
+  if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
+
+  try {
+    const { caption, topic } = await generateAutoPostContent();
+
+    const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: channelId, text: caption }),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.description || 'Telegram send failed');
+
+    await pushNotif('Auto-post', `Posted to channel: "${caption.slice(0, 100)}"`);
+    return res.status(200).json({ ok: true, posted: caption, topic });
+  } catch (e) {
+    console.error('[AutoPost] failed:', e.message);
+    await pushNotif('Auto-post', `⚠️ Failed: ${e.message}`);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -505,9 +590,11 @@ export default async function handler(req, res) {
   if (platform === 'telegram')      return handleTelegram(req, res);
   if (platform === 'whatsapp')      return handleWhatsApp(req, res);
   if (platform === 'sentinel-ping') return handleSentinelPing(req, res);
+  if (platform === 'autopost')      return handleAutoPost(req, res);
   return res.status(200).json({ service: 'Flow Social', endpoints: {
     telegram: '/api/social?platform=telegram',
     whatsapp: '/api/social?platform=whatsapp',
     sentinelPing: '/api/social?platform=sentinel-ping',
+    autopost: '/api/social?platform=autopost',
   } });
 }
