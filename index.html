@@ -27,6 +27,7 @@
     <div id="wake-indicator">Say <em>"Hey Flow"</em></div>
     <div id="status-wrap"><span id="status-dot"></span><span id="status-label">ONLINE</span></div>
     <div id="win-controls" style="display:none">
+      <span id="build-stamp" style="font-size:10px;color:rgba(56,189,248,0.5);margin-right:10px;font-family:monospace;"></span>
       <button id="win-min"   title="Minimize" aria-label="Minimize"></button>
       <button id="win-max"   title="Maximize" aria-label="Maximize"></button>
       <button id="win-close" title="Close"    aria-label="Close"></button>
@@ -42,6 +43,14 @@
       document.getElementById('win-min').onclick   = () => window.__flowElectron.minimize();
       document.getElementById('win-max').onclick   = () => window.__flowElectron.maximize();
       document.getElementById('win-close').onclick = () => window.__flowElectron.close();
+
+      // Shows exactly which build is running — the commit hash + when it
+      // was built — so there's never any doubt about whether a fresh
+      // download actually replaced the old one.
+      window.__flowElectron.getBuildInfo?.().then((info) => {
+        const el = document.getElementById('build-stamp');
+        if (el && info) el.textContent = `${info.commit} · ${info.builtAt}`;
+      });
     }
   </script>
 
