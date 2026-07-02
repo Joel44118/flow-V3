@@ -34,7 +34,7 @@ import { setGlobeBackground } from "./ui/particles.js";
 import { fetchIntel, buildIntelPrompt } from "./core/intel.js";
 import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
 import { Projects } from "./core/projects.js";
-import { initAuth, resetPin } from "./ui/auth.js";
+import { initAuth, resetPin, enrollFace, resetFace, hasFaceEnrolled } from "./ui/auth.js";
 import { initNotifications } from "./ui/notifications.js";
 import { initSentinel, parseReplayCommand } from "./ui/sentinel.js";
 import { initFeedback } from "./core/feedback.js";
@@ -384,6 +384,19 @@ brainFile.addEventListener("change", async e => {
 // Reset PIN
 const resetPinBtn = document.getElementById("brain-resetpin");
 if (resetPinBtn) resetPinBtn.addEventListener("click", () => resetPin());
+
+// Face Unlock — enroll / remove
+const enrollFaceBtn = document.getElementById("brain-enrollface");
+if (enrollFaceBtn) enrollFaceBtn.addEventListener("click", () => {
+  enrollFace((success, message) => Chat.add(success ? `✅ ${message}` : `⚠️ ${message}`, "bot"));
+});
+const resetFaceBtn = document.getElementById("brain-resetface");
+if (resetFaceBtn) resetFaceBtn.addEventListener("click", () => {
+  if (!hasFaceEnrolled()) { Chat.add("No face is currently set up.", "bot"); return; }
+  if (!confirm("Remove Face Unlock? The 👁 button will stop appearing on your lock screen — your PIN keeps working as normal.")) return;
+  resetFace();
+  Chat.add("Face Unlock removed.", "bot");
+});
 
 // Init feedback (RLHF learning)
 initFeedback(Chat);
