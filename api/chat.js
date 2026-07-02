@@ -39,7 +39,15 @@ function detectIntent(messages) {
 
 function trimMessages(messages) {
   const system  = messages.find(m => m.role === 'system');
-  const history = messages.filter(m => m.role !== 'system').slice(-8);
+  // Was slice(-8) — silently undercutting CONFIG.HISTORY_LIMIT's own
+  // documented value of 12 full exchanges. At 8 raw messages (4
+  // exchanges), anything established earlier in a conversation —
+  // roleplay setup, character details, an ongoing scenario — falls out
+  // of the window fast, which is the direct, confirmed cause of Flow
+  // dropping out of roleplay after just one or two exchanges. 24 raw
+  // messages = 12 full exchanges, matching what the config already
+  // claimed this was set to.
+  const history = messages.filter(m => m.role !== 'system').slice(-24);
   if (!system) return trimUserMessages(history);
   let sys = system.content;
   // Trim heavy sections to keep context tight
