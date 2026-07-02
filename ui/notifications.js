@@ -283,12 +283,25 @@ function _updateDot() {
 }
 
 // Poll KV for new notifications from webhooks
+let _kvWarned = false;
 async function _startPolling() {
   const poll = async () => {
     try {
       const r = await fetch('/api/memory?key=flow_pending_notifs');
       if (!r.ok) return;
       const d = await r.json();
+
+      // d.kv === false means KV_REST_API_URL/TOKEN aren't set in Vercel —
+      // notifications from Telegram/WhatsApp/Sentinel physically cannot
+      // arrive until that's fixed. This used to fail silently forever;
+      // now it says so once, clearly, instead of just never showing
+      // anything with no explanation.
+      if (d.kv === false && !_kvWarned) {
+        _kvWarned = true;
+        _chatAdd?.("⚠️ Notifications aren't configured yet — Vercel KV isn't set up (KV_REST_API_URL / KV_REST_API_TOKEN missing in environment variables). Telegram/WhatsApp messages and Sentinel alerts can't reach the bell until this is added.");
+        return;
+      }
+
       if (!d.value || !Array.isArray(d.value)) return;
       const pending = d.value;
       if (!pending.length) return;
