@@ -178,6 +178,14 @@ async function _checkEL() {
   } catch (_) { _elAvailable = false; }
   return _elAvailable;
 }
+// Fire this at module load (Flow boot) rather than waiting for the first
+// spoken reply. Previously, speak() awaited this check on the FIRST call
+// of every session, meaning every first reply paid a real network
+// round-trip to ElevenLabs before speech could even start — that round
+// trip is exactly the noticeable "takes a moment to start reading" delay.
+// Now it's already resolved by the time anyone has finished reading a
+// reply and Flow is ready to speak it.
+_checkEL();
 
 // ── Public Speech API ─────────────────────────────────────────────────────
 export const Speech = {
@@ -206,8 +214,11 @@ export const Speech = {
     _isSpeaking = true;
 
     // ── Try ElevenLabs first ──────────────────────────────────────────────
-    // _elAvailable is cached after first check — no network roundtrip per speak
-    if (_elAvailable === null) await _checkEL();  // only fetches once per session
+    // _elAvailable is normally already resolved by boot-time pre-warming
+    // above. This await is now only a real wait in the rare case Flow
+    // starts speaking within the first instant of page load, before that
+    // background check has had time to finish.
+    if (_elAvailable === null) await _checkEL();
 
     if (_elAvailable) {
       const ok = await _speakElevenLabs(clean, onDone, wrap);
