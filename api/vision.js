@@ -15,6 +15,19 @@
 const VISION_SYSTEM_PROMPT =
   "You are Flow's eyes. Describe what you see clearly and concisely. No markdown, plain text only. Be specific about objects, people, text, and context visible in the image.";
 
+// Wraps a provider call with its own timeout so a hanging/slow first
+// provider can never eat the whole function's time budget and starve the
+// fallback of any chance to run — this was the actual cause of the 504:
+// OpenRouter had no timeout of its own, so if it hung, Vercel's 10s
+// function cap fired first and killed the whole request before Hugging
+// Face ever got a turn.
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ]);
+}
+
 async function tryOpenRouter(image, prompt, origin) {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) return null;
@@ -103,7 +116,7 @@ export default async function handler(req, res) {
   const errors = [];
 
   try {
-    const desc = await tryOpenRouter(image, prompt, req.headers.origin);
+    const desc = await withTimeout(tryOpenRouter(image, prompt, req.headers.origin), 6000, "OpenRouter");
     if (desc) return res.status(200).json({ description: desc, provider: "openrouter" });
   } catch (e) {
     console.warn("[Flow Vision] OpenRouter failed, trying Hugging Face:", e.message);
@@ -111,7 +124,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const desc = await tryHuggingFace(image, prompt);
+    const desc = await withTimeout(tryHuggingFace(image, prompt), 6000, "Hugging Face");
     if (desc) return res.status(200).json({ description: desc, provider: "huggingface" });
   } catch (e) {
     console.error("[Flow Vision] Hugging Face also failed:", e.message);
