@@ -583,6 +583,75 @@ async function handleAutoPost(req, res) {
   }
 }
 
+// ── Diagnostic — visit directly in a browser to see exactly what's
+// configured vs missing, instead of guessing blind ──────────────────────
+async function handleDiagnose(req, res) {
+  const checks = {
+    KV_REST_API_URL:      !!KV_URL,
+    KV_REST_API_TOKEN:    !!KV_KEY,
+    TELEGRAM_BOT_TOKEN:   !!TG_TOKEN,
+    JOEL_TELEGRAM_CHAT_ID: !!process.env.JOEL_TELEGRAM_CHAT_ID,
+    OPENROUTER_API_KEY:   !!process.env.OPENROUTER_API_KEY,
+    HF_TOKEN:             !!process.env.HF_TOKEN,
+    DEEPGRAM_API_KEY:     !!process.env.DEEPGRAM_API_KEY,
+    TELEGRAM_CHANNEL_ID:  !!process.env.TELEGRAM_CHANNEL_ID,
+    CRON_SECRET:          !!process.env.CRON_SECRET,
+  };
+
+  let kvLive = false, kvError = null, pendingCount = null;
+  if (KV_URL && KV_KEY) {
+    try {
+      const r = await fetch(`${KV_URL}/get/flow_pending_notifs`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
+      const d = await r.json();
+      kvLive = r.ok;
+      pendingCount = Array.isArray(d.result) ? d.result.length : 0;
+      if (!r.ok) kvError = `KV responded ${r.status}`;
+    } catch (e) { kvError = e.message; }
+  }
+
+  let tgLive = false, tgError = null, tgBotInfo = null;
+  if (TG_TOKEN) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getMe`);
+      const d = await r.json();
+      tgLive = d.ok;
+      tgBotInfo = d.ok ? { username: d.result.username, id: d.result.id } : null;
+      if (!d.ok) tgError = d.description;
+    } catch (e) { tgError = e.message; }
+  }
+
+  let webhookInfo = null;
+  if (TG_TOKEN) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getWebhookInfo`);
+      const d = await r.json();
+      webhookInfo = d.result;
+    } catch (_) {}
+  }
+
+  return res.status(200).json({
+    env_vars_set: checks,
+    kv_connection: { reachable: kvLive, error: kvError, pending_notifications_in_queue: pendingCount },
+    telegram_bot: { reachable: tgLive, error: tgError, info: tgBotInfo },
+    telegram_webhook: webhookInfo,
+    diagnosis: !checks.KV_REST_API_URL || !checks.KV_REST_API_TOKEN
+      ? 'KV is not configured — this is why notifications never reach the bell or Telegram. Set up Storage → Upstash in Vercel.'
+      : !kvLive
+      ? `KV is configured but not reachable: ${kvError}. Double check the URL/token are copied correctly.`
+      : !checks.TELEGRAM_BOT_TOKEN
+      ? 'TELEGRAM_BOT_TOKEN is not set.'
+      : !tgLive
+      ? `Telegram bot token is set but invalid: ${tgError}`
+      : webhookInfo && !webhookInfo.url
+      ? 'Bot token is valid but NO WEBHOOK IS REGISTERED — Telegram has nowhere to send messages. Run the setWebhook URL from the setup guide.'
+      : webhookInfo?.last_error_message
+      ? `Webhook is registered but Telegram reports an error delivering to it: ${webhookInfo.last_error_message}`
+      : !checks.JOEL_TELEGRAM_CHAT_ID
+      ? 'Everything else looks fine, but JOEL_TELEGRAM_CHAT_ID is not set — the bell should still work, but direct Telegram pings to you specifically will not.'
+      : 'Everything appears correctly configured. If notifications still are not arriving, check this endpoint again right after sending a test message to the bot, and compare pending_notifications_in_queue before/after.',
+  });
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -591,10 +660,12 @@ export default async function handler(req, res) {
   if (platform === 'whatsapp')      return handleWhatsApp(req, res);
   if (platform === 'sentinel-ping') return handleSentinelPing(req, res);
   if (platform === 'autopost')      return handleAutoPost(req, res);
+  if (platform === 'diagnose')      return handleDiagnose(req, res);
   return res.status(200).json({ service: 'Flow Social', endpoints: {
     telegram: '/api/social?platform=telegram',
     whatsapp: '/api/social?platform=whatsapp',
     sentinelPing: '/api/social?platform=sentinel-ping',
     autopost: '/api/social?platform=autopost',
+    diagnose: '/api/social?platform=diagnose',
   } });
 }
