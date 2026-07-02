@@ -14,6 +14,9 @@
     "api/social.js":    { "maxDuration": 15 },
     "api/tg-setup.js":  { "maxDuration": 10 }
   },
+  "crons": [
+    { "path": "/api/social?platform=autopost", "schedule": "0 15 * * *" }
+  ],
   "headers": [
     {
       "source": "/mediapipe/(.*)",
