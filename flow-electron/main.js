@@ -155,17 +155,35 @@ body{background:transparent;overflow:hidden;width:100vw;height:100vh}
 #sentinel-dot{width:6px;height:6px;border-radius:50%;background:#a78bfa;
   animation:pulse 1.6s ease-in-out infinite;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+#cam-preview{
+  position:fixed;top:14px;left:14px;width:160px;height:120px;
+  border-radius:12px;overflow:hidden;display:none;
+  border:1.5px solid rgba(167,139,250,0.5);
+  box-shadow:0 4px 20px rgba(0,0,0,0.4);
+  background:rgba(10,6,20,0.6);
+}
+#cam-preview.show{display:block;}
+#cam-preview img{width:100%;height:100%;object-fit:cover;display:block;
+  transform:scaleX(-1);} /* mirror, matches how Joel sees himself in Flow's own camera box */
+#cam-label{position:absolute;bottom:0;left:0;right:0;
+  background:linear-gradient(0deg,rgba(0,0,0,0.7),transparent);
+  color:#a78bfa;font-family:system-ui,sans-serif;font-size:9px;font-weight:600;
+  padding:4px 8px;letter-spacing:.04em;}
 </style></head>
 <body>
 <div id="dot"></div>
 <div id="sentinel-badge"><span id="sentinel-dot"></span>Flow is watching</div>
+<div id="cam-preview"><img id="cam-img"><div id="cam-label">FLOW · LIVE</div></div>
 <script>
 const dot = document.getElementById('dot');
 const badge = document.getElementById('sentinel-badge');
+const camPreview = document.getElementById('cam-preview');
+const camImg = document.getElementById('cam-img');
 const {ipcRenderer} = require('electron');
 ipcRenderer.on('dot-move',  (_,x,y,s) => { dot.style.display='block'; dot.style.left=x+'px'; dot.style.top=y+'px'; dot.className=s||''; });
-ipcRenderer.on('dot-hide',  ()        => { dot.style.display='none'; });
+ipcRenderer.on('dot-hide',  ()        => { dot.style.display='none'; camPreview.classList.remove('show'); });
 ipcRenderer.on('sentinel-state', (_, active) => { badge.className = active ? 'show' : ''; });
+ipcRenderer.on('camera-frame', (_, dataUrl) => { camImg.src = dataUrl; camPreview.classList.add('show'); });
 </script></body></html>`));
 
   overlayWin.on('closed', () => { overlayWin = null; });
@@ -233,6 +251,7 @@ ipcMain.on('scroll', (_e, { direction, amount }) => {
 });
 
 ipcMain.on('gesture_start',  ()           => overlayWin?.showInactive());
+ipcMain.on('camera_frame',   (_e, { dataUrl }) => overlayWin?.webContents.send('camera-frame', dataUrl));
 ipcMain.on('gesture_stop',   ()           => overlayWin?.webContents.send('dot-hide'));
 ipcMain.on('cursor_held',    (_e, {x, y}) => moveDot(x, y, 'held'));
 ipcMain.on('type_text',      (_e, {text}) => { try { robot?.typeString(text || ''); } catch(_) {} });
