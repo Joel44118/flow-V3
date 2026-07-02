@@ -39,8 +39,47 @@ async function saveHistory(histKey, history) {
 }
 
 // ── Shared: Ask Flow AI ───────────────────────────────────────────────────
-async function askFlow(userMsg, context = '', imageDesc = '', histKey = null) {
-  const SYSTEM = `You are Flow, Joel Olanrewaju's personal AI assistant.
+// Flow's real personality — duplicated here rather than imported from
+// core/config.js. That file is written for the browser-side app; whether
+// a Vercel serverless function can safely cross that api/ → core/ module
+// boundary at build time isn't proven elsewhere in this codebase (the one
+// existing example of this import pattern is ui/imagine.js →
+// core/speech.js, both browser-side — a different boundary than api/ →
+// core/). Duplicating a short, stable block of text is safer than an
+// unverified cross-boundary import that could silently break the whole
+// function at deploy time. If core/config.js's PERSONALITY text changes,
+// update it here too.
+const FLOW_PERSONALITY = `You are Flow — Joel's personal AI built specifically for him in Ibadan, Nigeria.
+You are NOT a generic assistant. Character: smooth, witty, clever, dry humour when it fits naturally.
+You always have Joel's back. Speak like a trusted friend who knows everything — not a corporate bot.
+
+RULES — never break:
+- You are Flow. Never say "I'm an AI" or "As a language model".
+- No filler: never say "Certainly", "Of course", "Great question".
+- Keep replies short and punchy unless detail is asked for.
+- No markdown in speech — no asterisks, hashtags, bullet dashes in plain replies.
+- If you don't know, say so plainly. Never hallucinate.
+- Use "Boss" occasionally — naturally, not every single message.
+- Never ask "what's next?", "anything else?", "would you like me to..." or push the conversation.
+- Never end a reply with a question unless Joel asks for your opinion directly.
+- Respond, stop, let Joel lead.
+- Typos and shorthand: Joel often types fast with typos, dropped letters, and merged words. Read past them to what he actually means — never call out or correct his spelling, never ask him to clarify a typo you can reasonably infer.
+- Roleplay and ongoing scenarios: if Joel starts a roleplay, story, or hypothetical scenario, STAY IN IT across the whole conversation until he clearly ends it or changes topic. Don't revert to a generic assistant tone after one or two exchanges — that's a real, known failure mode to actively avoid.`;
+
+async function askFlow(userMsg, context = '', imageDesc = '', histKey = null, isJoel = false) {
+  // Real fix, precisely diagnosed: this used to always use a generic
+  // "helpful, friendly, professional... pass it to Joel" prompt for
+  // EVERY Telegram conversation — including when Joel himself was
+  // talking to his own bot. That's a completely different, blander
+  // character than the real Flow personality used everywhere else in
+  // the app, which is exactly why "the Telegram version" felt notably
+  // less smart. Now: when it's genuinely Joel messaging, Flow uses its
+  // real personality (wit, directness, no corporate filler). When it's
+  // someone else — a client, a stranger — it keeps the professional,
+  // business-appropriate tone, since that distinction matters here.
+  const SYSTEM = isJoel
+    ? `${FLOW_PERSONALITY}\n\nYou're talking with Joel over Telegram right now — same person, same relationship as everywhere else you talk with him. Continue naturally; don't re-introduce yourself.\n${imageDesc ? `He sent an image. Here's what it shows: ${imageDesc}\nRespond to both the image and his message.` : ''}`
+    : `You are Flow, Joel Olanrewaju's personal AI assistant.
 You are continuing an ongoing ${context} conversation on Joel's behalf.
 Joel runs Joelflowstack — premium web development and AI automation services.
 Be helpful, friendly, professional. Keep replies under 200 words.
@@ -296,6 +335,18 @@ async function handleTelegram(req, res) {
     : msg.from?.first_name || String(chatId);
   const histKey  = `flow_tg_hist_${chatId}`;
 
+  // ── Scheduled post approval flow ────────────────────────────────────────
+  // Only checked in Joel's own private chat with the bot — a group member
+  // saying "yes" shouldn't accidentally approve Joel's draft post. If a
+  // draft is pending and Joel replies, this intercepts BEFORE the normal
+  // chat/admin flow so his reply isn't treated as a regular conversation
+  // message or misrouted elsewhere.
+  const joelIdForApproval = process.env.JOEL_TELEGRAM_CHAT_ID;
+  if (!isGroup && joelIdForApproval && String(msg.from?.id) === String(joelIdForApproval)) {
+    const handled = await handlePendingApprovalReply(tgFetch, tgFetchStrict, chatId, text);
+    if (handled) return res.status(200).json({ ok: true });
+  }
+
   // ── Community/group admin ──────────────────────────────────────────────
   // Real limitation, stated plainly: these ONLY work if you've made the
   // bot an actual admin inside the Telegram group (Group Settings →
@@ -356,12 +407,16 @@ async function handleTelegram(req, res) {
   }
 
   // Get AI reply — histKey gives real conversation memory, fixing the
-  // "always re-greets" issue at its root
+  // "always re-greets" issue at its root. isJoel determines which
+  // personality Flow uses — real Flow for Joel himself, professional
+  // business tone for anyone else messaging the bot.
+  const senderIsJoel = joelIdForApproval && String(msg.from?.id) === String(joelIdForApproval);
   const reply = await askFlow(
     text || (imageDesc ? 'What do you think about this image?' : 'Hello'),
     `Telegram ${username}`,
     imageDesc,
-    histKey
+    histKey,
+    senderIsJoel
   );
 
   // Send reply — business messages must echo back business_connection_id
@@ -549,38 +604,128 @@ async function generateAutoPostContent() {
 async function handleAutoPost(req, res) {
   // Cron requests carry this header automatically; anyone else calling
   // this route needs the same secret in an Authorization header — without
-  // this check, anyone who found the URL could trigger posts to Joel's
-  // channel at will.
+  // this check, anyone who found the URL could trigger this at will.
   const auth = req.headers.authorization;
   const isCron = req.headers['user-agent'] === 'vercel-cron/1.0';
   if (!isCron && auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
 
-  const channelId = process.env.TELEGRAM_CHANNEL_ID;
-  if (!channelId) {
-    return res.status(200).json({ ok: false, error: 'TELEGRAM_CHANNEL_ID not set — nowhere to post to yet.' });
-  }
+  const joelId = process.env.JOEL_TELEGRAM_CHAT_ID;
+  if (!joelId) return res.status(200).json({ ok: false, error: 'JOEL_TELEGRAM_CHAT_ID not set — nowhere to send the draft for approval.' });
   if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
 
   try {
     const { caption, topic } = await generateAutoPostContent();
 
-    const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    // Store the draft in KV so Joel's reply (which arrives as a totally
+    // separate, later HTTP request) can find it. This is NOT posted
+    // anywhere yet — approval-gated, exactly as requested.
+    await fetch(`${KV_URL}/set/flow_pending_post`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ caption, topic, createdAt: Date.now() }),
+    });
+
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: channelId, text: caption }),
+      body: JSON.stringify({
+        chat_id: joelId,
+        text: `📝 *Today's draft post:*\n\n${caption}\n\n` +
+              `Reply with:\n` +
+              `• *yes* / *post it* — publish as-is\n` +
+              `• *no* / *skip* — don't post today\n` +
+              `• anything else — I'll treat it as instructions and rewrite the draft (e.g. "make it shorter" or "post about Docker instead")`,
+        parse_mode: 'Markdown',
+      }),
     });
-    const d = await r.json();
-    if (!d.ok) throw new Error(d.description || 'Telegram send failed');
 
-    await pushNotif('Auto-post', `Posted to channel: "${caption.slice(0, 100)}"`);
-    return res.status(200).json({ ok: true, posted: caption, topic });
+    await pushNotif('Auto-post', `Draft ready for review: "${caption.slice(0, 100)}"`);
+    return res.status(200).json({ ok: true, drafted: caption, topic, status: 'awaiting_approval' });
   } catch (e) {
     console.error('[AutoPost] failed:', e.message);
-    await pushNotif('Auto-post', `⚠️ Failed: ${e.message}`);
+    await pushNotif('Auto-post', `⚠️ Draft generation failed: ${e.message}`);
     return res.status(500).json({ ok: false, error: e.message });
   }
+}
+
+// ── Handles Joel's reply to a pending draft post ────────────────────────
+// Returns true if a pending draft existed and this message was consumed
+// as a response to it (approve/reject/instructions) — false if there was
+// no pending draft, so the caller falls through to normal chat handling.
+async function handlePendingApprovalReply(tgFetch, tgFetchStrict, chatId, text) {
+  if (!KV_URL || !KV_KEY) return false;
+
+  let pending;
+  try {
+    const r = await fetch(`${KV_URL}/get/flow_pending_post`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
+    const d = await r.json();
+    pending = d.result || null;
+  } catch (_) { return false; }
+  if (!pending) return false;
+
+  const t = text.trim().toLowerCase();
+  const channelId = process.env.TELEGRAM_CHANNEL_ID;
+
+  const clearPending = () => fetch(`${KV_URL}/del/flow_pending_post`, { method: 'POST', headers: { Authorization: `Bearer ${KV_KEY}` } });
+
+  // Approve — post as-is
+  if (/^(yes|approve|post it|go|publish|send it)\b/.test(t)) {
+    if (!channelId) {
+      await tgFetch('sendMessage', { chat_id: chatId, text: '⚠️ TELEGRAM_CHANNEL_ID is not set, so there is nowhere to publish this to yet — draft kept, add that env var and reply "yes" again.' });
+      return true;
+    }
+    try {
+      await tgFetchStrict('sendMessage', { chat_id: channelId, text: pending.caption });
+      await clearPending();
+      await tgFetch('sendMessage', { chat_id: chatId, text: '✅ Posted to your channel.' });
+      await pushNotif('Auto-post', `Published: "${pending.caption.slice(0, 100)}"`);
+    } catch (e) {
+      await tgFetch('sendMessage', { chat_id: chatId, text: `⚠️ Couldn't post: ${e.message}` });
+    }
+    return true;
+  }
+
+  // Reject — discard, no post today
+  if (/^(no|skip|cancel|don'?t|reject)\b/.test(t)) {
+    await clearPending();
+    await tgFetch('sendMessage', { chat_id: chatId, text: 'No problem — skipping today\'s post.' });
+    return true;
+  }
+
+  // Anything else — treat as rewrite instructions, regenerate and re-send
+  // for approval again (does NOT auto-post the revision — same gate applies)
+  try {
+    const rewriteR = await fetch(`${SITE}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: 'You are Flow, revising a draft social media post for Joelflowstack based on Joel\'s instructions. Keep it 2-4 sentences, no hashtag spam, sound like a real developer, not corporate.' },
+          { role: 'user', content: `Original draft: "${pending.caption}"\n\nJoel's instructions: "${text}"\n\nWrite the revised version.` },
+        ],
+      }),
+    });
+    const rewriteD = await rewriteR.json();
+    const revised = rewriteD.reply?.trim();
+    if (!revised) throw new Error('Rewrite failed');
+
+    await fetch(`${KV_URL}/set/flow_pending_post`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ caption: revised, topic: pending.topic, createdAt: Date.now() }),
+    });
+
+    await tgFetch('sendMessage', {
+      chat_id: chatId,
+      text: `📝 *Revised draft:*\n\n${revised}\n\nReply *yes* to post it, *no* to skip, or give more instructions.`,
+      parse_mode: 'Markdown',
+    });
+  } catch (e) {
+    await tgFetch('sendMessage', { chat_id: chatId, text: `⚠️ Couldn't revise the draft: ${e.message}` });
+  }
+  return true;
 }
 
 // ── Diagnostic — visit directly in a browser to see exactly what's
