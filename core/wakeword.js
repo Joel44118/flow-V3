@@ -82,10 +82,20 @@ function _setWakeUI(active) {
 }
 
 // ── Fetch a short-lived Deepgram token from our own server ────────────
+let _lastTokenError = null;
 async function _getToken() {
   const r = await fetch("/api/tts?action=token");
   const d = await r.json();
-  if (!d.configured || !d.key) return null;
+  if (!d.configured || !d.key) {
+    // This used to silently discard d.error and just return null, making
+    // "key not set at all" and "key set but wrong permission scope" look
+    // completely identical from here — both just fell back to the generic
+    // browser-SR message. Now the real reason (e.g. a 403 because the
+    // Deepgram key needs Member role or higher, not just read/write) is
+    // kept and surfaced in the startup status notice.
+    _lastTokenError = d.error || "Deepgram not configured";
+    return null;
+  }
   _tokenExpiresAt = Date.now() + 4.5 * 60 * 1000; // token is 5min TTL, refresh a bit early
   return d.key;
 }
@@ -438,7 +448,7 @@ export async function startWakeListener() {
     if (_mode === "agent" && _socket?.readyState === WebSocket.OPEN) {
       _sysNotice("🎙️ Voice active — Deepgram Voice Agent (STT + LLM + TTS in one stream). Say \"Hey Flow\" to talk.");
     } else if (_mode === "browser" && wakeRec) {
-      _sysNotice("🎙️ Voice active — using your browser's built-in speech recognition (Deepgram not configured or unreachable).");
+      _sysNotice(`🎙️ Voice active — using your browser's built-in speech recognition. Deepgram fallback reason: ${_lastTokenError || "not configured"}.`);
     } else {
       _sysNotice("⚠️ Voice listening did not start — no working speech engine was found.");
     }
