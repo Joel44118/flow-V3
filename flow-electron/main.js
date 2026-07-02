@@ -305,18 +305,30 @@ async function captureScreenshotBase64() {
 }
 
 async function askVisionAPI(base64, prompt) {
+  if (!base64) {
+    console.warn('[Sentinel] no screenshot to analyze — capture failed earlier');
+    return null;
+  }
   try {
     const r = await fetch('https://flow-v3-mu.vercel.app/api/vision', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image: base64, prompt }),
     });
-    if (!r.ok) return null;
-    const d = await r.json();
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      // This used to just return null with the real reason buried in
+      // devtools console — invisible unless Joel had it open. Now the
+      // actual server error (e.g. both OpenRouter and Hugging Face
+      // failed, or neither is configured) reaches the renderer so it can
+      // be shown in chat instead of a generic "Vision analysis failed".
+      console.warn('[Sentinel] vision API error:', d.error || r.status);
+      return { error: d.error || `Vision API returned ${r.status}` };
+    }
     return d.description || null;
   } catch (e) {
-    console.warn('[Sentinel] vision API failed:', e.message);
-    return null;
+    console.warn('[Sentinel] vision API unreachable:', e.message);
+    return { error: `Could not reach Vercel: ${e.message}` };
   }
 }
 
@@ -384,7 +396,10 @@ async function sentinelTick() {
     b64,
     `Joel has been on the same window ("${title}") for over 8 minutes without switching context. Briefly describe what's on screen, and if there's an obvious error message, stuck state, or something you could help with, say so directly and concisely. If it just looks like normal focused work (writing, reading, designing), say that instead and don't suggest anything is wrong.`
   );
-  if (!desc) return;
+  if (!desc || typeof desc !== 'string') {
+    if (desc?.error) console.warn('[Sentinel] ambient check skipped:', desc.error);
+    return;
+  }
 
   lastNudgeAt = Date.now();
 
@@ -427,8 +442,18 @@ ipcMain.handle('sentinel_ask_now', async () => {
   const b64 = await captureScreenshotBase64();
   if (!b64) return { ok: false, error: 'Screenshot failed' };
   const desc = await askVisionAPI(b64, 'Describe what is currently on screen, clearly and concisely.');
-  if (!desc) return { ok: false, error: 'Vision analysis failed' };
+  if (!desc || typeof desc !== 'string') return { ok: false, error: desc?.error || 'Vision analysis failed' };
   return { ok: true, description: desc };
+});
+
+// Raw screenshot for OS-level click-target finding — separate from the
+// general describe-the-screen handler above because that one always sends
+// a fixed generic prompt; click-finding needs to send its own custom
+// "give me x,y coordinates" prompt against the same fresh screenshot.
+ipcMain.handle('sentinel_raw_screenshot', async () => {
+  const b64 = await captureScreenshotBase64();
+  if (!b64) return { ok: false, error: 'Screenshot failed' };
+  return { ok: true, image: b64 };
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -505,7 +530,9 @@ async function extractStepsFromTrail(instruction) {
     `If the screenshot doesn't give enough information to know exact click locations, say so plainly instead of guessing coordinates — do not invent precise pixel positions you cannot actually see.`
   );
 
-  if (!desc) return { ok: false, error: 'Vision analysis failed' };
+  if (!desc || typeof desc !== 'string') {
+    return { ok: false, error: desc?.error || 'Vision analysis failed for an unknown reason — check Vercel logs for /api/vision.' };
+  }
   return { ok: true, steps: desc, framesUsed: recent.length, windows: titles };
 }
 
