@@ -21,6 +21,20 @@ jobs:
         with:
           node-version: '20'
 
+      # Stamps this exact build with the commit SHA + a human-readable
+      # timestamp. This is what lets you actually VERIFY on launch that
+      # you're running the build you just triggered — not a stale cached
+      # artifact from an earlier run. Written to a JSON file that main.js
+      # reads and shows in the window title + an About panel.
+      - name: Stamp build version
+        working-directory: flow-electron
+        shell: bash
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          BUILD_TIME=$(date -u +"%Y-%m-%d %H:%M UTC")
+          echo "{\"commit\":\"$SHORT_SHA\",\"builtAt\":\"$BUILD_TIME\",\"fullSha\":\"${{ github.sha }}\"}" > build-info.json
+          cat build-info.json
+
       - name: Install dependencies
         working-directory: flow-electron
         run: npm install --ignore-scripts
@@ -34,7 +48,10 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: Flow-AI-Installer
+          # Artifact name includes the short SHA so two different builds
+          # never look identical in the Actions/Artifacts list — you can
+          # tell at a glance which one is newest without opening either.
+          name: Flow-AI-Installer-${{ github.sha }}
           path: flow-electron/dist/*.exe
           if-no-files-found: warn
           retention-days: 30
