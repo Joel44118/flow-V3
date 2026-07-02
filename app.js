@@ -27,6 +27,7 @@ import { Notepad }     from "./ui/notepad.js";
 import { handleFiles, initFileUpload } from "./ui/fileupload.js";
 import { initStagedFiles, stageFiles, clearStaged, getStagedFiles, hasStagedFiles } from "./ui/stagedfiles.js";
 import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
+import { initVideoGen, generateVideo } from "./ui/videogen.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -52,6 +53,10 @@ async function handleSlashCmd(cmd, prompt) {
     case "/image-flux":
       if (!p) { Chat.add("What should I generate? e.g. a sunset over Lagos", "bot"); return; }
       await generateImage(p, p);
+      break;
+    case "/video":
+      if (!p) { Chat.add("What should the video show? e.g. waves crashing on a beach at sunset", "bot"); return; }
+      await generateVideo(p);
       break;
     case "/image-design":
       if (!p) { Chat.add("Describe your design. e.g. 'Joelflowstack' Twitter promo, dark theme", "bot"); return; }
@@ -201,6 +206,7 @@ initSlash(_inputEl, (cmd) => handleSlashCmd(cmd, ""));
 
 initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
 initImagine(Chat, Orb);
+initVideoGen(Chat, Orb);
 initKnowledge(Chat);
 initProjects(Chat, (t) => sendToAI(t));
 
