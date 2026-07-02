@@ -83,6 +83,7 @@ function _setWakeUI(active) {
 
 // ── Fetch a short-lived Deepgram token from our own server ────────────
 let _lastTokenError = null;
+let _browserSRDeadInElectron = false;
 async function _getToken() {
   const r = await fetch("/api/tts?action=token");
   const d = await r.json();
@@ -371,6 +372,20 @@ function _startBrowserSR() {
     console.warn("[Flow] No speech recognition available at all");
     return;
   }
+  // KNOWN, CONFIRMED ELECTRON LIMITATION (not a Flow bug): Electron's
+  // bundled Chromium exposes webkitSpeechRecognition as an API — the
+  // constructor exists, .start() doesn't throw — but Google's cloud
+  // speech backend that actually powers it requires an API key that's
+  // baked into official Chrome builds only. Electron doesn't have it, so
+  // every real attempt fails asynchronously with a "network" error a few
+  // hundred ms after starting. This is documented and unresolved in
+  // Electron's own issue tracker, not something fixable from here.
+  // Detecting it explicitly rather than assuming a clean .start() call
+  // means it's actually working, since it silently isn't in Electron.
+  if (IS_ELECTRON) {
+    console.warn("[Flow] Browser SpeechRecognition is unreliable in Electron (Chromium's speech backend needs a Google API key that Electron doesn't bundle) — Deepgram is effectively required for voice in the desktop app.");
+    _browserSRDeadInElectron = true;
+  }
   navigator.mediaDevices?.getUserMedia({ audio: true })
     .then((stream) => {
       stream.getTracks().forEach((t) => t.stop());
@@ -447,6 +462,12 @@ export async function startWakeListener() {
   setTimeout(() => {
     if (_mode === "agent" && _socket?.readyState === WebSocket.OPEN) {
       _sysNotice("🎙️ Voice active — Deepgram Voice Agent (STT + LLM + TTS in one stream). Say \"Hey Flow\" to talk.");
+    } else if (_browserSRDeadInElectron) {
+      // Don't claim success here — browser SR genuinely doesn't work in
+      // Electron (see the comment in _startBrowserSR), so telling Joel
+      // "voice active" would be actively misleading when it's about to
+      // fail with a silent network error the moment he tries it.
+      _sysNotice(`⚠️ Voice can't work right now — Deepgram failed to connect (${_lastTokenError || "unknown reason"}), and the browser speech fallback doesn't work inside the Electron desktop app at all (a known Chromium/Electron limitation, not fixable from Flow's side). Fixing the Deepgram connection is the only real path to voice working here — check your Deepgram key has "Member" role or higher in your Deepgram account's team settings, not just read/write API scopes.`);
     } else if (_mode === "browser" && wakeRec) {
       _sysNotice(`🎙️ Voice active — using your browser's built-in speech recognition. Deepgram fallback reason: ${_lastTokenError || "not configured"}.`);
     } else {
