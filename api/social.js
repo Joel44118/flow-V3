@@ -93,7 +93,15 @@ async function analyzeImage(base64, mimeType = 'image/jpeg') {
 
 // ── Shared: Push notification to Flow bell ────────────────────────────────
 async function pushNotif(source, text) {
-  if (!KV_URL || !KV_KEY) return;
+  if (!KV_URL || !KV_KEY) {
+    // This used to fail completely silently. If notifications aren't
+    // reaching the bell or Telegram despite everything else working, THIS
+    // is very likely why — check Vercel → Settings → Environment Variables
+    // for KV_REST_API_URL and KV_REST_API_TOKEN (from your Vercel KV /
+    // Upstash integration).
+    console.error('[Social] pushNotif SKIPPED — KV_REST_API_URL / KV_REST_API_TOKEN not set. Notifications cannot be delivered until these are configured.');
+    return;
+  }
   try {
     const r   = await fetch(`${KV_URL}/get/flow_pending_notifs`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
     const cur = r.ok ? ((await r.json()).result || []) : [];
@@ -126,6 +134,116 @@ async function storeSummary(platform, sender, userMsg, flowReply, hasImage) {
   } catch(_) {}
 }
 
+// ── Community/group admin command handler ──────────────────────────────
+// Natural-language moderation, triggered by "flow <action> ..." in a group
+// where Joel is the sender. Reply-to-message is how the target user is
+// identified — same UX as most real Telegram moderation bots use, since
+// it's unambiguous (no username-typo risk) and works even for users
+// without a @username set.
+async function handleGroupAdminCommand(tgFetch, tgFetchStrict, msg, chatId, text, isOwner) {
+  const cmd = text.toLowerCase().replace(/^flow\s+/, '').trim();
+  const target = msg.reply_to_message;
+
+  const needsTarget = /^(ban|kick|mute|unmute|warn)\b/.test(cmd);
+  if (needsTarget && !target) {
+    await tgFetch('sendMessage', { chat_id: chatId, reply_to_message_id: msg.message_id, text: 'Reply to that person\'s message so I know exactly who you mean.' });
+    return true;
+  }
+  if (needsTarget && !isOwner) {
+    await tgFetch('sendMessage', { chat_id: chatId, reply_to_message_id: msg.message_id, text: 'Only Joel can ask me to do that here.' });
+    return true;
+  }
+
+  const targetId   = target?.from?.id;
+  const targetName = target?.from?.username ? `@${target.from.username}` : target?.from?.first_name || 'that user';
+
+  try {
+    if (/^ban\b/.test(cmd)) {
+      await tgFetchStrict('banChatMember', { chat_id: chatId, user_id: targetId });
+      await tgFetch('sendMessage', { chat_id: chatId, text: `${targetName} has been banned.` });
+      return true;
+    }
+    if (/^kick\b/.test(cmd)) {
+      // Telegram has no separate "kick" — ban immediately followed by
+      // unban removes them without a permanent ban, which is what most
+      // people mean by "kick".
+      await tgFetchStrict('banChatMember', { chat_id: chatId, user_id: targetId });
+      await tgFetchStrict('unbanChatMember', { chat_id: chatId, user_id: targetId });
+      await tgFetch('sendMessage', { chat_id: chatId, text: `${targetName} has been removed (can rejoin via invite link).` });
+      return true;
+    }
+    if (/^mute\b/.test(cmd)) {
+      const minutesMatch = cmd.match(/(\d+)\s*(min|minute|hour|hr|day)/);
+      let untilDate;
+      if (minutesMatch) {
+        const n = parseInt(minutesMatch[1], 10);
+        const mult = /hour|hr/.test(minutesMatch[2]) ? 3600 : /day/.test(minutesMatch[2]) ? 86400 : 60;
+        untilDate = Math.floor(Date.now() / 1000) + n * mult;
+      }
+      await tgFetchStrict('restrictChatMember', {
+        chat_id: chatId, user_id: targetId,
+        permissions: { can_send_messages: false },
+        ...(untilDate ? { until_date: untilDate } : {}),
+      });
+      await tgFetch('sendMessage', { chat_id: chatId, text: `${targetName} has been muted${untilDate ? ' temporarily' : ''}.` });
+      return true;
+    }
+    if (/^unmute\b/.test(cmd)) {
+      await tgFetchStrict('restrictChatMember', {
+        chat_id: chatId, user_id: targetId,
+        permissions: { can_send_messages: true, can_send_media_messages: true, can_send_other_messages: true, can_add_web_page_previews: true },
+      });
+      await tgFetch('sendMessage', { chat_id: chatId, text: `${targetName} can send messages again.` });
+      return true;
+    }
+    if (/^warn\b/.test(cmd)) {
+      const key = `flow_warns_${chatId}_${targetId}`;
+      const cur = await (async () => { try { const r = await fetch(`${KV_URL}/get/${key}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }); return r.ok ? ((await r.json()).result || 0) : 0; } catch(_) { return 0; } })();
+      const count = cur + 1;
+      await fetch(`${KV_URL}/set/${key}`, { method: 'POST', headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify(count) });
+      await tgFetch('sendMessage', { chat_id: chatId, text: `${targetName} has been warned (${count}/3). ${count >= 3 ? 'Auto-muting for 1 hour.' : ''}` });
+      if (count >= 3) {
+        await tgFetchStrict('restrictChatMember', { chat_id: chatId, user_id: targetId, permissions: { can_send_messages: false }, until_date: Math.floor(Date.now() / 1000) + 3600 });
+      }
+      return true;
+    }
+    if (/^pin\b/.test(cmd) && target) {
+      await tgFetchStrict('pinChatMessage', { chat_id: chatId, message_id: target.message_id });
+      await tgFetch('sendMessage', { chat_id: chatId, text: 'Pinned.' });
+      return true;
+    }
+    if (/^unpin\b/.test(cmd)) {
+      await tgFetchStrict('unpinChatMessage', { chat_id: chatId });
+      await tgFetch('sendMessage', { chat_id: chatId, text: 'Unpinned.' });
+      return true;
+    }
+    if (/^delete\b/.test(cmd) && target) {
+      await tgFetchStrict('deleteMessage', { chat_id: chatId, message_id: target.message_id });
+      return true;
+    }
+    if (/^rules\b|^welcome\b/.test(cmd)) {
+      // Flow can just answer group questions conversationally too —
+      // returning false here lets it fall through to the normal
+      // askFlow reply path below instead of being swallowed silently.
+      return false;
+    }
+  } catch (e) {
+    // Almost always means the bot isn't an admin in this group yet, or is
+    // missing the specific right for that action — surfaced clearly
+    // rather than failing silently, since this is the most common real
+    // setup gap.
+    await tgFetch('sendMessage', {
+      chat_id: chatId,
+      text: `Couldn't do that — ${e.message.includes('CHAT_ADMIN_REQUIRED') || e.message.includes('not enough rights')
+        ? "I need to be made an admin in this group first, with the right permission toggled on (Group Settings → Administrators → my account)."
+        : e.message}`,
+    });
+    return true;
+  }
+
+  return false; // not a recognized admin command — fall through to normal chat
+}
+
 // ── TELEGRAM ──────────────────────────────────────────────────────────────
 async function handleTelegram(req, res) {
   if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
@@ -135,6 +253,24 @@ async function handleTelegram(req, res) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).catch(e => console.error('[TG]', method, e.message));
+
+  // tgFetch above swallows everything into a console.error and never
+  // rejects — fine for routine sendMessage calls, but admin actions
+  // (ban/mute/pin) need to know WHY Telegram refused (usually "the bot
+  // isn't an admin here yet"), which arrives as a normal 200/400 response
+  // body, not a thrown error. This variant actually checks that body and
+  // throws with Telegram's real description so the catch block around
+  // admin commands can surface something useful instead of silence.
+  const tgFetchStrict = async (method, body) => {
+    const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.description || `Telegram ${method} failed`);
+    return d;
+  };
 
   const update = req.body;
 
@@ -152,11 +288,30 @@ async function handleTelegram(req, res) {
   if (!msg) return res.status(200).json({ ok: true });
 
   const chatId   = msg.chat.id;
+  const chatType = msg.chat.type; // 'private' | 'group' | 'supergroup' | 'channel'
+  const isGroup  = chatType === 'group' || chatType === 'supergroup';
   const text     = msg.text || msg.caption || '';
   const username = msg.from?.username
     ? `@${msg.from.username}`
     : msg.from?.first_name || String(chatId);
   const histKey  = `flow_tg_hist_${chatId}`;
+
+  // ── Community/group admin ──────────────────────────────────────────────
+  // Real limitation, stated plainly: these ONLY work if you've made the
+  // bot an actual admin inside the Telegram group (Group Settings →
+  // Administrators → Add Admin → your bot), with the specific rights
+  // (ban/restrict/pin/delete) toggled on. No code can grant those —
+  // that's Telegram's own permission model, done once per group in the
+  // Telegram app itself. Full steps are in the guide at the end.
+  //
+  // SECURITY: admin commands only fire when the SENDER is Joel
+  // (JOEL_TELEGRAM_CHAT_ID) — otherwise anyone in the group could type
+  // "flow ban @someone" and have it actually happen.
+  if (isGroup && text.toLowerCase().startsWith('flow ')) {
+    const isOwner = process.env.JOEL_TELEGRAM_CHAT_ID && String(msg.from?.id) === String(process.env.JOEL_TELEGRAM_CHAT_ID);
+    const handled = await handleGroupAdminCommand(tgFetch, tgFetchStrict, msg, chatId, text, isOwner);
+    if (handled) return res.status(200).json({ ok: true });
+  }
 
   // /start command (not applicable to business messages)
   if (text === '/start' && !isBusiness) {
