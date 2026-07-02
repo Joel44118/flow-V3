@@ -40,6 +40,18 @@ let mainWin    = null;
 let overlayWin = null;
 let tray       = null;
 
+// ── Build verification ─────────────────────────────────────────────────
+// Read the commit/timestamp stamp the GitHub Actions workflow writes into
+// build-info.json at build time. This is what actually lets you confirm
+// you're running the build you just downloaded, rather than guessing from
+// file dates or hoping the download didn't reuse a stale artifact.
+let buildInfo = { commit: 'dev', builtAt: 'unbuilt (local)' };
+try {
+  buildInfo = require('./build-info.json');
+} catch (_) {
+  console.warn('[Flow] No build-info.json found — running an unstamped/local build.');
+}
+
 // ── Main window ───────────────────────────────────────────────────────────
 function createWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -51,6 +63,7 @@ function createWindow() {
     minHeight: 360,
     frame: false,
     backgroundColor: '#060a1a',
+    title: `Flow — build ${buildInfo.commit} · ${buildInfo.builtAt}`,
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -228,6 +241,8 @@ ipcMain.handle('get_screen_size', () => {
   const d = screen.getPrimaryDisplay();
   return { width: d.bounds.width, height: d.bounds.height };
 });
+
+ipcMain.handle('get_build_info', () => buildInfo);
 
 ipcMain.on('win_minimize', () => mainWin?.minimize());
 ipcMain.on('win_maximize', () => { if (!mainWin) return; mainWin.isMaximized() ? mainWin.unmaximize() : mainWin.maximize(); });
