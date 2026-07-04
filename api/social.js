@@ -602,12 +602,23 @@ async function generateAutoPostContent() {
 }
 
 async function handleAutoPost(req, res) {
-  // Cron requests carry this header automatically; anyone else calling
-  // this route needs the same secret in an Authorization header — without
-  // this check, anyone who found the URL could trigger this at will.
-  const auth = req.headers.authorization;
-  const isCron = req.headers['user-agent'] === 'vercel-cron/1.0';
-  if (!isCron && auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  // Vercel's own documented pattern: Vercel automatically sends
+  // CRON_SECRET as a Bearer token in the Authorization header on every
+  // cron invocation. The previous user-agent check was an unverified
+  // assumption, and Vercel's own docs explicitly warn that header isn't a
+  // guaranteed signal — anyone can set it. If CRON_SECRET wasn't set, or
+  // the header didn't match exactly what was assumed, every real cron
+  // invocation was silently rejected as unauthorized before it ever
+  // reached the content-generation step — which fully explains a missing
+  // scheduled post with zero notification, since nothing downstream ever
+  // ran at all.
+  if (!process.env.CRON_SECRET) {
+    console.error('[AutoPost] CRON_SECRET is not set in Vercel env vars — every cron invocation will be rejected until this is added.');
+    return res.status(200).json({ ok: false, error: 'CRON_SECRET not set — add it in Vercel env vars for scheduled posts to work.' });
+  }
+  const authHeader = req.headers.authorization;
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    console.warn('[AutoPost] Rejected — Authorization header did not match CRON_SECRET.');
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
 
