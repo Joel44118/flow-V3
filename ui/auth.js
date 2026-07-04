@@ -431,7 +431,22 @@ function _buildPanel(mode, faceEnrolled) {
 }
 
 // ── Main export ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// TEMPORARY BYPASS — set to true to skip the lock screen entirely while
+// Joel sets his own PIN, secret question, and face verification up
+// properly from inside the app. Flip back to false once done, then push
+// again to re-enable the lock. This is intentionally a single obvious
+// switch right at the top of the file — not a backdoor buried elsewhere —
+// so it's easy to find, easy to verify, and easy to turn back off.
+// ═══════════════════════════════════════════════════════════════════════
+const BYPASS_LOCK = true;
+
 export async function initAuth() {
+  if (BYPASS_LOCK) {
+    console.warn("[Flow Auth] BYPASS_LOCK is ON — lock screen is skipped. Set it back to false in ui/auth.js once setup is done.");
+    return;
+  }
+
   const stored = await _loadHashFromCloud();
   if (stored && _isUnlocked()) return;
 
