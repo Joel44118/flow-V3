@@ -54,6 +54,11 @@ async function _kvLoad(key, fallbackLocalKey) {
         if (fallbackLocalKey) localStorage.setItem(fallbackLocalKey, typeof d.value === "string" ? d.value : JSON.stringify(d.value));
         return d.value;
       }
+      // Confirmed-empty KV response — same fix as _loadHashFromCloud
+      // above. Clear stale local fallback instead of trusting it over an
+      // authoritative "there's nothing here" from KV.
+      if (fallbackLocalKey) localStorage.removeItem(fallbackLocalKey);
+      return null;
     }
   } catch (_) {}
   if (!fallbackLocalKey) return null;
@@ -67,9 +72,25 @@ async function _loadHashFromCloud() {
     const r = await fetch("/api/memory?key=flow_pin_hash");
     if (r.ok) {
       const d = await r.json();
-      if (d.value && typeof d.value === "string") { localStorage.setItem(LOCK_KEY, d.value); return d.value; }
+      if (d.value && typeof d.value === "string") {
+        localStorage.setItem(LOCK_KEY, d.value);
+        return d.value;
+      }
+      // KV responded successfully AND explicitly said there's no PIN
+      // (value is null/empty) — that's authoritative, not a failure. The
+      // old code fell through to a stale localStorage value here, which
+      // is exactly what caused the lock screen to keep reappearing even
+      // after Joel confirmed via direct URL that KV genuinely had null:
+      // localStorage still had the OLD hash from before the reset, and
+      // nothing was clearing it to match what KV had already confirmed.
+      // A confirmed-empty KV wins — clear the stale local copy too.
+      localStorage.removeItem(LOCK_KEY);
+      return null;
     }
   } catch (_) {}
+  // Only reached if the KV request itself failed (network error, KV
+  // misconfigured) — in that case, and ONLY that case, fall back to
+  // whatever's in localStorage as a last resort.
   return localStorage.getItem(LOCK_KEY);
 }
 
