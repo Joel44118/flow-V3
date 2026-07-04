@@ -676,6 +676,19 @@ async function handlePendingApprovalReply(tgFetch, tgFetchStrict, chatId, text) 
       await tgFetch('sendMessage', { chat_id: chatId, text: '⚠️ TELEGRAM_CHANNEL_ID is not set, so there is nowhere to publish this to yet — draft kept, add that env var and reply "yes" again.' });
       return true;
     }
+    // Hard guard right before the actual send — every upstream generation
+    // path already checks for empty text, but this failed once with
+    // "message text is empty" despite that, meaning something not yet
+    // identified produced an empty pending.caption. Rather than keep
+    // guessing at the exact cause from static code alone, this guard
+    // stops the bad send AND logs the raw pending object so the real
+    // cause is visible in Vercel's logs if it happens again.
+    if (!pending.caption || !pending.caption.trim()) {
+      console.error('[AutoPost] BLOCKED empty-caption send. Raw pending object was:', JSON.stringify(pending));
+      await tgFetch('sendMessage', { chat_id: chatId, text: '⚠️ The stored draft came back empty somehow — I\'ve cleared it so it won\'t keep failing. Reply anything to generate a fresh one, or wait for tomorrow\'s scheduled draft.' });
+      await clearPending();
+      return true;
+    }
     try {
       await tgFetchStrict('sendMessage', { chat_id: channelId, text: pending.caption });
       await clearPending();
