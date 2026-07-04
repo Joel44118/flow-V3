@@ -184,6 +184,32 @@ async function _captureFaceVector(video) {
 }
 
 // ── Camera + live mesh overlay UI for the face capture popup ──────────
+// MediaPipe FaceLandmarker's standard face-mesh connection topology —
+// pairs of landmark indices that form the actual facial contours (eyes,
+// eyebrows, lips, face oval, nose bridge). This is what turns a scatter
+// of 478 dots into a genuine connected "net" over the face, matching
+// what was actually asked for.
+const FACE_MESH_CONNECTIONS = [
+  // Face oval
+  [10,338],[338,297],[297,332],[332,284],[284,251],[251,389],[389,356],[356,454],
+  [454,323],[323,361],[361,288],[288,397],[397,365],[365,379],[379,378],[378,400],
+  [400,377],[377,152],[152,148],[148,176],[176,149],[149,150],[150,136],[136,172],
+  [172,58],[58,132],[132,93],[93,234],[234,127],[127,162],[162,21],[21,54],[54,103],[103,67],[67,109],[109,10],
+  // Left eye
+  [33,7],[7,163],[163,144],[144,145],[145,153],[153,154],[154,155],[155,133],
+  [133,173],[173,157],[157,158],[158,159],[159,160],[160,161],[161,246],[246,33],
+  // Right eye
+  [362,382],[382,381],[381,380],[380,374],[374,373],[373,390],[390,249],[249,263],
+  [263,466],[466,388],[388,387],[387,386],[386,385],[385,384],[384,398],[398,362],
+  // Lips outer
+  [61,146],[146,91],[91,181],[181,84],[84,17],[17,314],[314,405],[405,321],[321,375],
+  [375,291],[291,409],[409,270],[270,269],[269,267],[267,0],[0,37],[37,39],[39,40],[40,185],[185,61],
+  // Eyebrows
+  [70,63],[63,105],[105,66],[66,107],[336,296],[296,334],[334,293],[293,300],
+  // Nose bridge
+  [168,6],[6,197],[197,195],[195,5],
+];
+
 function _buildFaceCapture(mode, onResult, onCancel) {
   const isEnroll = mode === "enroll";
   const wrap = document.createElement("div");
@@ -191,12 +217,24 @@ function _buildFaceCapture(mode, onResult, onCancel) {
   wrap.innerHTML = `
     <div id="flow-face-inner">
       <div id="flow-face-title">${isEnroll ? "Set up Face Unlock" : "Verifying face…"}</div>
-      <div id="flow-face-sub">${isEnroll ? "Look straight at the camera, good lighting helps." : "Hold still…"}</div>
+      <div id="flow-face-sub">Center your face in the frame</div>
       <div id="flow-face-video-wrap">
         <video id="flow-face-video" autoplay playsinline muted></video>
         <canvas id="flow-face-canvas"></canvas>
+        <div id="flow-face-radar"></div>
+        <div id="flow-face-wave"></div>
+        <div id="flow-face-ring"></div>
+        <svg id="flow-face-corners" viewBox="0 0 100 100" preserveAspectRatio="none">
+          <path d="M8,20 L8,8 L20,8" /><path d="M80,8 L92,8 L92,20" />
+          <path d="M92,80 L92,92 L80,92" /><path d="M20,92 L8,92 L8,80" />
+        </svg>
       </div>
-      <div id="flow-face-status"></div>
+      <div id="flow-face-hud">
+        <div class="flow-face-meter"><span>DISTANCE</span><div class="flow-face-bar"><div id="flow-face-dist-fill"></div></div></div>
+        <div class="flow-face-meter"><span>LIGHT</span><div class="flow-face-bar"><div id="flow-face-light-fill"></div></div></div>
+      </div>
+      <div id="flow-face-status">Starting camera…</div>
+      <div id="flow-face-hint"></div>
       <button id="flow-face-cancel">${isEnroll ? "Skip for now" : "Use PIN instead"}</button>
     </div>
   `;
@@ -204,16 +242,44 @@ function _buildFaceCapture(mode, onResult, onCancel) {
   style.textContent = `
     #flow-face-capture { position:fixed; inset:0; z-index:100000; display:flex; align-items:center; justify-content:center;
       background:rgba(6,10,26,0.97); backdrop-filter:blur(30px); }
-    #flow-face-inner { display:flex; flex-direction:column; align-items:center; gap:14px;
+    #flow-face-inner { display:flex; flex-direction:column; align-items:center; gap:12px;
       background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.16);
-      border-radius:22px; padding:28px; width:min(360px,90vw); }
+      border-radius:22px; padding:26px; width:min(380px,92vw); }
     #flow-face-title { font-family:'Orbitron',monospace; font-size:15px; color:#38bdf8; letter-spacing:.08em; }
     #flow-face-sub { font-size:12px; color:rgba(255,255,255,0.5); text-align:center; }
-    #flow-face-video-wrap { position:relative; width:260px; height:260px; border-radius:50%; overflow:hidden;
-      border:2px solid rgba(56,189,248,0.4); background:#000; }
+    #flow-face-video-wrap { position:relative; width:270px; height:270px; border-radius:20px; overflow:hidden; background:#000; }
     #flow-face-video { width:100%; height:100%; object-fit:cover; transform:scaleX(-1); }
     #flow-face-canvas { position:absolute; inset:0; width:100%; height:100%; transform:scaleX(-1); }
-    #flow-face-status { font-size:12px; color:#a78bfa; min-height:16px; text-align:center; }
+    #flow-face-ring { position:absolute; inset:0; border-radius:20px; pointer-events:none;
+      border:2px solid rgba(56,189,248,0.4); transition:border-color .25s, box-shadow .25s; }
+    #flow-face-ring.good { border-color:rgba(74,222,128,0.85); box-shadow:0 0 26px rgba(74,222,128,0.4) inset; }
+    #flow-face-ring.bad  { border-color:rgba(248,113,113,0.55); }
+    /* Corner brackets — the "advanced scanner" framing device */
+    #flow-face-corners { position:absolute; inset:10px; width:calc(100% - 20px); height:calc(100% - 20px); pointer-events:none; }
+    #flow-face-corners path { fill:none; stroke:rgba(56,189,248,0.7); stroke-width:2.5; }
+    /* Rotating radar sweep — a full conic wedge rotating continuously
+       while actively scanning, distinct from the mesh itself. */
+    #flow-face-radar { position:absolute; inset:0; border-radius:20px; pointer-events:none; overflow:hidden;
+      opacity:0; transition:opacity .2s; }
+    #flow-face-radar.active { opacity:1; }
+    #flow-face-radar::before { content:''; position:absolute; inset:-40%;
+      background:conic-gradient(from 0deg, transparent 0deg, rgba(56,189,248,0.35) 18deg, rgba(56,189,248,0.05) 40deg, transparent 70deg);
+      animation:flow-face-spin 2.2s linear infinite; }
+    @keyframes flow-face-spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+    /* Vertical light-wave — a horizontal band that sweeps up and down
+       independently of the radar, the second requested effect. */
+    #flow-face-wave { position:absolute; left:0; right:0; height:36px; pointer-events:none;
+      background:linear-gradient(180deg, transparent, rgba(56,189,248,0.5), transparent);
+      opacity:0; }
+    #flow-face-wave.active { opacity:1; animation:flow-face-wave-move 2.4s ease-in-out infinite; }
+    @keyframes flow-face-wave-move { 0%,100% { top:6%; } 50% { top:88%; } }
+    #flow-face-hud { display:flex; gap:16px; width:100%; }
+    .flow-face-meter { flex:1; display:flex; flex-direction:column; gap:4px; }
+    .flow-face-meter span { font-size:9px; color:rgba(255,255,255,0.4); letter-spacing:.1em; font-family:'Orbitron',monospace; }
+    .flow-face-bar { height:5px; border-radius:3px; background:rgba(255,255,255,0.08); overflow:hidden; }
+    .flow-face-bar > div { height:100%; width:50%; background:#38bdf8; transition:width .2s, background .2s; }
+    #flow-face-status { font-size:13px; color:#a78bfa; min-height:18px; text-align:center; font-weight:600; }
+    #flow-face-hint { font-size:11px; color:rgba(255,255,255,0.45); min-height:14px; text-align:center; }
     #flow-face-cancel { background:none; border:1px solid rgba(255,255,255,0.2); color:rgba(255,255,255,0.6);
       border-radius:10px; padding:8px 16px; font-size:12px; cursor:pointer; }
     #flow-face-cancel:hover { border-color:rgba(255,255,255,0.4); color:#fff; }
@@ -221,11 +287,22 @@ function _buildFaceCapture(mode, onResult, onCancel) {
   document.head.appendChild(style);
   document.body.appendChild(wrap);
 
-  const video  = document.getElementById("flow-face-video");
-  const canvas = document.getElementById("flow-face-canvas");
-  const ctx    = canvas.getContext("2d");
-  const status = document.getElementById("flow-face-status");
-  let stream = null, rafId = null, closed = false;
+  const video      = document.getElementById("flow-face-video");
+  const canvas     = document.getElementById("flow-face-canvas");
+  const ctx        = canvas.getContext("2d");
+  const radar      = document.getElementById("flow-face-radar");
+  const wave       = document.getElementById("flow-face-wave");
+  const ring       = document.getElementById("flow-face-ring");
+  const distFill   = document.getElementById("flow-face-dist-fill");
+  const lightFill  = document.getElementById("flow-face-light-fill");
+  const status     = document.getElementById("flow-face-status");
+  const hint       = document.getElementById("flow-face-hint");
+  let stream = null, rafId = null, closed = false, locking = false;
+  let goodFrameCount = 0;
+
+  const sampleCanvas = document.createElement("canvas");
+  sampleCanvas.width = 32; sampleCanvas.height = 32;
+  const sampleCtx = sampleCanvas.getContext("2d", { willReadFrequently: true });
 
   function cleanup() {
     closed = true;
@@ -236,28 +313,122 @@ function _buildFaceCapture(mode, onResult, onCancel) {
 
   document.getElementById("flow-face-cancel").addEventListener("click", () => { cleanup(); onCancel(); });
 
-  async function drawMeshLoop() {
+  function _measureBrightness() {
+    try {
+      sampleCtx.drawImage(video, 0, 0, 32, 32);
+      const data = sampleCtx.getImageData(0, 0, 32, 32).data;
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) sum += (data[i] + data[i + 1] + data[i + 2]) / 3;
+      return sum / (data.length / 4);
+    } catch (_) { return 128; }
+  }
+
+  function _drawMesh(lm) {
+    const w = canvas.width, h = canvas.height;
+    // Connecting lines first — this is what makes it read as an actual
+    // net over the face, not a scatter of isolated points.
+    ctx.strokeStyle = "rgba(56,189,248,0.55)";
+    ctx.lineWidth = 1;
+    for (const [a, b] of FACE_MESH_CONNECTIONS) {
+      if (!lm[a] || !lm[b]) continue;
+      ctx.beginPath();
+      ctx.moveTo(lm[a].x * w, lm[a].y * h);
+      ctx.lineTo(lm[b].x * w, lm[b].y * h);
+      ctx.stroke();
+    }
+    // Points on top of the lines
+    ctx.fillStyle = "rgba(167,139,250,0.9)";
+    for (const pt of lm) {
+      ctx.beginPath();
+      ctx.arc(pt.x * w, pt.y * h, 1.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  async function scanLoop() {
     if (closed) return;
-    canvas.width = video.videoWidth || 260;
-    canvas.height = video.videoHeight || 260;
+    canvas.width = video.videoWidth || 270;
+    canvas.height = video.videoHeight || 270;
+
     try {
       const landmarker = await _loadFaceLandmarker();
       const result = landmarker.detect(video);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const brightness = _measureBrightness();
+      const lightPct = Math.max(0, Math.min(100, Math.round((brightness / 180) * 100)));
+      lightFill.style.width = lightPct + "%";
+      lightFill.style.background = lightPct < 30 ? "#f87171" : lightPct < 50 ? "#facc15" : "#4ade80";
+      const tooDark = brightness < 55;
+
       if (result.faceLandmarks?.length) {
         const lm = result.faceLandmarks[0];
-        ctx.fillStyle = "rgba(56,189,248,0.85)";
-        for (const pt of lm) {
-          ctx.beginPath();
-          ctx.arc(pt.x * canvas.width, pt.y * canvas.height, 1.1, 0, Math.PI * 2);
-          ctx.fill();
+        _drawMesh(lm);
+
+        // Same eye-corner geometry used in _computeFaceVector — genuine
+        // shared signal, not a fabricated separate metric.
+        const eyeSpan = Math.hypot(
+          (lm[33].x - lm[263].x) * canvas.width,
+          (lm[33].y - lm[263].y) * canvas.height
+        );
+        const eyeFraction = eyeSpan / canvas.width;
+        const distPct = Math.max(0, Math.min(100, Math.round(((eyeFraction - 0.1) / 0.4) * 100)));
+        distFill.style.width = distPct + "%";
+
+        const tooFar   = eyeFraction < 0.18;
+        const tooClose = eyeFraction > 0.42;
+        distFill.style.background = (tooFar || tooClose) ? "#f87171" : "#4ade80";
+
+        radar.classList.add("active");
+
+        if (tooDark) {
+          status.textContent = "Lighting is too low";
+          hint.textContent = "Move somewhere brighter, or face a light source";
+          ring.className = "bad"; wave.classList.remove("active");
+          goodFrameCount = 0;
+        } else if (tooFar) {
+          status.textContent = "Move closer";
+          hint.textContent = "";
+          ring.className = "bad"; wave.classList.remove("active");
+          goodFrameCount = 0;
+        } else if (tooClose) {
+          status.textContent = "Move back a little";
+          hint.textContent = "";
+          ring.className = "bad"; wave.classList.remove("active");
+          goodFrameCount = 0;
+        } else {
+          // Everything genuinely good — the light-wave sweep only turns
+          // on during this final locking phase, so it visually signals
+          // "actively capturing" specifically, distinct from the radar
+          // sweep which runs during the whole search phase.
+          goodFrameCount++;
+          const framesNeeded = isEnroll ? 20 : 14;
+          wave.classList.add("active");
+          status.textContent = goodFrameCount >= framesNeeded ? "Locked — scanning" : "Hold still…";
+          hint.textContent = "";
+          ring.className = "good";
+
+          if (goodFrameCount >= framesNeeded && !locking) {
+            locking = true;
+            radar.classList.remove("active");
+            wave.classList.remove("active");
+            status.textContent = "Scan complete";
+            const vector = await _captureFaceVector(video);
+            cleanup();
+            onResult(vector);
+            return;
+          }
         }
-        status.textContent = isEnroll ? "Face detected — hold still" : "Face detected — checking…";
       } else {
-        status.textContent = "No face detected — center yourself in frame";
+        status.textContent = "No face detected";
+        hint.textContent = "Center yourself in the frame";
+        ring.className = "bad"; wave.classList.remove("active"); radar.classList.remove("active");
+        distFill.style.width = "0%";
+        goodFrameCount = 0;
       }
     } catch (_) {}
-    rafId = requestAnimationFrame(drawMeshLoop);
+
+    if (!closed && !locking) rafId = requestAnimationFrame(scanLoop);
   }
 
   (async () => {
@@ -266,14 +437,8 @@ function _buildFaceCapture(mode, onResult, onCancel) {
       video.srcObject = stream;
       await new Promise(r => { video.onloadedmetadata = r; });
       await _loadFaceLandmarker();
-      drawMeshLoop();
-
-      await new Promise(r => setTimeout(r, isEnroll ? 1800 : 1200));
-      if (closed) return;
-
-      const vector = await _captureFaceVector(video);
-      cleanup();
-      onResult(vector);
+      status.textContent = "Scanning…";
+      scanLoop();
     } catch (e) {
       status.textContent = `Camera error: ${e.message}`;
       setTimeout(() => { cleanup(); onCancel(); }, 2000);
