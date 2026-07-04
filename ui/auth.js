@@ -439,7 +439,7 @@ function _buildPanel(mode, faceEnrolled) {
 // switch right at the top of the file — not a backdoor buried elsewhere —
 // so it's easy to find, easy to verify, and easy to turn back off.
 // ═══════════════════════════════════════════════════════════════════════
-const BYPASS_LOCK = true;
+const BYPASS_LOCK = false;
 
 export async function initAuth() {
   if (BYPASS_LOCK) {
