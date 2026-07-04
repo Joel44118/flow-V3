@@ -13,14 +13,41 @@ async function kvGet(key) {
     headers: { Authorization: `Bearer ${KV_TOKEN}` },
   });
   const data = await res.json();
-  return data.result ?? null;
+  let result = data.result ?? null;
+
+  // Self-healing for data already corrupted by the bug below, written
+  // before this fix existed: if a stored string is itself a JSON-encoded
+  // string (starts and ends with a literal quote character), unwrap it
+  // once so old double-encoded values (PIN hashes, recovery answers,
+  // etc. saved before this fix) still compare correctly instead of
+  // permanently failing every check against them.
+  if (typeof result === "string" && result.length >= 2 && result[0] === '"' && result[result.length - 1] === '"') {
+    try { result = JSON.parse(result); } catch (_) { /* leave as-is if not actually valid JSON */ }
+  }
+  return result;
 }
 
 async function kvSet(key, value) {
+  // THE ACTUAL BUG, confirmed by direct reproduction: JSON.stringify on
+  // an already-plain string (e.g. a SHA-256 hash like
+  // "59d53da6...") wraps it in literal quote characters —
+  // '"59d53da6..."' — before sending as the POST body. Upstash's REST
+  // API treats that raw body as the literal value to store, so it saved
+  // exactly that quoted string, verbatim. Every read back then compared
+  // a real hash against a value with extra quote characters baked in,
+  // which can never match — this is what made a newly-set PIN and
+  // recovery answer look "wrong" immediately after being saved, with no
+  // visible error anywhere, because the write itself "succeeded" — it
+  // just stored the wrong thing.
+  //
+  // Fix: only JSON.stringify values that actually need it (objects,
+  // arrays, numbers, booleans) — plain strings are sent through raw, so
+  // what goes in is exactly what comes back out.
+  const body = typeof value === "string" ? value : JSON.stringify(value);
   await fetch(`${KV_URL}/set/${encodeURIComponent(key)}`, {
     method:  "POST",
     headers: { Authorization: `Bearer ${KV_TOKEN}`, "Content-Type": "application/json" },
-    body:    JSON.stringify(value),
+    body,
   });
 }
 
