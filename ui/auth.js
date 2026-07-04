@@ -39,11 +39,21 @@ const MATCH_THRESHOLD = 0.90; // cosine similarity — tuned conservative:
 // ── KV persistence ──────────────────────────────────────────────────────
 async function _kvSave(key, value) {
   try {
-    await fetch("/api/memory", {
+    const r = await fetch("/api/memory", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key, value }),
     });
-  } catch (_) {}
+    if (r.ok) {
+      const d = await r.json();
+      if (d.kv === false) {
+        console.warn(`[Flow Auth] Saved ${key} to localStorage only — KV is not configured on the server, so this is NOT backed up to the cloud yet.`);
+      }
+    } else {
+      console.error(`[Flow Auth] KV save for ${key} failed with HTTP ${r.status}.`);
+    }
+  } catch (e) {
+    console.error(`[Flow Auth] KV save for ${key} failed:`, e.message);
+  }
 }
 async function _kvLoad(key, fallbackLocalKey) {
   try {
@@ -54,9 +64,15 @@ async function _kvLoad(key, fallbackLocalKey) {
         if (fallbackLocalKey) localStorage.setItem(fallbackLocalKey, typeof d.value === "string" ? d.value : JSON.stringify(d.value));
         return d.value;
       }
-      // Confirmed-empty KV response — same fix as _loadHashFromCloud
-      // above. Clear stale local fallback instead of trusting it over an
-      // authoritative "there's nothing here" from KV.
+      // Same critical fix as _loadHashFromCloud: kv:false means KV isn't
+      // configured server-side at all, not "confirmed empty" — trust the
+      // local fallback in that case instead of wiping it.
+      if (d.kv === false) {
+        console.warn(`[Flow Auth] KV not configured — trusting local value for ${key}.`);
+        if (!fallbackLocalKey) return null;
+        const local = localStorage.getItem(fallbackLocalKey);
+        try { return local ? JSON.parse(local) : local; } catch (_) { return local; }
+      }
       if (fallbackLocalKey) localStorage.removeItem(fallbackLocalKey);
       return null;
     }
@@ -76,14 +92,22 @@ async function _loadHashFromCloud() {
         localStorage.setItem(LOCK_KEY, d.value);
         return d.value;
       }
-      // KV responded successfully AND explicitly said there's no PIN
-      // (value is null/empty) — that's authoritative, not a failure. The
-      // old code fell through to a stale localStorage value here, which
-      // is exactly what caused the lock screen to keep reappearing even
-      // after Joel confirmed via direct URL that KV genuinely had null:
-      // localStorage still had the OLD hash from before the reset, and
-      // nothing was clearing it to match what KV had already confirmed.
-      // A confirmed-empty KV wins — clear the stale local copy too.
+      // CRITICAL DISTINCTION missed by the previous version: memory.js
+      // returns HTTP 200 with { value: null, kv: false } when
+      // KV_REST_API_URL/TOKEN aren't configured on Vercel AT ALL — that's
+      // a genuine misconfiguration, not "confirmed no PIN exists." The
+      // earlier fix only told apart "network request failed" from
+      // "KV explicitly confirmed empty," and missed this third case,
+      // which meant a broken/unconfigured KV connection was silently
+      // treated as authoritative and wiped a perfectly correct local PIN
+      // — exactly the trap that made a newly-set PIN look "wrong" right
+      // after setup with no visible cause.
+      if (d.kv === false) {
+        console.warn("[Flow Auth] KV is not configured on the server (KV_REST_API_URL/TOKEN missing) — trusting local PIN instead of wiping it based on an unreliable cloud check.");
+        return localStorage.getItem(LOCK_KEY);
+      }
+      // KV genuinely IS connected (kv:true) and explicitly returned no
+      // value — THIS is the real confirmed-empty case, safe to trust.
       localStorage.removeItem(LOCK_KEY);
       return null;
     }
