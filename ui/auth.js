@@ -1,43 +1,34 @@
-// ui/auth.js (v3) — Flow password panel + face verification fast-path
+// ui/auth.js (v4) — Flow password panel, face verification, secret-question recovery
 //
-// WHAT CHANGED AND WHY, READ THIS FIRST:
+// TWO REAL FIXES THIS VERSION, BOTH FROM DIRECT FEEDBACK:
 //
-// 1. THE LOCKOUT BUG: "Reset PIN" used to live only in the brain menu —
-//    which is INSIDE the app, unreachable if you're locked out. That's a
-//    real design flaw I introduced. Fixed: "Forgot PIN?" now lives
-//    directly on the lock screen itself, reachable with zero prior access.
-//    This is a LOCAL device reset (clears the hash so a new one can be
-//    set), not a remote account recovery system. That's an honest
-//    tradeoff: anyone with physical access to your unlocked device could
-//    reset it too, same as most personal local-lock apps.
+// 1. FACE SETUP MOVED TO FIRST LAUNCH: it used to require unlocking with
+//    the PIN first, then going into the brain menu — a real gap for
+//    something meant to be a fast unlock convenience. Now, right after
+//    setting your PIN for the first time, Flow offers face setup
+//    immediately, in the same flow — exactly like the PIN setup itself.
+//    Skippable, and still available later from the brain menu too.
 //
-// 2. FACE VERIFICATION — SCOPED HONESTLY:
-//    Peer-reviewed research on landmark-geometry face verification (the
-//    only approach safely buildable here without new fragile
-//    dependencies) shows real accuracy around 64% — genuinely not
-//    reliable enough to be a sole security gate. Building it as your
-//    ONLY unlock method would very likely lock you out again. So: face
-//    verification is a FAST-PATH CONVENIENCE, always sitting alongside
-//    the PIN field, never hiding or blocking it.
+// 2. "FORGOT PIN?" WAS GENUINELY DEFENSELESS: it used to wipe the PIN
+//    instantly with just a browser confirm() dialog — meaning anyone who
+//    got to the lock screen could reset it with one click, no real gate
+//    at all. Fixed: it's now a secret question YOU set during initial
+//    setup (e.g. "What's Flow's real name?"), and the reset only proceeds
+//    if the answer matches. Still a LOCAL-DEVICE mechanism, not a
+//    cryptographically bulletproof recovery system — but a genuine gate
+//    now, not an open door.
 //
-//    Technology: MediaPipe FaceLandmarker (same Google MediaPipe family
-//    already proven working in this exact app via gesture control) —
-//    478 3D face landmarks per frame, the "net-like structure aligning
-//    with your face" is literally this mesh, drawn live during capture.
-//    A normalized geometric feature vector (interocular distance, jaw
-//    width, nose ratios — all scale/rotation invariant) is computed and
-//    compared via cosine similarity against your one enrolled vector.
-//
-//    Verified NOT to hit the earlier Electron landmine: unlike
-//    SpeechRecognition (confirmed broken in Electron's Chromium),
-//    MediaPipe's WASM vision tasks run entirely locally with no cloud
-//    dependency, and the same underlying engine family (hand tracking)
-//    is already proven working in this exact Electron app.
+// FACE VERIFICATION SCOPE (unchanged, still true): pure geometric
+// landmark comparison tops out around 64% accuracy in published research
+// — not reliable enough as a sole security gate. Stays a fast-path
+// convenience alongside the PIN, never replacing it.
 
 const LOCK_KEY        = "flow_lock_hash";
-const UNLOCK_KEY       = "flow_unlocked_until";
-const FACE_KEY          = "flow_face_vector";
-const UNLOCK_HRS       = 5;
+const UNLOCK_KEY      = "flow_unlocked_until";
+const FACE_KEY        = "flow_face_vector";
+const RECOVERY_Q_KEY  = "flow_recovery_question";
+const RECOVERY_A_KEY  = "flow_recovery_answer_hash";
+const UNLOCK_HRS      = 5;
 const MATCH_THRESHOLD = 0.90; // cosine similarity — tuned conservative:
                                // given the ~64% ceiling on pure geometric
                                // verification, a HIGH bar means face
@@ -45,7 +36,7 @@ const MATCH_THRESHOLD = 0.90; // cosine similarity — tuned conservative:
                                // PIN instead of ever falsely accepting
                                // someone else. Fails safe, not convenient.
 
-// ── KV persistence (same pattern as PIN hash) ──────────────────────────
+// ── KV persistence ──────────────────────────────────────────────────────
 async function _kvSave(key, value) {
   try {
     await fetch("/api/memory", {
@@ -53,6 +44,21 @@ async function _kvSave(key, value) {
       body: JSON.stringify({ key, value }),
     });
   } catch (_) {}
+}
+async function _kvLoad(key, fallbackLocalKey) {
+  try {
+    const r = await fetch(`/api/memory?key=${encodeURIComponent(key)}`);
+    if (r.ok) {
+      const d = await r.json();
+      if (d.value != null) {
+        if (fallbackLocalKey) localStorage.setItem(fallbackLocalKey, typeof d.value === "string" ? d.value : JSON.stringify(d.value));
+        return d.value;
+      }
+    }
+  } catch (_) {}
+  if (!fallbackLocalKey) return null;
+  const local = localStorage.getItem(fallbackLocalKey);
+  try { return local ? JSON.parse(local) : local; } catch (_) { return local; }
 }
 
 async function _saveHashToCloud(hash) { await _kvSave("flow_pin_hash", hash); localStorage.setItem(LOCK_KEY, hash); }
@@ -89,8 +95,6 @@ function _setUnlocked() {
 let _faceLandmarker = null;
 let _faceLoadPromise = null;
 
-// Loaded lazily — only when the eye button is actually pressed, so the
-// lock screen itself stays instant even on a slow connection.
 async function _loadFaceLandmarker() {
   if (_faceLandmarker) return _faceLandmarker;
   if (_faceLoadPromise) return _faceLoadPromise;
@@ -105,10 +109,7 @@ async function _loadFaceLandmarker() {
     _faceLandmarker = await FaceLandmarker.createFromOptions(files, {
       baseOptions: {
         modelAssetPath: "/api/mediapipe?f=face_landmarker.task",
-        delegate: "CPU", // GPU delegate has documented crashes on some
-                          // systems — CPU is slightly slower but reliable
-                          // everywhere, which matters more for a lock
-                          // screen than raw speed.
+        delegate: "CPU",
       },
       runningMode: "IMAGE",
       numFaces: 1,
@@ -119,22 +120,16 @@ async function _loadFaceLandmarker() {
   return _faceLoadPromise;
 }
 
-// Converts 478 raw landmarks into a normalized, scale/rotation-invariant
-// feature vector — ratios rather than raw coordinates, so it doesn't
-// matter how close you are to the camera or how your head is tilted.
 function _computeFaceVector(landmarks) {
   const p = (i) => landmarks[i];
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
 
-  // Key landmark indices (MediaPipe FaceLandmarker's 478-point topology):
-  // 33/263 = outer eye corners, 1 = nose tip, 61/291 = mouth corners,
-  // 199 = chin, 10 = forehead top, 234/454 = left/right face edge
   const leftEye = p(33), rightEye = p(263), nose = p(1);
   const mouthL = p(61), mouthR = p(291), chin = p(199);
   const forehead = p(10), faceL = p(234), faceR = p(454);
 
   const interocular = dist(leftEye, rightEye);
-  if (interocular < 0.001) return null; // degenerate detection, reject
+  if (interocular < 0.001) return null;
 
   return [
     dist(nose, leftEye) / interocular,
@@ -160,8 +155,6 @@ function _cosineSimilarity(a, b) {
   return dot / (Math.sqrt(magA) * Math.sqrt(magB));
 }
 
-// Captures ONE frame, runs detection, returns the feature vector — used
-// for both enrollment and verification so the exact same math applies.
 async function _captureFaceVector(video) {
   const landmarker = await _loadFaceLandmarker();
   const result = landmarker.detect(video);
@@ -183,7 +176,7 @@ function _buildFaceCapture(mode, onResult, onCancel) {
         <canvas id="flow-face-canvas"></canvas>
       </div>
       <div id="flow-face-status"></div>
-      <button id="flow-face-cancel">Use PIN instead</button>
+      <button id="flow-face-cancel">${isEnroll ? "Skip for now" : "Use PIN instead"}</button>
     </div>
   `;
   const style = document.createElement("style");
@@ -222,8 +215,6 @@ function _buildFaceCapture(mode, onResult, onCancel) {
 
   document.getElementById("flow-face-cancel").addEventListener("click", () => { cleanup(); onCancel(); });
 
-  // Draws the live 478-point mesh overlay — the "net-like structure
-  // aligning with your face" from the request.
   async function drawMeshLoop() {
     if (closed) return;
     canvas.width = video.videoWidth || 260;
@@ -256,8 +247,6 @@ function _buildFaceCapture(mode, onResult, onCancel) {
       await _loadFaceLandmarker();
       drawMeshLoop();
 
-      // Give the mesh a moment to visibly lock on before capturing —
-      // purely for a good user experience.
       await new Promise(r => setTimeout(r, isEnroll ? 1800 : 1200));
       if (closed) return;
 
@@ -271,6 +260,62 @@ function _buildFaceCapture(mode, onResult, onCancel) {
   })();
 
   return { cleanup };
+}
+
+async function _enrollFaceInline(onDone) {
+  _buildFaceCapture("enroll", async (vector) => {
+    if (!vector) { onDone?.(false, "No face detected clearly enough."); return; }
+    localStorage.setItem(FACE_KEY, JSON.stringify(vector));
+    await _kvSave("flow_face_vector", vector);
+    onDone?.(true, "Face Unlock set up.");
+  }, () => { onDone?.(false, "Skipped."); });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SECRET QUESTION RECOVERY — real gate, not an instant wipe
+// ═══════════════════════════════════════════════════════════════════════
+
+function _buildRecoveryPrompt(question, onSubmit, onCancel) {
+  const wrap = document.createElement("div");
+  wrap.id = "flow-recovery-prompt";
+  wrap.innerHTML = `
+    <div id="flow-recovery-inner">
+      <div id="flow-recovery-title">Forgot PIN — Answer to reset</div>
+      <div id="flow-recovery-q">${question}</div>
+      <input id="flow-recovery-input" type="text" placeholder="Your answer" autocomplete="off">
+      <button id="flow-recovery-submit">SUBMIT</button>
+      <div id="flow-recovery-err"></div>
+      <button id="flow-recovery-cancel">Cancel</button>
+    </div>
+  `;
+  const style = document.createElement("style");
+  style.textContent = `
+    #flow-recovery-prompt { position:fixed; inset:0; z-index:100001; display:flex; align-items:center; justify-content:center;
+      background:rgba(6,10,26,0.97); backdrop-filter:blur(30px); }
+    #flow-recovery-inner { display:flex; flex-direction:column; align-items:center; gap:12px;
+      background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.18); border-radius:22px; padding:30px; width:min(340px,88vw); }
+    #flow-recovery-title { font-family:'Orbitron',monospace; font-size:13px; color:#38bdf8; letter-spacing:.06em; text-align:center; }
+    #flow-recovery-q { font-size:14px; color:rgba(255,255,255,0.85); text-align:center; padding:4px 0; }
+    #flow-recovery-input { width:100%; padding:12px 14px; border-radius:12px; background:rgba(255,255,255,0.08);
+      border:1px solid rgba(255,255,255,0.18); color:#fff; font-size:15px; text-align:center; outline:none; }
+    #flow-recovery-input:focus { border-color:rgba(56,189,248,0.55); }
+    #flow-recovery-submit { width:100%; padding:12px; background:rgba(56,189,248,0.15); border:1px solid rgba(56,189,248,0.4);
+      border-radius:12px; color:#38bdf8; font-family:'Orbitron',monospace; font-size:11px; letter-spacing:.15em; cursor:pointer; }
+    #flow-recovery-submit:hover { background:rgba(56,189,248,0.28); }
+    #flow-recovery-err { font-size:12px; color:#f87171; min-height:16px; text-align:center; }
+    #flow-recovery-cancel { background:none; border:none; color:rgba(255,255,255,0.4); font-size:12px; text-decoration:underline; cursor:pointer; }
+    #flow-recovery-cancel:hover { color:rgba(255,255,255,0.65); }
+  `;
+  document.head.appendChild(style);
+  document.body.appendChild(wrap);
+
+  const input = document.getElementById("flow-recovery-input");
+  const err   = document.getElementById("flow-recovery-err");
+  const submit = () => onSubmit(input.value.trim(), err, () => wrap.remove());
+  document.getElementById("flow-recovery-submit").addEventListener("click", submit);
+  input.addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+  document.getElementById("flow-recovery-cancel").addEventListener("click", () => { wrap.remove(); onCancel(); });
+  setTimeout(() => input.focus(), 100);
 }
 
 // ── Build the lock screen UI ──────────────────────────────────────────────
@@ -295,9 +340,14 @@ function _buildPanel(mode, faceEnrolled) {
       </div>
 
       ${isSetup ? `<input id="flow-auth-confirm" type="password" placeholder="Confirm PIN" autocomplete="new-password" maxlength="32">` : ""}
+      ${isSetup ? `
+        <div id="flow-auth-recovery-block">
+          <input id="flow-auth-recovery-q" type="text" placeholder="Secret question (e.g. What is Flow's real name?)" maxlength="120">
+          <input id="flow-auth-recovery-a" type="text" placeholder="Answer to that question" maxlength="80" autocomplete="off">
+        </div>
+      ` : ""}
 
       <button id="flow-auth-btn">${isSetup ? "SET PIN" : "UNLOCK"}</button>
-      ${isSetup ? `<div id="flow-face-enroll-hint">You can set up Face Unlock right after this, from the brain menu.</div>` : ""}
       <div id="flow-auth-err"></div>
       ${!isSetup ? `<a id="flow-auth-forgot" href="javascript:void(0)">Forgot PIN?</a>` : ""}
     </div>
@@ -322,12 +372,16 @@ function _buildPanel(mode, faceEnrolled) {
       background:rgba(167,139,250,0.1); font-size:20px; cursor:pointer; transition:background .2s; }
     #flow-face-eye-btn:hover { background:rgba(167,139,250,0.22); }
     #flow-face-eye-btn.disabled { opacity:0.3; cursor:not-allowed; }
+    #flow-auth-recovery-block { display:flex; flex-direction:column; gap:8px; width:100%; }
+    #flow-auth-recovery-q, #flow-auth-recovery-a { width:100%; padding:11px 14px; border-radius:12px;
+      background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14); color:#fff; font-size:13px;
+      outline:none; font-family:'Rajdhani',sans-serif; }
+    #flow-auth-recovery-q:focus, #flow-auth-recovery-a:focus { border-color:rgba(56,189,248,0.5); }
     #flow-auth-btn { width:100%; padding:14px; background:rgba(56,189,248,0.15); border:1px solid rgba(56,189,248,0.4);
       border-radius:14px; color:#38bdf8; font-family:'Orbitron',monospace; font-size:12px; letter-spacing:.18em;
       cursor:pointer; transition:background .2s, box-shadow .2s; }
     #flow-auth-btn:hover { background:rgba(56,189,248,0.28); box-shadow:0 0 20px rgba(56,189,248,0.2); }
     #flow-auth-err { font-size:12px; color:#f87171; min-height:18px; font-family:'Rajdhani',sans-serif; text-align:center; }
-    #flow-face-enroll-hint { font-size:11px; color:rgba(167,139,250,0.7); text-align:center; }
     #flow-auth-forgot { font-size:12px; color:rgba(255,255,255,0.35); text-decoration:underline; cursor:pointer; }
     #flow-auth-forgot:hover { color:rgba(255,255,255,0.6); }
     @media (max-width:480px) { #flow-auth-inner { padding:32px 22px; } }
@@ -335,22 +389,24 @@ function _buildPanel(mode, faceEnrolled) {
   document.head.appendChild(style);
   document.body.appendChild(panel);
 
-  const input   = document.getElementById("flow-auth-input");
-  const confirm = document.getElementById("flow-auth-confirm");
-  const btn     = document.getElementById("flow-auth-btn");
-  const err     = document.getElementById("flow-auth-err");
-  const eyeBtn  = document.getElementById("flow-face-eye-btn");
-  const forgot  = document.getElementById("flow-auth-forgot");
+  const input     = document.getElementById("flow-auth-input");
+  const confirm   = document.getElementById("flow-auth-confirm");
+  const recoveryQ = document.getElementById("flow-auth-recovery-q");
+  const recoveryA = document.getElementById("flow-auth-recovery-a");
+  const btn       = document.getElementById("flow-auth-btn");
+  const err       = document.getElementById("flow-auth-err");
+  const eyeBtn    = document.getElementById("flow-face-eye-btn");
+  const forgot    = document.getElementById("flow-auth-forgot");
 
   if (eyeBtn && !faceEnrolled) {
     eyeBtn.classList.add("disabled");
-    eyeBtn.title = "No face set up yet — set one up from the brain menu after unlocking once with your PIN.";
+    eyeBtn.title = "No face set up yet — set one up from the brain menu.";
   }
 
   setTimeout(() => input?.focus(), 100);
   [input, confirm].forEach(el => el?.addEventListener("keydown", e => { if (e.key === "Enter") btn.click(); }));
 
-  return { input, confirm, btn, err, eyeBtn, forgot };
+  return { input, confirm, recoveryQ, recoveryA, btn, err, eyeBtn, forgot };
 }
 
 // ── Main export ───────────────────────────────────────────────────────────
@@ -361,19 +417,67 @@ export async function initAuth() {
   return new Promise((resolve) => {
 
     if (!stored) {
-      // First time — setup mode
-      const { input, confirm, btn, err } = _buildPanel("setup", false);
+      // First time — setup mode. Recovery question is REQUIRED, since
+      // it's the only real gate on "Forgot PIN?" — without one, there'd
+      // be nothing to fall back to.
+      const { input, confirm, recoveryQ, recoveryA, btn, err } = _buildPanel("setup", false);
 
       btn.addEventListener("click", async () => {
         const val = input.value.trim();
         const con = confirm?.value.trim() || "";
+        const q   = recoveryQ?.value.trim() || "";
+        const a   = recoveryA?.value.trim() || "";
+
         if (val.length < 4) { err.textContent = "PIN must be at least 4 characters."; return; }
         if (val !== con)    { err.textContent = "PINs don't match."; return; }
-        const h = await _hash(val);
+        if (!q || !a)       { err.textContent = "Set a secret question and answer too — it's what protects \"Forgot PIN?\" from being an open door."; return; }
+
+        const h  = await _hash(val);
+        const ah = await _hash(a.toLowerCase());
         await _saveHashToCloud(h);
+        await _kvSave("flow_recovery_question", q);
+        await _kvSave("flow_recovery_answer_hash", ah);
+        localStorage.setItem(RECOVERY_Q_KEY, q);
+        localStorage.setItem(RECOVERY_A_KEY, ah);
         _setUnlocked();
         document.getElementById("flow-auth-panel")?.remove();
-        resolve();
+
+        // Face setup offered IMMEDIATELY, right in this same flow — not
+        // hidden in the brain menu, which was the actual gap being fixed.
+        const offer = document.createElement("div");
+        offer.id = "flow-face-offer";
+        offer.innerHTML = `
+          <div id="flow-face-offer-inner">
+            <div id="flow-face-offer-title">Set up Face Unlock?</div>
+            <div id="flow-face-offer-sub">A quick way to unlock next time — your PIN still works either way.</div>
+            <button id="flow-face-offer-yes">SET IT UP</button>
+            <button id="flow-face-offer-no">Skip for now</button>
+          </div>`;
+        const st = document.createElement("style");
+        st.textContent = `
+          #flow-face-offer { position:fixed; inset:0; z-index:99998; display:flex; align-items:center; justify-content:center;
+            background:rgba(6,10,26,0.97); backdrop-filter:blur(30px); }
+          #flow-face-offer-inner { display:flex; flex-direction:column; align-items:center; gap:12px;
+            background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.18); border-radius:22px; padding:32px; width:min(320px,86vw); }
+          #flow-face-offer-title { font-family:'Orbitron',monospace; font-size:15px; color:#38bdf8; text-align:center; }
+          #flow-face-offer-sub { font-size:12px; color:rgba(255,255,255,0.5); text-align:center; }
+          #flow-face-offer-yes { width:100%; padding:12px; background:rgba(167,139,250,0.18); border:1px solid rgba(167,139,250,0.45);
+            border-radius:12px; color:#a78bfa; font-family:'Orbitron',monospace; font-size:11px; letter-spacing:.12em; cursor:pointer; }
+          #flow-face-offer-yes:hover { background:rgba(167,139,250,0.3); }
+          #flow-face-offer-no { background:none; border:none; color:rgba(255,255,255,0.4); font-size:12px; text-decoration:underline; cursor:pointer; }
+          #flow-face-offer-no:hover { color:rgba(255,255,255,0.65); }
+        `;
+        document.head.appendChild(st);
+        document.body.appendChild(offer);
+
+        document.getElementById("flow-face-offer-yes").addEventListener("click", () => {
+          offer.remove();
+          _enrollFaceInline(() => { resolve(); });
+        });
+        document.getElementById("flow-face-offer-no").addEventListener("click", () => {
+          offer.remove();
+          resolve();
+        });
       });
 
     } else {
@@ -431,34 +535,40 @@ export async function initAuth() {
         });
       }
 
-      // THE ACTUAL LOCKOUT FIX — reachable directly from the lock screen,
-      // no prior access required. This is a LOCAL reset: it clears the
-      // hash stored on THIS device/browser so a fresh PIN can be set. It
-      // does not verify identity beyond "you have access to this device
-      // right now" — same tradeoff most personal local-lock screens make.
-      forgot?.addEventListener("click", () => {
-        const ok = confirm(
-          "This clears the current PIN on this device and lets you set a new one immediately — no verification beyond having access to this device right now. Continue?"
-        );
-        if (!ok) return;
-        localStorage.removeItem(LOCK_KEY);
-        localStorage.removeItem(UNLOCK_KEY);
-        localStorage.removeItem(FACE_KEY);
-        _kvSave("flow_pin_hash", null);
-        location.reload();
+      // THE REAL FIX: "Forgot PIN?" now requires answering the secret
+      // question set at initial setup — not an instant wipe behind a
+      // single confirm() dialog anymore.
+      forgot?.addEventListener("click", async () => {
+        const question    = await _kvLoad("flow_recovery_question", RECOVERY_Q_KEY);
+        const answerHash  = await _kvLoad("flow_recovery_answer_hash", RECOVERY_A_KEY);
+
+        if (!question || !answerHash) {
+          err.textContent = "No recovery question was set up with this PIN — there's no safe way to reset without it.";
+          return;
+        }
+
+        _buildRecoveryPrompt(question, async (answer, recErr, closePrompt) => {
+          if (!answer) { recErr.textContent = "Enter an answer."; return; }
+          const h = await _hash(answer.toLowerCase());
+          if (h !== answerHash) {
+            recErr.textContent = "That's not the right answer.";
+            return;
+          }
+          closePrompt();
+          localStorage.removeItem(LOCK_KEY);
+          localStorage.removeItem(UNLOCK_KEY);
+          localStorage.removeItem(FACE_KEY);
+          await _kvSave("flow_pin_hash", null);
+          location.reload();
+        }, () => {});
       });
     }
   });
 }
 
-// ── Face enrollment — call from the brain menu once unlocked ──────────
+// ── Face enrollment / removal — still available from the brain menu too ──
 export async function enrollFace(onDone) {
-  _buildFaceCapture("enroll", async (vector) => {
-    if (!vector) { onDone?.(false, "No face detected clearly enough — try again in better lighting."); return; }
-    localStorage.setItem(FACE_KEY, JSON.stringify(vector));
-    await _kvSave("flow_face_vector", vector);
-    onDone?.(true, "Face Unlock is set up — the 👁 button will now appear on your lock screen.");
-  }, () => { onDone?.(false, "Cancelled."); });
+  await _enrollFaceInline(onDone);
 }
 
 export function hasFaceEnrolled() { return !!localStorage.getItem(FACE_KEY); }
@@ -468,11 +578,14 @@ export function resetFace() {
   _kvSave("flow_face_vector", null);
 }
 
-// Reset PIN (call from brain menu — IN ADDITION TO the lock-screen
-// "Forgot PIN?", not a replacement)
+// Reset PIN from the brain menu (already unlocked) — separate from the
+// lock-screen "Forgot PIN?" flow, no secret question needed here since
+// you're already inside the app.
 export function resetPin() {
-  if (!confirm("Reset your Flow PIN? You'll create a new one on next load.")) return;
+  if (!confirm("Reset your Flow PIN? You'll create a new one (and a new secret question) on next load.")) return;
   localStorage.removeItem(LOCK_KEY);
   localStorage.removeItem(UNLOCK_KEY);
+  localStorage.removeItem(RECOVERY_Q_KEY);
+  localStorage.removeItem(RECOVERY_A_KEY);
   location.reload();
 }
