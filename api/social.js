@@ -444,6 +444,7 @@ async function handleTelegram(req, res) {
   // chat/admin flow so his reply isn't treated as a regular conversation
   // message or misrouted elsewhere.
   const joelIdForApproval = process.env.JOEL_TELEGRAM_CHAT_ID;
+  const senderIsJoel = joelIdForApproval && String(msg.from?.id) === String(joelIdForApproval);
   if (!isGroup && joelIdForApproval && String(msg.from?.id) === String(joelIdForApproval)) {
     const handled = await handlePendingApprovalReply(tgFetch, tgFetchStrict, chatId, text);
     if (handled) return res.status(200).json({ ok: true });
@@ -508,6 +509,34 @@ async function handleTelegram(req, res) {
     }
   }
 
+  // ── "post [to channel] <text>" — immediate, on-command posting ────────
+  // This is the direct fix for wanting an on-demand channel post, separate
+  // from the scheduled 1PM draft-and-approve flow. Still Joel-only, and
+  // still requires the message to clearly be a posting instruction (not
+  // just the word "post" appearing incidentally in normal conversation).
+  if (senderIsJoel) {
+    const postCmdMatch = text.match(/^post\s+(?:to|on)\s+(?:the\s+)?channel\s*[:\-]?\s*(.+)/i);
+    if (postCmdMatch) {
+      const postText = postCmdMatch[1].trim();
+      const channelId = process.env.TELEGRAM_CHANNEL_ID;
+
+      if (!channelId) {
+        await tgFetch('sendMessage', { chat_id: chatId, text: '⚠️ TELEGRAM_CHANNEL_ID is not set — there\'s no channel configured to post to yet.' });
+      } else if (!postText) {
+        await tgFetch('sendMessage', { chat_id: chatId, text: 'What should I post? e.g. "post to channel: launching a new bot template today"' });
+      } else {
+        try {
+          await tgFetchStrict('sendMessage', { chat_id: channelId, text: postText });
+          await tgFetch('sendMessage', { chat_id: chatId, text: '✅ Posted to your channel.' });
+          await pushNotif('Manual post', `Posted: "${postText.slice(0, 100)}"`);
+        } catch (e) {
+          await tgFetch('sendMessage', { chat_id: chatId, text: `⚠️ Couldn't post — ${e.message}. Make sure the bot is an admin in the channel with "Post Messages" permission.` });
+        }
+      }
+      return res.status(200).json({ ok: true });
+    }
+  }
+
   // ── "message [username] [text]" — real contact lookup, Joel only ──────
   // This is the direct fix for wanting Flow to actually message someone
   // by username: it checks the real contact list built up over every
@@ -542,7 +571,6 @@ async function handleTelegram(req, res) {
   // "always re-greets" issue at its root. isJoel determines which
   // personality Flow uses — real Flow for Joel himself, professional
   // business tone for anyone else messaging the bot.
-  const senderIsJoel = joelIdForApproval && String(msg.from?.id) === String(joelIdForApproval);
   const reply = await askFlow(
     text || (imageDesc ? 'What do you think about this image?' : 'Hello'),
     `Telegram ${username}`,
