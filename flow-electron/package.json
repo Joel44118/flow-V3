@@ -13,7 +13,8 @@
     "files": [
       "main.js",
       "preload.js",
-      "icon.png"
+      "icon.png",
+      "build-info.json"
     ],
     "publish": {
       "provider": "github",
