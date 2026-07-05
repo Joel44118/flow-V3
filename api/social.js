@@ -66,6 +66,30 @@ RULES — never break:
 - Typos and shorthand: Joel often types fast with typos, dropped letters, and merged words. Read past them to what he actually means — never call out or correct his spelling, never ask him to clarify a typo you can reasonably infer.
 - Roleplay and ongoing scenarios: if Joel starts a roleplay, story, or hypothetical scenario, STAY IN IT across the whole conversation until he clearly ends it or changes topic. Don't revert to a generic assistant tone after one or two exchanges — that's a real, known failure mode to actively avoid.`;
 
+async function getTelegramLiveStateBlock() {
+  if (!KV_URL || !KV_KEY) return "Admin chats: unknown (KV not configured).\nKnown contacts: unknown (KV not configured).";
+  try {
+    const [adminRes, contactsRes] = await Promise.all([
+      fetch(`${KV_URL}/get/flow_admin_chats`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()),
+      fetch(`${KV_URL}/get/flow_known_contacts`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()),
+    ]);
+    const adminChats = Array.isArray(adminRes.result) ? adminRes.result : [];
+    const contacts    = (contactsRes.result && typeof contactsRes.result === 'object') ? contactsRes.result : {};
+    const contactList = Object.keys(contacts);
+
+    return [
+      adminChats.length
+        ? `Confirmed Telegram admin rights in: ${adminChats.map(c => c.title).join(', ')} — you genuinely can post/moderate there.`
+        : `No confirmed Telegram admin rights anywhere yet — do not claim you're an admin in any chat unless this list is non-empty.`,
+      contactList.length
+        ? `Known contacts (usernames Flow has actually messaged before): ${contactList.slice(0, 30).join(', ')}${contactList.length > 30 ? `, and ${contactList.length - 30} more` : ''}.`
+        : `No known contacts recorded yet.`,
+    ].join('\n');
+  } catch (_) {
+    return "Admin chats/contacts: couldn't check right now.";
+  }
+}
+
 async function askFlow(userMsg, context = '', imageDesc = '', histKey = null, isJoel = false) {
   // Real fix, precisely diagnosed: this used to always use a generic
   // "helpful, friendly, professional... pass it to Joel" prompt for
@@ -77,8 +101,9 @@ async function askFlow(userMsg, context = '', imageDesc = '', histKey = null, is
   // real personality (wit, directness, no corporate filler). When it's
   // someone else — a client, a stranger — it keeps the professional,
   // business-appropriate tone, since that distinction matters here.
+  const liveState = isJoel ? await getTelegramLiveStateBlock() : "";
   const SYSTEM = isJoel
-    ? `${FLOW_PERSONALITY}\n\nYou're talking with Joel over Telegram right now — same person, same relationship as everywhere else you talk with him. Continue naturally; don't re-introduce yourself.\n${imageDesc ? `He sent an image. Here's what it shows: ${imageDesc}\nRespond to both the image and his message.` : ''}`
+    ? `${FLOW_PERSONALITY}\n\nYou're talking with Joel over Telegram right now — same person, same relationship as everywhere else you talk with him. Continue naturally; don't re-introduce yourself.\n\nFLOW'S ACTUAL CURRENT STATE ON TELEGRAM — real, checked facts, not a guess:\n${liveState}\n${imageDesc ? `He sent an image. Here's what it shows: ${imageDesc}\nRespond to both the image and his message.` : ''}`
     : `You are Flow, Joel Olanrewaju's personal AI assistant.
 You are continuing an ongoing ${context} conversation on Joel's behalf.
 Joel runs Joelflowstack — premium web development and AI automation services.
@@ -179,6 +204,72 @@ async function storeSummary(platform, sender, userMsg, flowReply, hasImage) {
 // identified — same UX as most real Telegram moderation bots use, since
 // it's unambiguous (no username-typo risk) and works even for users
 // without a @username set.
+// ── Confirmed admin-status tracking ─────────────────────────────────────
+// Real problem this fixes: Flow could never actually tell Joel which
+// chats/channels it has admin rights in — it either guessed, or only
+// found out reactively when an action failed with a permissions error.
+// This checks Telegram's own getChatMember API for the bot's own status
+// (genuine, verifiable truth) and caches confirmed admin chats in KV so
+// Flow's system prompt can report them as real, checked facts — not
+// assumptions. Cached for 1 hour per chat since admin status rarely
+// changes and checking it on every single message would be wasteful.
+async function checkAndRecordAdminStatus(chatId, chatTitle) {
+  if (!TG_TOKEN || !KV_URL || !KV_KEY) return;
+  const cacheKey = `flow_admin_check_${chatId}`;
+
+  try {
+    const cached = await fetch(`${KV_URL}/get/${cacheKey}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json());
+    if (cached.result && Date.now() - cached.result.checkedAt < 3600000) return; // checked within the last hour
+
+    const meRes = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getMe`).then(r => r.json());
+    const botId = meRes.result?.id;
+    if (!botId) return;
+
+    const memberRes = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getChatMember?chat_id=${chatId}&user_id=${botId}`).then(r => r.json());
+    const status = memberRes.result?.status; // 'administrator', 'member', 'creator', etc.
+    const isAdmin = status === 'administrator' || status === 'creator';
+
+    await fetch(`${KV_URL}/set/${cacheKey}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isAdmin, checkedAt: Date.now() }),
+    });
+
+    // Maintain a single list of currently-confirmed admin chats, so the
+    // system prompt can report a genuine, short list rather than
+    // scanning every chat's individual cache entry.
+    const listKey = 'flow_admin_chats';
+    const listRes = await fetch(`${KV_URL}/get/${listKey}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json());
+    let list = Array.isArray(listRes.result) ? listRes.result : [];
+    list = list.filter(c => c.id !== chatId);
+    if (isAdmin) list.push({ id: chatId, title: chatTitle || String(chatId) });
+    await fetch(`${KV_URL}/set/${listKey}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(list),
+    });
+  } catch (e) {
+    console.warn('[AdminCheck] failed for chat', chatId, ':', e.message);
+  }
+}
+
+// ── Contact tracking ──────────────────────────────────────────────────
+// Real problem this fixes: Joel wants to say "message [username]" and
+// have Flow actually know who that is, instead of guessing or asking
+// every time. This records every username Flow has ever exchanged
+// messages with, so it can be looked up later by name.
+async function recordContact(username, chatId, platform) {
+  if (!username || !KV_URL || !KV_KEY) return;
+  try {
+    const key = 'flow_known_contacts';
+    const r = await fetch(`${KV_URL}/get/${key}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json());
+    const contacts = (r.result && typeof r.result === 'object') ? r.result : {};
+    contacts[username.toLowerCase().replace(/^@/, '')] = { chatId, platform, lastSeen: Date.now() };
+    await fetch(`${KV_URL}/set/${key}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(contacts),
+    });
+  } catch (_) {}
+}
+
 async function handleGroupAdminCommand(tgFetch, tgFetchStrict, msg, chatId, text, isOwner) {
   const cmd = text.toLowerCase().replace(/^flow\s+/, '').trim();
   const target = msg.reply_to_message;
@@ -335,6 +426,17 @@ async function handleTelegram(req, res) {
     : msg.from?.first_name || String(chatId);
   const histKey  = `flow_tg_hist_${chatId}`;
 
+  // Real admin-status verification (not a guess) — checked and cached
+  // whenever a group/channel message arrives.
+  if (isGroup || chatType === 'channel') {
+    checkAndRecordAdminStatus(chatId, msg.chat.title).catch(() => {});
+  }
+  // Remember who Flow has actually talked with, so Joel can later say
+  // "message [username]" and Flow genuinely knows who that is.
+  if (msg.from?.username) {
+    recordContact(msg.from.username, chatId, 'telegram').catch(() => {});
+  }
+
   // ── Scheduled post approval flow ────────────────────────────────────────
   // Only checked in Joel's own private chat with the bot — a group member
   // saying "yes" shouldn't accidentally approve Joel's draft post. If a
@@ -403,6 +505,36 @@ async function handleTelegram(req, res) {
       }
     } catch (e) {
       console.error('[TG] Image error:', e.message);
+    }
+  }
+
+  // ── "message [username] [text]" — real contact lookup, Joel only ──────
+  // This is the direct fix for wanting Flow to actually message someone
+  // by username: it checks the real contact list built up over every
+  // past conversation (recordContact, called on every incoming message),
+  // not a guess. If the person was never actually recorded, it says so
+  // plainly instead of pretending to send something that never went out.
+  if (senderIsJoel) {
+    const msgCmdMatch = text.match(/^(?:message|tell|send|dm)\s+@?(\w+)\s+(.+)/i);
+    if (msgCmdMatch) {
+      const [, targetUsername, messageText] = msgCmdMatch;
+      try {
+        const contactsRes = await fetch(`${KV_URL}/get/flow_known_contacts`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json());
+        const contacts = (contactsRes.result && typeof contactsRes.result === 'object') ? contactsRes.result : {};
+        const contact = contacts[targetUsername.toLowerCase()];
+
+        if (!contact) {
+          await tgFetch('sendMessage', { chat_id: chatId, text: `I don't have @${targetUsername} in my known contacts — they'd need to have messaged the bot at least once before I can reach them this way.` });
+        } else if (contact.platform !== 'telegram') {
+          await tgFetch('sendMessage', { chat_id: chatId, text: `@${targetUsername} is a known contact, but from ${contact.platform}, not Telegram — I can't cross-send between platforms.` });
+        } else {
+          await tgFetchStrict('sendMessage', { chat_id: contact.chatId, text: messageText });
+          await tgFetch('sendMessage', { chat_id: chatId, text: `Sent to @${targetUsername}: "${messageText}"` });
+        }
+      } catch (e) {
+        await tgFetch('sendMessage', { chat_id: chatId, text: `Couldn't send that — ${e.message}` });
+      }
+      return res.status(200).json({ ok: true });
     }
   }
 
