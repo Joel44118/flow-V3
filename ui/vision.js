@@ -9,6 +9,7 @@
 // ═══════════════════════════════════════════
 
 import { Speech } from "../core/speech.js";
+import { setRuntimeState } from "../core/runtime.js";
 
 let _facerecog = null;
 async function getFaceRecog() {
@@ -77,6 +78,7 @@ export const Camera = {
     try {
       cameraStream = await openCamera();
       await this._mount(cameraStream, "📷 CAMERA");
+      setRuntimeState('cameraOn', true);
       Speech.speak("Camera online. I can see you now, Boss.");
       _chat?.add("Camera on. I can see you.", "bot");
       getFaceRecog().then(fr => { if (fr.hasLearnedFace()) fr.startRecognition(this._video); }).catch(() => {});
@@ -89,6 +91,7 @@ export const Camera = {
     getFaceRecog().then(fr => fr.stopRecognition()).catch(() => {});
     cameraStream?.getTracks().forEach(t => t.stop());
     cameraStream = null;
+    setRuntimeState('cameraOn', false);
     this._unmount();
     Speech.speak("Camera off.");
   },
@@ -146,6 +149,7 @@ export const ScreenVision = {
       screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       screenStream.getVideoTracks()[0].onended = () => this.stop();
       await this._mount(screenStream, "🖥️ SCREEN");
+      setRuntimeState('screenShareOn', true);
       Speech.speak("Screen share active. I can see your screen.");
       _chat?.add("Screen captured. I can see everything on it.", "bot");
     } catch (e) {
@@ -156,6 +160,7 @@ export const ScreenVision = {
   stop() {
     screenStream?.getTracks().forEach(t => t.stop());
     screenStream = null;
+    setRuntimeState('screenShareOn', false);
     this._unmount();
     Speech.speak("Screen share ended.");
   },
