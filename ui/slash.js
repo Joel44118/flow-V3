@@ -18,6 +18,8 @@ const SKILLS = [
   { cmd:"/image-flux",   icon:"🌄", label:"Photo / Art",      desc:"Realistic or artistic image via FLUX",              ph:"a futuristic Lagos skyline at night, cinematic",    group:"Images"       },
   { cmd:"/image-design", icon:"🎨", label:"Graphic Design",   desc:"Banner, poster, social post with text",             ph:'"Joelflowstack" Twitter promo, dark minimal style',  group:"Images"       },
   { cmd:"/video",        icon:"🎬", label:"Generate Video",   desc:"Short text-to-video clip (30s–a few min to render)", ph:"waves crashing on a beach at sunset, cinematic",    group:"Images"       },
+  { cmd:"/scrape",       icon:"🕸️", label:"Scrape Website",   desc:"Pull clean text from a site for a bot's knowledge base", ph:"https://client-website.com",                     group:"Research"     },
+  { cmd:"/find-leads",   icon:"🔍", label:"Find Leads",       desc:"Search public business listings for contact info",  ph:"web design agencies in Lagos",                      group:"Research"     },
   { cmd:"/search",       icon:"🔍", label:"Quick Search",     desc:"Search the web for current info",                   ph:"latest AI news in Nigeria 2025",                    group:"Search"       },
   { cmd:"/research",     icon:"📖", label:"Deep Research",    desc:"Multi-source deep dive on any topic",               ph:"how to grow a bot development business",            group:"Search"       },
   { cmd:"/url",          icon:"🌐", label:"Inspect Website",  desc:"Analyse a website — features, tech stack, purpose", ph:"https://example.com",                               group:"Search"       },
