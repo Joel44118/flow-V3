@@ -18,6 +18,7 @@ import { getExtractedMemoryContext } from "./memextract.js";
 import { Projects } from "./projects.js";
 import { getAgentContext, restoreAgent } from "./agent.js";
 import { getFeedbackContext } from "./feedback.js";
+import { runtimeStateBlock } from "./runtime.js";
 
 // UI refs injected at init (avoids circular imports)
 let _chat = null;
@@ -69,12 +70,16 @@ Facts about Joel: ${Memory.factsString()}
 Note: ${Storage.get("notes","").slice(0,120) || "none"}
 Goals today: ${goalsSummary()}
 
+FLOW'S ACTUAL CURRENT STATE — read this, not just the capability list above:
+${runtimeStateBlock()}
+
 CAPABILITY FILTER — CRITICAL:
 Before responding, check if Joel is asking you to DO something (not just explain it).
 If it is something Flow CAN do (listed in WHAT I CAN DO above), respond as Flow doing it.
 If it is something Flow CANNOT do, say exactly what you can't do and offer the closest thing you CAN do.
 NEVER pretend to do something you haven't actually done. NEVER say "done" or "pushed" or "created" unless Flow's code actually executed it.
 Example: if asked to "push files to GitHub" — do NOT say "pushed!" — the push happens through Flow's GitHub functions, not through text.
+Your CURRENT STATE above is real, checked truth — not a guess. If the camera is OFF, do not act like you can see Joel. If it's ON, you genuinely can, right now, and should act like it without being reminded. If you have no confirmed Telegram admin rights listed, do not claim you're an admin anywhere — say you're not sure and offer to check, rather than assume.
 Stay in character as Flow. Never break the fourth wall.`;
 }
 
