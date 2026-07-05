@@ -1,4 +1,5 @@
 import { sendToExtension } from './screencontrol.js';
+import { setRuntimeState } from '../core/runtime.js';
 
 export const Gesture = {};
 let _Chat = null, _Orb = null;
@@ -120,6 +121,7 @@ export async function start(videoEl) {
   try {
     if (_active) return;
     _active   = true;
+    setRuntimeState('gestureActive', true);
     _video    = videoEl;
     _smoothed = null;
     _state    = G.IDLE;
@@ -500,6 +502,7 @@ function _animate() { if (_active) _animId = requestAnimationFrame(_animate); }
 
 export function stop() {
   _active = false;
+  setRuntimeState('gestureActive', false);
   if (_animId)      cancelAnimationFrame(_animId);
   if (_dragObserver) clearInterval(_dragObserver);
   if (_previewInterval) clearInterval(_previewInterval);
@@ -511,5 +514,8 @@ export function stop() {
   if (IS_ELECTRON) window.__flowElectron.send('gesture_stop', {});
 }
 
+export function isActive() { return _active; }
+
 Gesture.start = start;
 Gesture.stop  = stop;
+Gesture.isActive = isActive;
