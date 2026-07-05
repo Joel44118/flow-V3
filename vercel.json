@@ -5,7 +5,7 @@
     "api/vision.js":    { "maxDuration": 15 },
     "api/imagine.js":   { "maxDuration": 10 },
     "api/search.js":    { "maxDuration": 10 },
-    "api/rag.js":       { "maxDuration": 10 },
+    "api/rag.js":       { "maxDuration": 60 },
     "api/memory.js":    { "maxDuration": 10 },
     "api/github.js":    { "maxDuration": 10 },
     "api/intel.js":     { "maxDuration": 10 },
