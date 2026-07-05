@@ -58,6 +58,35 @@ async function handleSlashCmd(cmd, prompt) {
       if (!p) { Chat.add("What should the video show? e.g. waves crashing on a beach at sunset", "bot"); return; }
       await generateVideo(p);
       break;
+    case "/scrape":
+      if (!p) { Chat.add("What URL should I scrape? e.g. https://client-website.com", "bot"); return; }
+      Chat.add(`🕸️ Scraping ${p}...`, "bot");
+      try {
+        const scrapeR = await fetch("/api/rag?action=scrape", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: p }),
+        });
+        const scrapeD = await scrapeR.json();
+        if (!scrapeD.ok) { Chat.addError(scrapeD.error); break; }
+        Chat.add(`✅ Scraped ${scrapeD.count} page(s) from ${p}. Want me to save this to the knowledge base? Say "save [a title] to knowledge base" and I'll use what was just scraped.`, "bot");
+        window.__lastScrapedPages = scrapeD.pages; // held in memory for an immediate follow-up save
+      } catch (e) { Chat.addError(e.message); }
+      break;
+    case "/find-leads":
+      if (!p) { Chat.add("What should I search for? e.g. web design agencies in Lagos", "bot"); return; }
+      Chat.add(`🔍 Searching for "${p}"...`, "bot");
+      try {
+        const leadR = await fetch("/api/rag?action=find-leads", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: p }),
+        });
+        const leadD = await leadR.json();
+        if (!leadD.ok) { Chat.addError(leadD.error); break; }
+        if (!leadD.count) { Chat.add("No results with public contact info found for that search.", "bot"); break; }
+        const list = leadD.leads.map(l => `**${l.name}**${l.website ? `\n  🌐 ${l.website}` : ""}${l.phone ? `\n  📞 ${l.phone}` : ""}${l.email ? `\n  ✉️ ${l.email}` : ""}`).join("\n\n");
+        Chat.add(`Found ${leadD.count} result(s) with public contact info:\n\n${list}`, "bot");
+      } catch (e) { Chat.addError(e.message); }
+      break;
     case "/image-design":
       if (!p) { Chat.add("Describe your design. e.g. 'Joelflowstack' Twitter promo, dark theme", "bot"); return; }
       await generateImage(p, "promotion banner design");
