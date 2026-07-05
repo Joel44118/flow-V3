@@ -32,22 +32,25 @@ const KV_URL = process.env.KV_REST_API_URL;
 const KV_KEY = process.env.KV_REST_API_TOKEN;
 
 async function kvGet(key) {
-  if (!KV_URL || !KV_KEY) return null;
+  if (!KV_URL || !KV_KEY) { console.error("[TG Login] KV not configured"); return null; }
   try {
     const r = await fetch(`${KV_URL}/get/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
-    const d = r.ok ? await r.json() : null;
+    if (!r.ok) { console.error("[TG Login] kvGet HTTP", r.status, "for key", key); return null; }
+    const d = await r.json();
+    console.log("[TG Login] kvGet", key, "->", d?.result ? "found" : "not found");
     return d?.result ?? null;
-  } catch (_) { return null; }
+  } catch (e) { console.error("[TG Login] kvGet failed:", e.message); return null; }
 }
 async function kvSet(key, value, ttlSeconds = 600) {
-  if (!KV_URL || !KV_KEY) return;
+  if (!KV_URL || !KV_KEY) { console.error("[TG Login] KV not configured — cannot bridge login steps"); return; }
   try {
-    await fetch(`${KV_URL}/set/${encodeURIComponent(key)}?EX=${ttlSeconds}`, {
+    const r = await fetch(`${KV_URL}/set/${encodeURIComponent(key)}?EX=${ttlSeconds}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${KV_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify(value),
     });
-  } catch (_) {}
+    console.log("[TG Login] kvSet", key, "->", r.ok ? "ok" : `HTTP ${r.status}`);
+  } catch (e) { console.error("[TG Login] kvSet failed:", e.message); }
 }
 async function kvDel(key) {
   if (!KV_URL || !KV_KEY) return;
