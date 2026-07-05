@@ -140,27 +140,70 @@ function _setUnlocked() {
 let _faceLandmarker = null;
 let _faceLoadPromise = null;
 
+function _withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)),
+  ]);
+}
+
 async function _loadFaceLandmarker() {
   if (_faceLandmarker) return _faceLandmarker;
   if (_faceLoadPromise) return _faceLoadPromise;
 
   _faceLoadPromise = (async () => {
-    const { FaceLandmarker, FilesetResolver } = await import(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs"
-    );
-    const files = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
-    );
-    _faceLandmarker = await FaceLandmarker.createFromOptions(files, {
-      baseOptions: {
-        modelAssetPath: "/api/mediapipe?f=face_landmarker.task",
-        delegate: "CPU",
-      },
-      runningMode: "IMAGE",
-      numFaces: 1,
-    });
+    // Each step below had NO timeout before this fix — any one of them
+    // stalling (a slow/blocked CDN import, a WASM fetch that never
+    // resolves, a model file fetch through the mediapipe proxy that
+    // hangs) froze the entire face-verification flow indefinitely with
+    // zero feedback, stuck exactly on "Starting camera…" forever. That's
+    // precisely the reported bug. Now each step fails loudly and
+    // specifically within 12 seconds instead of hanging silently.
+    let mod;
+    try {
+      mod = await _withTimeout(
+        import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs"),
+        12000, "Loading face-scan library"
+      );
+    } catch (e) {
+      throw new Error(`Couldn't load the face-scan library — ${e.message}. Check your internet connection.`);
+    }
+    const { FaceLandmarker, FilesetResolver } = mod;
+
+    let files;
+    try {
+      files = await _withTimeout(
+        FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"),
+        12000, "Loading face-scan engine"
+      );
+    } catch (e) {
+      throw new Error(`Couldn't load the face-scan engine — ${e.message}.`);
+    }
+
+    try {
+      _faceLandmarker = await _withTimeout(
+        FaceLandmarker.createFromOptions(files, {
+          baseOptions: {
+            modelAssetPath: "/api/mediapipe?f=face_landmarker.task",
+            delegate: "CPU",
+          },
+          runningMode: "IMAGE",
+          numFaces: 1,
+        }),
+        12000, "Loading face model"
+      );
+    } catch (e) {
+      throw new Error(`Couldn't load the face model — ${e.message}. This usually means /api/mediapipe couldn't reach Google's model storage — check Vercel is deployed and reachable.`);
+    }
+
     return _faceLandmarker;
   })();
+
+  // If setup genuinely fails, clear the cached promise so the NEXT
+  // attempt (e.g. pressing "Use PIN instead" then trying face unlock
+  // again) actually retries from scratch instead of permanently
+  // returning the same rejected promise forever.
+  _faceLoadPromise.catch(() => { _faceLoadPromise = null; });
 
   return _faceLoadPromise;
 }
