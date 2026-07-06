@@ -10,6 +10,7 @@
 // Flow always knows what you're working on.
 // ═══════════════════════════════════════════
 import { Storage } from "./storage.js";
+import { awardProjectXp } from "./leveling.js";
 
 const KEY = "projects_v1";
 
@@ -43,7 +44,7 @@ export const Projects = {
       updatedAt:   Date.now(),
     };
     if (idx >= 0) { projects[idx] = { ...projects[idx], ...project }; }
-    else { projects.push(project); }
+    else { projects.push(project); awardProjectXp(project.name); }
     save(projects);
     return project;
   },
