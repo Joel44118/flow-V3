@@ -38,7 +38,16 @@ async function kvGet(key) {
     if (!r.ok) { console.error("[TG Login] kvGet HTTP", r.status, "for key", key); return null; }
     const d = await r.json();
     console.log("[TG Login] kvGet", key, "->", d?.result ? "found" : "not found");
-    return d?.result ?? null;
+    if (d?.result == null) return null;
+    // Upstash REST /get/ always returns the value as a string —
+    // if we stored an object, we JSON.stringify'd it going in,
+    // so we must JSON.parse it coming back out or every property
+    // access on the result silently returns undefined.
+    try {
+      return JSON.parse(d.result);
+    } catch (_) {
+      return d.result; // was a plain string, not JSON — return as-is
+    }
   } catch (e) { console.error("[TG Login] kvGet failed:", e.message); return null; }
 }
 async function kvSet(key, value, ttlSeconds = 600) {
