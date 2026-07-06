@@ -70,6 +70,11 @@ function trimUserMessages(messages) {
 
 function cleanReply(text) {
   return text
+    // Strip the hidden reasoning block (and anything before it, in case
+    // the model repeats a stray opening tag) — this must run FIRST,
+    // before any other cleanup, so a thinking block never leaks through.
+    .replace(/<flow-think>[\s\S]*?<\/flow-think>/gi, '')
+    .replace(/^[\s\S]*<\/flow-think>/i, '') // safety net if closing tag arrives without a matching open
     .replace(/<\/?assistant>/gi, '')
     .replace(/<\|eot_id\|>/g, '')
     .replace(/^(assistant|flow)\s*:/i, '')
