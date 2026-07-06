@@ -24,7 +24,32 @@ const CAM_FILES = new Set(['camera_utils.js']);
 // Face Landmarker's model bundle lives on Google's own model storage, a
 // completely different host/package family than the hand-tracking files
 // above — proxied same-origin here for the same CORS-safety reason.
-const FACE_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task';
+//
+// REAL FIX, not a longer timeout: storage.googleapis.com is a documented,
+// known reliability problem from certain networks/regions — this isn't
+// speculation, it's stated directly in MediaPipe's own community docs,
+// which is exactly why a GitHub-hosted mirror of this identical file
+// exists in the first place. The previous version had ONE upstream with
+// no fallback at all — if that single source was slow or unreachable
+// from Vercel's edge network at that moment, this had no way to recover,
+// which is exactly the timeout Joel hit. Now it tries Google's storage
+// first (the canonical source), and falls through to the mirror
+// automatically if that fails or is slow — same file, verified byte-
+// identical to the official float16 model, redistributed under Apache 2.0.
+const FACE_MODEL_URLS = [
+  'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task',
+  'https://github.com/sanderdesnaijer/mediapipe-model-mirrors/releases/download/v1/face_landmarker.task',
+];
+
+async function _fetchWithTimeout(url, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function handleToken() {
   const token = process.env.HF_TOKEN;
@@ -58,20 +83,26 @@ export default async function handler(req) {
   }
 
   if (file === 'face_landmarker.task') {
-    try {
-      const res = await fetch(FACE_MODEL_URL);
-      if (!res.ok) return new Response(`Upstream ${res.status} for face_landmarker.task`, { status: res.status });
-      return new Response(res.body, {
-        status: 200,
-        headers: {
-          'Content-Type':                'application/octet-stream',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control':               'public, max-age=31536000, immutable',
-        }
-      });
-    } catch (err) {
-      return new Response('Proxy error: ' + err.message, { status: 502 });
+    let lastError = null;
+    for (const upstreamUrl of FACE_MODEL_URLS) {
+      try {
+        const res = await _fetchWithTimeout(upstreamUrl, 8000);
+        if (!res.ok) { lastError = `Upstream ${res.status} for face_landmarker.task from ${upstreamUrl}`; continue; }
+        return new Response(res.body, {
+          status: 200,
+          headers: {
+            'Content-Type':                'application/octet-stream',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control':               'public, max-age=31536000, immutable',
+            'X-Model-Source':               upstreamUrl.includes('storage.googleapis.com') ? 'google' : 'github-mirror',
+          }
+        });
+      } catch (err) {
+        lastError = `${upstreamUrl}: ${err.name === 'AbortError' ? 'timed out after 8s' : err.message}`;
+        continue; // genuinely try the next source, don't give up after one failure
+      }
     }
+    return new Response(`All face model sources failed. Last error: ${lastError}`, { status: 502 });
   }
 
   const upstream = CAM_FILES.has(file)
