@@ -36,6 +36,7 @@ import { extractMemory, getExtractedMemoryContext } from "./core/memextract.js";
 import { Projects } from "./core/projects.js";
 import { initAuth, resetPin, enrollFace, resetFace, hasFaceEnrolled } from "./ui/auth.js";
 import { initNotifications } from "./ui/notifications.js";
+import { initLeveling, getLevelState } from "./core/leveling.js";
 import { initSentinel, parseReplayCommand } from "./ui/sentinel.js";
 import { initFeedback } from "./core/feedback.js";
 import { initProjects, handleProjectCommand } from "./ui/projects.js";
@@ -431,6 +432,34 @@ if (resetFaceBtn) resetFaceBtn.addEventListener("click", () => {
 initFeedback(Chat);
 initNotifications(Chat);
 initSentinel(Chat);
+
+// ── Leveling system UI ──────────────────────────────────────────────────
+function _renderLevelBar() {
+  const s = getLevelState();
+  const numEl  = document.getElementById("level-bar-num");
+  const fillEl = document.getElementById("level-bar-fill");
+  const xpEl   = document.getElementById("level-bar-xp");
+  if (numEl)  numEl.textContent = s.level;
+  if (fillEl) fillEl.style.width = s.percent + "%";
+  if (xpEl)   xpEl.textContent = `${s.xp}/${s.xpNeeded}`;
+}
+
+function _showLevelUpCard(newLevel) {
+  const card = document.getElementById("level-up-card");
+  if (!card) return;
+  card.innerHTML = `
+    <div class="lu-title">LEVEL UP</div>
+    <div class="lu-level">${newLevel}</div>
+    <div class="lu-sub">Flow just learned something new</div>
+  `;
+  card.classList.add("show");
+  setTimeout(() => card.classList.remove("show"), 3200);
+}
+
+initLeveling((newLevel) => {
+  _renderLevelBar();
+  _showLevelUpCard(newLevel);
+}).then(_renderLevelBar);
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 (async () => {
