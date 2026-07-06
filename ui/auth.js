@@ -190,10 +190,15 @@ async function _loadFaceLandmarker() {
           runningMode: "IMAGE",
           numFaces: 1,
         }),
-        12000, "Loading face model"
+        20000, "Loading face model"
       );
     } catch (e) {
-      throw new Error(`Couldn't load the face model — ${e.message}. This usually means /api/mediapipe couldn't reach Google's model storage — check Vercel is deployed and reachable.`);
+      // /api/mediapipe now tries Google's official model storage first,
+      // then automatically falls back to a verified mirror if that's
+      // unreachable — this is a real two-source fallback now, not a
+      // single point of failure. If BOTH sources genuinely failed,
+      // something is actually down rather than one flaky connection.
+      throw new Error(`Couldn't load the face model — ${e.message}. Both the primary source and backup mirror failed — this usually means a genuine network issue on this device/network, not a one-off blip.`);
     }
 
     return _faceLandmarker;
