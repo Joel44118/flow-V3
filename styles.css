@@ -61,6 +61,55 @@ body {
   z-index:20;
   -webkit-app-region: drag; /* whole bar drags the window in Electron; no-op in browser */
 }
+
+/* ── Level bar — a slim, non-overlapping strip directly beneath the top
+   bar. Fits inside the existing 6px gap desktop content already leaves
+   below the top bar (.msg-col starts at top:58px), so nothing needed
+   moving there. Mobile's .msg-col starts at exactly 52px with no gap —
+   adjusted below so this doesn't sit on top of the first line of chat. */
+#level-bar-wrap {
+  position:fixed; top:52px; left:0; right:0; height:6px; z-index:19;
+  display:flex; align-items:center; gap:8px; padding:0 20px;
+  pointer-events:none; /* purely informational, never blocks clicks through to content below */
+}
+#level-bar-label {
+  font-family:'Orbitron',monospace; font-size:8px; color:rgba(56,189,248,0.7);
+  letter-spacing:.08em; white-space:nowrap; flex-shrink:0;
+}
+#level-bar-num { color:#38bdf8; font-weight:700; }
+#level-bar-track {
+  flex:1; height:3px; border-radius:2px; background:rgba(255,255,255,0.06); overflow:hidden;
+}
+#level-bar-fill {
+  height:100%; width:0%; border-radius:2px;
+  background:linear-gradient(90deg,#38bdf8,#a78bfa);
+  transition:width .5s ease;
+}
+#level-bar-xp {
+  font-size:8px; color:rgba(255,255,255,0.35); white-space:nowrap; flex-shrink:0; font-family:monospace;
+}
+
+/* ── Level-up card — appears briefly top-center, well clear of the top
+   bar and level strip, auto-dismisses, never blocks interaction. ────── */
+#level-up-card {
+  position:fixed; top:70px; left:50%; transform:translateX(-50%) translateY(-20px);
+  z-index:9999; pointer-events:none; opacity:0;
+  background:rgba(15,10,30,0.94); border:1px solid rgba(167,139,250,0.5);
+  border-radius:16px; padding:14px 26px; text-align:center;
+  box-shadow:0 8px 30px rgba(167,139,250,0.25), 0 1px 0 rgba(255,255,255,0.1) inset;
+  transition:opacity .35s ease, transform .35s ease;
+}
+#level-up-card.show { opacity:1; transform:translateX(-50%) translateY(0); }
+#level-up-card .lu-title {
+  font-family:'Orbitron',monospace; font-size:13px; color:#a78bfa; letter-spacing:.1em;
+}
+#level-up-card .lu-level {
+  font-size:26px; font-weight:700; color:#38bdf8; margin:2px 0;
+  text-shadow:0 0 20px rgba(56,189,248,0.5);
+}
+#level-up-card .lu-sub {
+  font-size:10px; color:rgba(255,255,255,0.5);
+}
 #win-controls {
   -webkit-app-region: no-drag; /* buttons must stay clickable, not part of the drag zone */
   display:flex; align-items:center; gap:10px; margin-left:16px;
@@ -633,7 +682,7 @@ body {
    MOBILE RESPONSIVE
    ═══════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-  .msg-col { width:100%; left:0 !important; right:0 !important; bottom:100px; top:52px; padding:8px 12px 12px; }
+  .msg-col { width:100%; left:0 !important; right:0 !important; bottom:100px; top:58px; padding:8px 12px 12px; }
   #col-right { display:none; }
   .input-panel { width:calc(100% - 24px); max-width:none; bottom:12px; padding:6px 12px; border-radius:30px; }
   .input-panel button { font-size:22px; padding:10px; }
