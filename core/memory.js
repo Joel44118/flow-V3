@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════
 import { Storage } from "./storage.js";
 import { CONFIG }  from "./config.js";
+import { awardFactXp } from "./leveling.js";
 
 let history = Storage.get("memory", []);
 
@@ -41,7 +42,11 @@ export const Memory = {
   getFacts() { return Storage.get("facts", {}); },
 
   addFact(key, value) {
-    const f = this.getFacts(); f[key] = { value, ts: Date.now() }; Storage.set("facts", f);
+    const f = this.getFacts();
+    const previousValue = f[key]?.value; // undefined if genuinely new
+    f[key] = { value, ts: Date.now() };
+    Storage.set("facts", f);
+    awardFactXp(key, value, previousValue); // no-ops internally if value didn't actually change
   },
 
   factsString() {
