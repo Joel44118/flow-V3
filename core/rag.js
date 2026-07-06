@@ -9,6 +9,8 @@
 // No error shown to user — it just works.
 // ═══════════════════════════════════════════
 
+import { awardKnowledgeXp } from "./leveling.js";
+
 const LS_KEY = "flow_rag_docs";
 
 // ── localStorage helpers ──────────────────
@@ -88,6 +90,7 @@ export const RAG = {
       if (res.ok && data.ok) {
         lsSet(title, content); // also save locally as backup
         console.log(`[RAG/KV] Saved: "${title}"`);
+        awardKnowledgeXp(title);
         return true;
       }
     } catch(_) {}
@@ -95,6 +98,7 @@ export const RAG = {
     // Fallback to localStorage only
     lsSet(title, content);
     console.log(`[RAG/local] Saved: "${title}" (${content.length} chars)`);
+    awardKnowledgeXp(title);
     return true; // always succeeds locally
   },
 
