@@ -4,6 +4,7 @@
 // Gives Flow memory of what you liked and didn't like
 
 import { Storage } from './storage.js';
+import { awardCorrectionXp } from './leveling.js';
 
 const FEEDBACK_KEY = 'flow_feedback_v1';
 const MAX_FEEDBACK = 40;  // keep last 40 corrections
@@ -87,6 +88,7 @@ function _recordCorrection(userMsg, badResponse, correction) {
     ts:         Date.now(),
   });
   Storage.set(FEEDBACK_KEY, all.slice(-MAX_FEEDBACK));
+  awardCorrectionXp(userMsg);
 }
 
 // Called by ai.js to inject feedback context into prompts
