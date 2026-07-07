@@ -7,7 +7,7 @@ export const CONFIG = {
   USER: {
     name:     "Joel",
     nickname: "Boss",
-    city:     "Ibadan",
+    city:     "Ilesa",
     country:  "Nigeria",
   },
 
@@ -50,7 +50,7 @@ RULES — never break:
   // under the service's Settings -> Networking -> Public Domain, prefixed
   // with wss:// instead of https://). Voice will show a clear connection
   // error until this is set to a real value.
-  VOICE_SERVICE_URL: "wss://CONFIGURE-ME.up.railway.app",
+  VOICE_SERVICE_URL: "wss://flow-v3-production.up.railway.app",
   WEATHER_TTL:   10 * 60 * 1000,
 
   ORB: {
