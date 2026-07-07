@@ -22,7 +22,7 @@ const SKILLS = [
   },
   {
     name:     "web_design",
-    file:     "/skills/web_design.md",
+    file:     "/skills/web design.md",
     keywords: /\b(design|ui|ux|layout|style|theme|colour|color|font|animation|responsive|mobile|landing page|website|webpage|navbar|footer|hero|card|button|form|dark mode|glassmorphism|gradient|flex|grid)\b/i,
   },
   {
