@@ -312,12 +312,15 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'No AI provider configured.' });
   }
 
-  const { messages } = req.body || {};
+  const { messages, force_intent } = req.body || {};
   if (!messages?.length) return res.status(400).json({ error: 'messages required' });
 
   const trimmed  = trimMessages(messages);
-  // Pass full message array to detectIntent so it reads context, not just last message
-  const intent   = detectIntent(trimmed);
+  // Pass full message array to detectIntent so it reads context, not just last message.
+  // force_intent lets an internal caller (e.g. the self-judged-learning classifier
+  // in core/ai.js) skip detection entirely and pin the cheap "chat" tier, since
+  // it's a small yes/no classification call, not a real conversational turn.
+  const intent   = force_intent || detectIntent(trimmed);
 
   const totalChars = trimmed.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
   if (totalChars > 18000) {
