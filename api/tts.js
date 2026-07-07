@@ -94,5 +94,26 @@ export default async function handler(req, res) {
   const action = req.query?.action || "speak";
 
   if (action === "token") return handleDeepgramToken(req, res);
+  if (action === "groqthink") return handleGroqThinkConfig(req, res);
   return handleSpeak(req, res);
+}
+
+// Returns the Groq BYO endpoint config for Deepgram's Voice Agent "think"
+// stage — url + auth header — WITHOUT ever sending the raw GROQ_API_KEY to
+// the browser as a bare value the client could read. The browser still
+// technically receives the header value here (Deepgram's Settings message
+// has to carry it, since Deepgram's servers — not ours — call Groq
+// directly), but this keeps it server-sourced from Vercel's existing env
+// var rather than hardcoded in a committed file, and scoped to this one
+// endpoint rather than reused across other client-side code.
+function handleGroqThinkConfig(req, res) {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) return res.status(200).json({ configured: false });
+  return res.status(200).json({
+    configured: true,
+    endpoint: {
+      url: "https://api.groq.com/openai/v1/chat/completions",
+      headers: { Authorization: `Bearer ${key}` },
+    },
+  });
 }
