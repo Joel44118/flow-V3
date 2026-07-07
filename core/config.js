@@ -44,6 +44,13 @@ RULES — never break:
   // because those gave false POSITIVES before. This version trades a few more false negatives
   // for far fewer accidental triggers, and widens the "flow" misheard-spelling set.
   WAKE_REGEX: /\b(?:hey|hay|hi+|yo|ay|okay|ok|k|hyy|ei|eh)\b[\s,.!]{0,4}\b(?:flow|flo|floe|floh|floor|flue|flew|flu|flau)\w{0,3}\b/i,
+  // Self-hosted voice service (openWakeWord + faster-whisper), replacing
+  // Deepgram's Voice Agent — set this to your Railway deployment's real
+  // WebSocket URL once flow-voice-service is deployed (Railway shows this
+  // under the service's Settings -> Networking -> Public Domain, prefixed
+  // with wss:// instead of https://). Voice will show a clear connection
+  // error until this is set to a real value.
+  VOICE_SERVICE_URL: "wss://CONFIGURE-ME.up.railway.app",
   WEATHER_TTL:   10 * 60 * 1000,
 
   ORB: {
