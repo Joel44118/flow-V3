@@ -8,9 +8,13 @@
 // only replies to people who message the bot. This one replies as Joel himself.
 //
 // NEW IN THIS VERSION:
-//   1. Blocklist (KV-stored, editable without redeploy) — never auto-replies
-//      to blocked senders. Includes the Flow BOT's own account by default,
-//      so the bot-DMs-Joel -> userbot-replies -> bot-replies loop is dead.
+//   1. Auto-blocks ALL bot accounts, always — this account (nicknamed
+//      ECHO_NAME below) never auto-replies to another bot, full stop. This
+//      is what kills the Flow-bot-DMs-Joel -> Echo-replies -> bot-replies
+//      loop, and also stops it replying to things like @userinfobot.
+//   1b. On top of that, a KV-stored username blocklist for specific humans
+//      Joel doesn't want auto-replied to — just plain usernames, no ID
+//      lookups needed, editable without redeploying (see bottom of file).
 //   2. Presence-aware behavior — tracks Joel's own Telegram online/offline
 //      status via Telegram's real UpdateUserStatus events (no manual toggle,
 //      no polling Flow's own app):
@@ -38,11 +42,9 @@ const apiHash  = process.env.TELEGRAM_API_HASH || "";
 const sessStr  = process.env.TELEGRAM_SESSION || "";
 const SITE_URL = process.env.FLOW_SITE_URL || "https://flow-v3-mu.vercel.app";
 
-// ── PASTE THE FLOW BOT'S NUMERIC TELEGRAM USER ID HERE ─────────────────────
-// See bottom of file for exactly how to find this. Until filled in, the bot
-// account is NOT auto-blocked — add it to the KV blocklist manually in the
-// meantime (see notes at the bottom) so the reply loop stops today.
-const FLOW_BOT_USER_ID = ""; // e.g. "5983021147" — leave blank if unknown for now
+// This account-side persona's name — kept separate from "Flow" (the Telegram
+// BOT) so Joel can tell them apart in logs/notifications. Rename freely.
+const ECHO_NAME = "Echo";
 
 const NUDGE_DELAY_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -54,8 +56,9 @@ if (!apiId || !apiHash || !sessStr) {
 
 // ── Ask Flow's existing AI chain for a reply (reuses everything already built) ──
 async function askFlow(message, senderName) {
-  const SYSTEM = `You are Flow, Joel Olanrewaju's personal AI assistant.
-You are replying to a message sent to JOEL'S PERSONAL Telegram account (not his bot).
+  const SYSTEM = `You are ${ECHO_NAME}, Joel Olanrewaju's personal AI assistant answering on
+his PERSONAL Telegram account (not his Flow bot — you are a separate persona
+from Flow, even though you're powered by the same underlying AI chain).
 This is likely a friend, contact, or business lead messaging Joel directly.
 Be helpful, friendly, and natural — like Joel's assistant picking up on his behalf.
 Keep replies concise unless more detail is clearly needed.
@@ -75,10 +78,10 @@ If you can't answer something personal/specific, say Joel will get back to them 
     });
     if (!r.ok) throw new Error(`chat API ${r.status}`);
     const d = await r.json();
-    return d.reply?.trim() || "Hey! This is Flow, Joel's AI assistant. Got your message — Joel will follow up!";
+    return d.reply?.trim() || `Hey! This is ${ECHO_NAME}, Joel's AI assistant. Got your message — Joel will follow up!`;
   } catch (e) {
     console.error("[Userbot] askFlow error:", e.message);
-    return "Hey! This is Flow, Joel's AI assistant. Got your message and will pass it along!";
+    return `Hey! This is ${ECHO_NAME}, Joel's AI assistant. Got your message and will pass it along!`;
   }
 }
 
@@ -135,16 +138,18 @@ async function memSet(key, value) {
 }
 
 // ── Blocklist — KV-stored under one key, editable from the Flow app/API
-// without redeploying. Add either numeric Telegram user IDs or @usernames
-// (lowercase, no @) as strings to this array via /api/memory.
+// without redeploying. Just plain @usernames (no @, lowercase), nothing else
+// to look up or paste in. Any bot account is auto-blocked regardless of the
+// list (see isBlocked below) — this is what stops the Flow-bot reply loop
+// and stops Echo replying to things like @userinfobot too.
 async function getBlocklist() {
   const list = await memGet("tg_blocklist");
-  return Array.isArray(list) ? list.map(String) : [];
+  return Array.isArray(list) ? list.map((s) => String(s).toLowerCase()) : [];
 }
-function isBlocked(senderId, username, blocklist) {
-  if (FLOW_BOT_USER_ID && senderId === FLOW_BOT_USER_ID) return true;
-  const uname = (username || "").toLowerCase();
-  return blocklist.some((entry) => entry === senderId || entry.toLowerCase() === uname);
+function isBlocked(sender, blocklist) {
+  if (sender?.bot) return true; // never auto-reply to ANY bot account, ever
+  const uname = (sender?.username || "").toLowerCase();
+  return !!uname && blocklist.includes(uname);
 }
 
 // ── Per-chat "waiting on Joel" state ────────────────────────────────────────
@@ -214,8 +219,9 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
       const sender = await message.getSender();
       const senderName = sender?.firstName || sender?.username || "Someone";
       const blocklist = await getBlocklist();
-      if (isBlocked(senderId, sender?.username, blocklist)) {
-        console.log(`🚫 Ignored message from blocked sender: ${senderName}`);
+      if (isBlocked(sender, blocklist)) {
+        const reason = sender?.bot ? "is a bot" : "is on the blocklist";
+        console.log(`🚫 Ignored message from ${senderName} — ${reason}`);
         return;
       }
 
@@ -279,28 +285,27 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
   });
 })();
 
-// ── HOW TO FIND THE FLOW BOT'S NUMERIC USER ID ─────────────────────────────
-// 1. In Telegram, message @userinfobot (or @getidsbot) and forward it any
-//    message the Flow bot has sent you — it'll reply with the bot's numeric ID.
-// 2. Paste that number as a string into FLOW_BOT_USER_ID at the top of this
-//    file, e.g. FLOW_BOT_USER_ID = "5983021147".
-// 3. Commit + push — Railway redeploys automatically.
-// Until then: add the bot's ID as a string into the tg_blocklist KV array
-// (see below) so blocking works immediately without touching this file.
+// ── NO ID-HUNTING NEEDED — BOT LOOP IS FIXED AUTOMATICALLY ─────────────────
+// The Flow bot's messages to Joel now get ignored automatically, because
+// Telegram marks every bot account with sender.bot === true, and this file
+// checks that before ever generating a reply. Same reason it'll now ignore
+// @userinfobot, @getidsbot, or any other bot account. Nothing to configure.
 //
-// ── HOW TO MANAGE THE BLOCKLIST WITHOUT REDEPLOYING ────────────────────────
+// ── HOW TO BLOCK SPECIFIC HUMANS WITHOUT REDEPLOYING ───────────────────────
 // The blocklist lives at KV key "tg_blocklist" — a plain JSON array of
-// strings (numeric IDs and/or lowercase usernames, no @). Update it via a
-// simple POST to your existing /api/memory endpoint, e.g. from any HTTP
-// client or a quick browser fetch() in devtools:
+// lowercase usernames (no @). Update it via a simple POST to your existing
+// /api/memory endpoint, e.g. from any HTTP client or a quick browser
+// fetch() in devtools:
 //
 //   fetch("https://flow-v3-mu.vercel.app/api/memory", {
 //     method: "POST",
 //     headers: { "Content-Type": "application/json" },
 //     body: JSON.stringify({
 //       key: "tg_blocklist",
-//       value: ["5983021147", "someannoyingusername"]
+//       value: ["someannoyingusername", "anotherone"]
 //     })
 //   });
 //
 // Re-POST the full array each time (it's a full overwrite, not an append).
+// People with no Telegram username set can't be blocked this way — bots are
+// still caught regardless, since that check doesn't depend on usernames.
