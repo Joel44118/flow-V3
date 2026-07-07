@@ -67,7 +67,7 @@ async function handleDeepgramToken(req, res) {
     const grantRes = await fetch("https://api.deepgram.com/v1/auth/grant", {
       method:  "POST",
       headers: { Authorization: `Token ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ ttl_seconds: 300 }), // 5 minutes — refreshed by the client before expiry
+      body: JSON.stringify({ ttl_seconds: 3600 }), // bumped from 300s — the shorter TTL, combined with getUserMedia's variable delay before the token was ever used, was likely causing tokens to go stale before the WebSocket handshake happened. 3600s (Deepgram's max) removes that risk entirely; the token is still short-lived relative to a real session and still only used once per connection attempt.
     });
 
     if (!grantRes.ok) {
