@@ -33,7 +33,7 @@ restoreAgent();
 function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbackCtx, personaBlock) {
   const p = Memory.getProfile();
   const ragBlock = ragContext
-    ? `\nKNOWLEDGE BASE (relevant to this query):\n${ragContext}\n`
+    ? `\nKNOWLEDGE BASE (relevant to this query — Joel specifically saved this content for you to use; you MUST draw on it directly rather than answering generically, and should reference specific details from it, not just acknowledge it exists):\n${ragContext}\n`
     : "";
 
   const extractedBlock = extractedMemory
