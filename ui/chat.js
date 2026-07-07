@@ -150,6 +150,25 @@ function render(text, who, flash) {
     controls.appendChild(playBtn);
     controls.appendChild(rereadBtn);
     controls.appendChild(cancelBtn);
+
+    // ── Feedback: thumbs up/down — feedback.js has always listened for
+    // clicks on [data-feedback] via event delegation, but no button with
+    // that attribute was ever actually rendered anywhere until now, so
+    // the RLHF/correction system had no UI hook to fire from.
+    const thumbUp = document.createElement("button");
+    thumbUp.className = "msg-feedback-btn";
+    thumbUp.dataset.feedback = "up";
+    thumbUp.textContent = "👍";
+    thumbUp.title = "Good response";
+
+    const thumbDown = document.createElement("button");
+    thumbDown.className = "msg-feedback-btn";
+    thumbDown.dataset.feedback = "down";
+    thumbDown.textContent = "👎";
+    thumbDown.title = "Bad response — tell Flow what should've been said";
+
+    controls.appendChild(thumbUp);
+    controls.appendChild(thumbDown);
     wrap.appendChild(controls);
   }
 
