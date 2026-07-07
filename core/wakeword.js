@@ -137,10 +137,23 @@ function _buildSettings() {
         provider: { type: "deepgram", model: "nova-3" },
       },
       think: {
-        // Flow's real personality, not a generic "helpful assistant" —
-        // same CONFIG.PERSONALITY used everywhere else in the app, so the
-        // voice agent doesn't feel like a different bot from the text one.
-        provider: { type: "open_ai", model: "gpt-4o-mini", temperature: 0.6 },
+        // Switched from open_ai to groq — the original open_ai config required
+        // a separate OpenAI API key configured inside Deepgram's OWN project
+        // settings (not this app's env vars), which was never set up. That's
+        // the actual root cause of every "Deepgram failed to connect" error:
+        // the WebSocket handshake succeeds, but the Agent dies the moment it
+        // tries to provision the think stage against a provider with no key
+        // on file, and that failure surfaces to the client as a generic
+        // connection error. Groq is a natively supported think provider
+        // (Deepgram calls Groq directly), reuses infrastructure Joel already
+        // has a free API key for, and needs zero new billing anywhere.
+        //
+        // ACTION NEEDED: add a Groq API key inside Deepgram's project
+        // settings (console.deepgram.com → your project → Voice Agent LLM
+        // providers, or wherever Deepgram's UI currently exposes this) —
+        // this is separate from GROQ_API_KEY in Vercel, since Deepgram
+        // calls Groq on its own servers, not through Flow's backend.
+        provider: { type: "groq", model: "openai/gpt-oss-20b" },
         prompt: CONFIG.PERSONALITY + "\n\nYou are in a live VOICE conversation right now — keep replies short, spoken-style, no markdown, no lists.",
       },
       speak: {
