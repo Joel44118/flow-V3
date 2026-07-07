@@ -123,6 +123,25 @@ body {
   transition:opacity .35s ease, transform .35s ease;
 }
 #level-up-card.show { opacity:1; transform:translateY(0); }
+
+/* ── "+N XP" toast — floats briefly near the level bar on EVERY XP
+   award, not just full level-ups, so gains are visible live instead of
+   only after a reload. Positioned just above the brain circle. ──────── */
+#xp-toast {
+  position:fixed; bottom:78px; left:32px; z-index:20;
+  font-family:'Orbitron',monospace; font-size:13px; font-weight:700;
+  color:#38bdf8; text-shadow:0 0 8px rgba(56,189,248,0.6);
+  opacity:0; transform:translateY(6px);
+  transition:opacity .3s ease, transform .3s ease;
+  pointer-events:none;
+}
+#xp-toast.show { opacity:1; transform:translateY(0); animation:xp-toast-float 1.8s ease forwards; }
+@keyframes xp-toast-float {
+  0%   { opacity:0; transform:translateY(6px); }
+  15%  { opacity:1; transform:translateY(0); }
+  75%  { opacity:1; transform:translateY(-4px); }
+  100% { opacity:0; transform:translateY(-14px); }
+}
 #level-up-card .lu-title {
   font-family:'Orbitron',monospace; font-size:13px; color:#a78bfa; letter-spacing:.1em;
 }
