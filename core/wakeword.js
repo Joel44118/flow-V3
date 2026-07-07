@@ -28,6 +28,18 @@
 import { CONFIG } from "./config.js";
 import { Speech } from "./speech.js";
 
+// BUG FIX: this was referenced below (in _startBrowserSR) but never
+// actually declared anywhere in this file, or imported from anywhere else
+// that exports it. Referencing an undeclared variable throws a
+// ReferenceError, uncaught, at the exact point _startBrowserSR() checked
+// it — which silently killed the entire browser-fallback path before it
+// ever reached getUserMedia() or created wakeRec. This is why "no working
+// speech engine was found" appeared even with correct OS mic permissions:
+// the fallback never actually ran, it crashed before doing anything.
+// Matches the same detection pattern already used correctly in
+// ui/screencontrol.js, so Electron detection is now consistent app-wide.
+const IS_ELECTRON = !!window.__flowElectron;
+
 let _sendFn = null;
 let _orbFn  = null;
 export function init(sendFn, setOrbState) {
