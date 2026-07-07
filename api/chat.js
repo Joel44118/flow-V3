@@ -86,12 +86,18 @@ function cleanReply(text) {
 const STOP4 = ['</s>', '<|eot_id|>', 'Human:', 'User:'];
 
 // ── 1. CEREBRAS ────────────────────────────────────────────────────────────
+// Token limits bumped +200 across every tier here (Cerebras), OpenRouter,
+// and Groq below — the reasoning scratchpad (<flow-think>...</flow-think>,
+// added to core/ai.js's system prompt) now consumes some of each reply's
+// token budget before the real answer even starts, so the original limits
+// risked truncating the visible reply. If replies ever look cut off again,
+// this is the first place to check — bump further before anything else.
 const CB_MODELS = {
-  code:     [{ model: 'llama3.1-70b', maxTokens: 2048 }, { model: 'llama3.1-8b', maxTokens: 1500 }],
-  research: [{ model: 'llama3.1-70b', maxTokens: 1024 }],
-  chat:     [{ model: 'llama3.1-8b',  maxTokens: 700  }],
-  creative: [{ model: 'llama3.1-70b', maxTokens: 800  }],
-  pdf:      [{ model: 'llama3.1-8b',  maxTokens: 1000 }],
+  code:     [{ model: 'llama3.1-70b', maxTokens: 2248 }, { model: 'llama3.1-8b', maxTokens: 1700 }],
+  research: [{ model: 'llama3.1-70b', maxTokens: 1224 }],
+  chat:     [{ model: 'llama3.1-8b',  maxTokens: 900  }],
+  creative: [{ model: 'llama3.1-70b', maxTokens: 1000 }],
+  pdf:      [{ model: 'llama3.1-8b',  maxTokens: 1200 }],
 };
 
 async function tryCerebras(messages, intent, key) {
@@ -145,7 +151,7 @@ const OR_MODELS = {
     'qwen/qwen-2.5-7b-instruct:free',
   ],
 };
-const OR_TOKENS = { code: 3000, research: 1500, creative: 800, pdf: 1000, chat: 600 };
+const OR_TOKENS = { code: 3200, research: 1700, creative: 1000, pdf: 1200, chat: 800 };
 
 async function tryOpenRouter(messages, intent, key) {
   const models    = OR_MODELS[intent] || OR_MODELS.chat;
@@ -180,26 +186,26 @@ async function tryOpenRouter(messages, intent, key) {
 // ── 3. GROQ ───────────────────────────────────────────────────────────────
 const GROQ_MODELS = {
   code:     [
-    { model: 'mixtral-8x7b-32768',      maxTokens: 3000 },
-    { model: 'llama-3.3-70b-versatile', maxTokens: 2500 },
-    { model: 'llama-3.1-8b-instant',    maxTokens: 2000 },
+    { model: 'mixtral-8x7b-32768',      maxTokens: 3200 },
+    { model: 'llama-3.3-70b-versatile', maxTokens: 2700 },
+    { model: 'llama-3.1-8b-instant',    maxTokens: 2200 },
   ],
   research: [
-    { model: 'llama-3.3-70b-versatile', maxTokens: 1500 },
-    { model: 'gemma2-9b-it',            maxTokens: 1200 },
+    { model: 'llama-3.3-70b-versatile', maxTokens: 1700 },
+    { model: 'gemma2-9b-it',            maxTokens: 1400 },
   ],
   creative: [
-    { model: 'llama-3.3-70b-versatile', maxTokens: 1000 },
-    { model: 'gemma2-9b-it',            maxTokens: 800  },
+    { model: 'llama-3.3-70b-versatile', maxTokens: 1200 },
+    { model: 'gemma2-9b-it',            maxTokens: 1000  },
   ],
   pdf:      [
-    { model: 'llama-3.1-8b-instant',    maxTokens: 1200 },
-    { model: 'gemma2-9b-it',            maxTokens: 1000 },
+    { model: 'llama-3.1-8b-instant',    maxTokens: 1400 },
+    { model: 'gemma2-9b-it',            maxTokens: 1200 },
   ],
   chat:     [
-    { model: 'llama-3.1-8b-instant',    maxTokens: 700  },
-    { model: 'gemma2-9b-it',            maxTokens: 700  },
-    { model: 'mixtral-8x7b-32768',      maxTokens: 700  },
+    { model: 'llama-3.1-8b-instant',    maxTokens: 900  },
+    { model: 'gemma2-9b-it',            maxTokens: 900  },
+    { model: 'mixtral-8x7b-32768',      maxTokens: 900  },
   ],
 };
 
