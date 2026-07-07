@@ -63,6 +63,7 @@ let _playCtx      = null;    // separate AudioContext for playing agent's TTS
 let _playQueueTime = 0;
 let _tokenExpiresAt = 0;
 let _reconnecting  = false;
+let _connectResolve = null; // holds the pending Promise resolver while _connectAgent waits for real success/failure proof
 
 const AGENT_URL = "wss://agent.deepgram.com/v1/agent/converse";
 
@@ -228,15 +229,9 @@ async function _connectAgent() {
 
     socket.onopen = async () => {
       socket.send(JSON.stringify(await _buildSettings()));
-      // Note: no KeepAlive needed here — mic audio streams continuously for
-      // the whole session once SettingsApplied arrives, and Deepgram's own
-      // docs say KeepAlive is only for periods where audio ISN'T flowing.
-      // Sending it redundantly risks a "message did not match expected
-      // format" error some integrations have hit.
     };
 
     socket.onmessage = (evt) => {
-      // Binary frames = agent's spoken audio. Text frames = JSON control messages.
       if (evt.data instanceof ArrayBuffer) {
         if (!_asleep) _playAgentAudio(evt.data);
         return;
@@ -244,15 +239,37 @@ async function _connectAgent() {
       let msg;
       try { msg = JSON.parse(evt.data); } catch (_) { return; }
       _handleAgentMessage(msg);
+      // Resolve the connection promise the FIRST time we get concrete proof
+      // one way or the other — SettingsApplied means it genuinely worked,
+      // an Error frame means it genuinely didn't. Previously _connectAgent
+      // resolved true right after opening the handlers, before either of
+      // these had any chance to arrive, so the caller never actually knew
+      // if the connection really succeeded.
+      if (msg.type === "SettingsApplied" && _connectResolve) {
+        _connectResolve(true);
+        _connectResolve = null;
+      } else if (msg.type === "Error" && _connectResolve) {
+        _connectResolve(false);
+        _connectResolve = null;
+      }
     };
 
     socket.onerror = () => {
       console.warn("[Flow Agent] socket error — falling back to browser SR");
+      if (!_lastTokenError) _lastTokenError = "WebSocket connection error (no further detail available from the browser)";
       _teardownAgent();
-      _startBrowserSR();
+      if (_connectResolve) { _connectResolve(false); _connectResolve = null; }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (evt) => {
+      if (_connectResolve) {
+        // Closed before we ever got SettingsApplied or an Error frame —
+        // capture the close code, since that's the only signal left.
+        if (!_lastTokenError) _lastTokenError = `Connection closed before agent was ready (code ${evt.code}${evt.reason ? ": " + evt.reason : ""})`;
+        _connectResolve(false);
+        _connectResolve = null;
+        return; // don't auto-reconnect on the very first failed attempt — let the caller decide
+      }
       if (_mode === "agent" && !_reconnecting) {
         _reconnecting = true;
         setTimeout(async () => {
@@ -266,9 +283,23 @@ async function _connectAgent() {
     };
 
     _mode = "agent";
-    return true;
+    // Wait for real proof of success/failure (max 6s) instead of returning
+    // true immediately — this is what makes _lastTokenError actually
+    // populated by the time startWakeListener's status check runs.
+    const result = await new Promise((resolve) => {
+      _connectResolve = resolve;
+      setTimeout(() => {
+        if (_connectResolve) {
+          if (!_lastTokenError) _lastTokenError = "Timed out waiting for Deepgram to confirm the connection";
+          _connectResolve(false);
+          _connectResolve = null;
+        }
+      }, 6000);
+    });
+    return result;
   } catch (err) {
     console.warn("[Flow Agent] connect failed, falling back:", err.message);
+    _lastTokenError = err.message;
     return false;
   }
 }
@@ -296,6 +327,22 @@ function _startMicStreaming() {
 // ── Handle control messages from the agent ─────────────────────────────
 function _handleAgentMessage(msg) {
   switch (msg.type) {
+    // BUG FIX: Deepgram sends a real JSON error frame — {type: "Error",
+    // description: "...", code: "..."} — over the same text-message
+    // channel right before closing the socket on failures like
+    // FAILED_TO_THINK, invalid Settings, etc. This case never existed
+    // before, so every real error Deepgram sent back was silently
+    // dropped by the switch's lack of a matching case, which is why the
+    // UI only ever showed "unknown reason" — there was no code path
+    // capturing the description Deepgram was actually sending.
+    case "Error":
+    case "Warning": {
+      const desc = msg.description || msg.message || JSON.stringify(msg);
+      console.error(`[Flow Agent] Deepgram ${msg.type}:`, desc, msg.code ? `(code: ${msg.code})` : "");
+      _lastTokenError = `${desc}${msg.code ? ` [${msg.code}]` : ""}`;
+      break;
+    }
+
     case "SettingsApplied":
       _startMicStreaming();
       console.log("[Flow Agent] ready — listening for wake word");
