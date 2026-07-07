@@ -19,7 +19,7 @@ import { Projects } from "./projects.js";
 import { getAgentContext, restoreAgent } from "./agent.js";
 import { getFeedbackContext } from "./feedback.js";
 import { awardCasualLearningXp } from "./leveling.js";
-import { getPersonaPromptBlock } from "./persona.js";
+import { getPersonaPromptBlock, recordJoelMessage } from "./persona.js";
 import { runtimeStateBlock } from "./runtime.js";
 
 // UI refs injected at init (avoids circular imports)
