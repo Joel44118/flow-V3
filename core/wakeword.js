@@ -113,6 +113,31 @@ async function _getToken() {
   return d.key;
 }
 
+// Groq is a BYO ("bring your own") think provider for Deepgram's Voice
+// Agent — per Deepgram's own docs, that means it REQUIRES an
+// endpoint.url + endpoint.headers block in the Settings message, not just
+// a provider type + model name. There is no separate "add your Groq key
+// inside Deepgram's console" step — that was wrong in an earlier version
+// of this comment. The key must travel inside the WebSocket Settings
+// message itself. To avoid ever putting the raw key in this client-side
+// file, it's fetched from our own backend (api/tts.js?action=groqthink),
+// which reads process.env.GROQ_API_KEY server-side and hands back just
+// the endpoint/header shape Deepgram needs.
+let _groqThinkConfig = null;
+async function _fetchGroqThinkConfig() {
+  if (_groqThinkConfig) return _groqThinkConfig;
+  try {
+    const r = await fetch("/api/tts?action=groqthink");
+    const d = await r.json();
+    if (!d.configured || !d.endpoint) return null;
+    _groqThinkConfig = d.endpoint;
+    return _groqThinkConfig;
+  } catch (e) {
+    console.warn("[Flow Agent] Failed to fetch Groq think config:", e.message);
+    return null;
+  }
+}
+
 // ── Play agent audio (linear16 PCM chunks) through Web Audio ──────────
 function _playAgentAudio(arrayBuf) {
   try {
@@ -136,7 +161,8 @@ function _playAgentAudio(arrayBuf) {
 }
 
 // ── Build the Settings message sent right after socket opens ──────────
-function _buildSettings() {
+async function _buildSettings() {
+  const groqEndpoint = await _fetchGroqThinkConfig();
   return {
     type: "Settings",
     audio: {
@@ -166,6 +192,14 @@ function _buildSettings() {
         // this is separate from GROQ_API_KEY in Vercel, since Deepgram
         // calls Groq on its own servers, not through Flow's backend.
         provider: { type: "groq", model: "openai/gpt-oss-20b" },
+        // REQUIRED for Groq specifically — it's a BYO provider, so Deepgram
+        // needs the actual endpoint + auth header to call it. Omitting this
+        // (as an earlier version of this file did) is exactly what caused
+        // FAILED_TO_THINK / silent connection failures — the provider type
+        // alone isn't enough for BYO providers, unlike managed ones
+        // (open_ai, anthropic, google, nvidia) where Deepgram hosts the
+        // model itself and only needs the type + model name.
+        ...(groqEndpoint ? { endpoint: groqEndpoint } : {}),
         prompt: CONFIG.PERSONALITY + "\n\nYou are in a live VOICE conversation right now — keep replies short, spoken-style, no markdown, no lists.",
       },
       speak: {
@@ -192,8 +226,8 @@ async function _connectAgent() {
     socket.binaryType = "arraybuffer";
     _socket = socket;
 
-    socket.onopen = () => {
-      socket.send(JSON.stringify(_buildSettings()));
+    socket.onopen = async () => {
+      socket.send(JSON.stringify(await _buildSettings()));
       // Note: no KeepAlive needed here — mic audio streams continuously for
       // the whole session once SettingsApplied arrives, and Deepgram's own
       // docs say KeepAlive is only for periods where audio ISN'T flowing.
