@@ -62,44 +62,67 @@ body {
   -webkit-app-region: drag; /* whole bar drags the window in Electron; no-op in browser */
 }
 
-/* ── Level bar — a slim, non-overlapping strip directly beneath the top
-   bar. Fits inside the existing 6px gap desktop content already leaves
-   below the top bar (.msg-col starts at top:58px), so nothing needed
-   moving there. Mobile's .msg-col starts at exactly 52px with no gap —
-   adjusted below so this doesn't sit on top of the first line of chat. */
+/* ── Level bar (v2) — moved from a full-width top strip to a compact
+   bottom-left cluster: a glowing brain-icon circle, then a short, thick
+   progress bar with the XP count sitting on top of it. Fills the
+   previously-empty bottom-left corner instead of stretching across the
+   whole screen. Purely informational — never blocks clicks. ────────── */
 #level-bar-wrap {
-  position:fixed; top:52px; left:0; right:0; height:6px; z-index:19;
-  display:flex; align-items:center; gap:8px; padding:0 20px;
-  pointer-events:none; /* purely informational, never blocks clicks through to content below */
+  position:fixed; bottom:16px; left:16px; z-index:19;
+  display:flex; align-items:center; gap:10px;
+  pointer-events:none;
+}
+#level-brain-circle {
+  width:34px; height:34px; border-radius:50%; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  background:radial-gradient(circle at 35% 30%, rgba(167,139,250,0.35), rgba(15,10,30,0.9));
+  border:1px solid rgba(167,139,250,0.55);
+  box-shadow:0 0 12px rgba(167,139,250,0.55), 0 0 24px rgba(56,189,248,0.25), 0 0 2px rgba(255,255,255,0.4) inset;
+  animation:brain-glow-pulse 2.6s ease-in-out infinite;
+}
+#level-brain-circle svg { width:18px; height:18px; }
+@keyframes brain-glow-pulse {
+  0%, 100% { box-shadow:0 0 12px rgba(167,139,250,0.55), 0 0 24px rgba(56,189,248,0.25), 0 0 2px rgba(255,255,255,0.4) inset; }
+  50%      { box-shadow:0 0 18px rgba(167,139,250,0.85), 0 0 34px rgba(56,189,248,0.45), 0 0 3px rgba(255,255,255,0.55) inset; }
+}
+#level-bar-col {
+  display:flex; flex-direction:column; gap:2px; width:130px;
 }
 #level-bar-label {
   font-family:'Orbitron',monospace; font-size:8px; color:rgba(56,189,248,0.7);
-  letter-spacing:.08em; white-space:nowrap; flex-shrink:0;
+  letter-spacing:.08em; white-space:nowrap;
 }
 #level-bar-num { color:#38bdf8; font-weight:700; }
 #level-bar-track {
-  flex:1; height:3px; border-radius:2px; background:rgba(255,255,255,0.06); overflow:hidden;
+  position:relative; height:9px; border-radius:5px;
+  background:rgba(255,255,255,0.07); overflow:hidden;
+  border:1px solid rgba(255,255,255,0.08);
 }
 #level-bar-fill {
-  height:100%; width:0%; border-radius:2px;
+  height:100%; width:0%; border-radius:5px;
   background:linear-gradient(90deg,#38bdf8,#a78bfa);
   transition:width .5s ease;
 }
 #level-bar-xp {
-  font-size:8px; color:rgba(255,255,255,0.35); white-space:nowrap; flex-shrink:0; font-family:monospace;
+  position:absolute; top:50%; left:6px; transform:translateY(-50%);
+  font-size:7px; color:rgba(255,255,255,0.85); white-space:nowrap;
+  font-family:monospace; letter-spacing:.02em;
+  text-shadow:0 1px 2px rgba(0,0,0,0.8); /* readable sitting directly on top of the fill */
+  pointer-events:none;
 }
 
-/* ── Level-up card — appears briefly top-center, well clear of the top
-   bar and level strip, auto-dismisses, never blocks interaction. ────── */
+/* ── Level-up card — now appears near the bottom-left bar it belongs to,
+   instead of top-center, since the bar itself moved there. Still clear of
+   the bar/circle so it never overlaps, still auto-dismisses. ──────────── */
 #level-up-card {
-  position:fixed; top:70px; left:50%; transform:translateX(-50%) translateY(-20px);
+  position:fixed; bottom:60px; left:16px; transform:translateY(10px);
   z-index:9999; pointer-events:none; opacity:0;
   background:rgba(15,10,30,0.94); border:1px solid rgba(167,139,250,0.5);
   border-radius:16px; padding:14px 26px; text-align:center;
   box-shadow:0 8px 30px rgba(167,139,250,0.25), 0 1px 0 rgba(255,255,255,0.1) inset;
   transition:opacity .35s ease, transform .35s ease;
 }
-#level-up-card.show { opacity:1; transform:translateX(-50%) translateY(0); }
+#level-up-card.show { opacity:1; transform:translateY(0); }
 #level-up-card .lu-title {
   font-family:'Orbitron',monospace; font-size:13px; color:#a78bfa; letter-spacing:.1em;
 }
@@ -618,6 +641,19 @@ body {
 .msg-cancel-btn:hover { background:rgba(248,113,113,0.15); color:#f87171; }
 .msg-play-btn[data-state="playing"] { background:rgba(255,255,255,0.14); border-color:rgba(255,255,255,0.3); color:#fff; }
 .msg-play-btn[data-state="paused"]  { background:rgba(251,191,36,0.1); border-color:rgba(251,191,36,0.3); color:#fbbf24; }
+
+/* ── Feedback thumbs — same visual language as the other round message
+   controls, styled neutrally until clicked, then feedback.js sets the
+   text/color/disabled state directly via JS on click. ────────────────── */
+.msg-feedback-btn {
+  background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.14);
+  border-radius:50%; width:26px; height:26px; display:flex; align-items:center;
+  justify-content:center; font-size:11px; cursor:pointer; padding:0;
+  transition:background .15s, transform .1s;
+}
+.msg-feedback-btn:hover { background:rgba(255,255,255,0.18); transform:scale(1.08); }
+.msg-feedback-btn:disabled { cursor:default; opacity:.85; }
+.msg-feedback-btn:disabled:hover { transform:none; }
 
 /* ── RICH TEXT ───────────────────────────────────────────── */
 .mbubble.msg-rich { background:transparent; padding:0; border:none; box-shadow:none; max-width:100%; }
