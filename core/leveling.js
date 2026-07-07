@@ -40,7 +40,12 @@ const KV_KEY       = "flow_level_state";
 const XP_VALUES = {
   fact:       12,   // a new fact learned about Joel
   knowledge:  25,   // a new knowledge-base entry
-  correction: 45,   // Joel corrected Flow — highest value, real course-correction
+  correction: 45,   // Joel corrected Flow via explicit 👎 flow — highest value, real course-correction
+  casualLearning: 18, // Flow self-judged it learned something new mid-conversation,
+                      // outside the explicit 👎 flow. Deliberately LOWER than an
+                      // explicit correction (45) — self-judgment is a weaker signal
+                      // than Joel deliberately flagging something as wrong, so it
+                      // should never be worth as much, even though it's real.
   project:    150,  // a genuinely new project created
 };
 
@@ -157,6 +162,15 @@ export function awardKnowledgeXp(title) {
 // right answer after a wrong one.
 export function awardCorrectionXp(topic) {
   _awardXp(XP_VALUES.correction, `Correction: ${(topic || "").slice(0, 40)}`);
+}
+
+// Call from the self-judgment pass in ai.js — ONLY after the judgment call
+// itself has already decided (with a confidence threshold) that Joel stated
+// something genuinely new, outside the explicit 👎-correction flow. This
+// function does no judging itself — it trusts the caller already filtered
+// for confidence, so it stays a pure "award + log" step, same as the others.
+export function awardCasualLearningXp(summary) {
+  _awardXp(XP_VALUES.casualLearning, `Learned (self-judged): ${(summary || "").slice(0, 60)}`);
 }
 
 // Call from Projects.save ONLY when idx === -1 (a genuinely new project,
