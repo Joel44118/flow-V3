@@ -55,7 +55,24 @@ if (!apiId || !apiHash || !sessStr) {
 }
 
 // ── Ask Flow's existing AI chain for a reply (reuses everything already built) ──
+// Fetches Joel's style-profile block directly (same KV key persona.js
+// writes to) — kept as a local fetch rather than importing core/persona.js,
+// since that file is an ES module and this userbot runs as CommonJS
+// (require-based). Duplicating this one small read avoids a cross-module-
+// system import that Node can't resolve cleanly here.
+async function getPersonaBlock() {
+  try {
+    const r = await fetch(`${SITE_URL}/api/memory?key=flow_joel_style_profile`);
+    if (!r.ok) return "";
+    const d = await r.json();
+    const desc = d?.value?.description;
+    if (!desc) return "";
+    return `\n\nJOEL'S WRITING STYLE (learned from his real messages, for matching tone only): ${desc}\nLet this inform tone and phrasing only — never invent facts, commitments, or opinions Joel hasn't actually stated.`;
+  } catch (_) { return ""; }
+}
+
 async function askFlow(message, senderName) {
+  const personaBlock = await getPersonaBlock();
   const SYSTEM = `You are ${ECHO_NAME}, Joel Olanrewaju's personal AI assistant answering on
 his PERSONAL Telegram account (not his Flow bot — you are a separate persona
 from Flow, even though you're powered by the same underlying AI chain).
@@ -63,7 +80,7 @@ This is likely a friend, contact, or business lead messaging Joel directly.
 Be helpful, friendly, and natural — like Joel's assistant picking up on his behalf.
 Keep replies concise unless more detail is clearly needed.
 Joel runs Joelflowstack — premium web development and AI automation services.
-If you can't answer something personal/specific, say Joel will get back to them directly.`;
+If you can't answer something personal/specific, say Joel will get back to them directly.${personaBlock}`;
 
   try {
     const r = await fetch(`${SITE_URL}/api/chat`, {
