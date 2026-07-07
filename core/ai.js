@@ -18,6 +18,7 @@ import { getExtractedMemoryContext } from "./memextract.js";
 import { Projects } from "./projects.js";
 import { getAgentContext, restoreAgent } from "./agent.js";
 import { getFeedbackContext } from "./feedback.js";
+import { awardCasualLearningXp } from "./leveling.js";
 import { runtimeStateBlock } from "./runtime.js";
 
 // UI refs injected at init (avoids circular imports)
@@ -93,6 +94,63 @@ is stripped out before delivery. Never mention the thinking block exists,
 never reference it in the reply, never skip it.`;
 }
 
+// ── Self-judged casual learning ──────────────────────────────────────────
+// Runs after EVERY reply, fire-and-forget (never awaited by the caller, so
+// it can never slow down or block a response reaching Joel). Asks a small,
+// fast model a narrow, skeptical yes/no question: did Joel just state
+// something genuinely new — a correction or a fact Flow didn't already
+// know — in this specific exchange? This is DELIBERATELY separate from the
+// explicit 👎-correction flow in feedback.js, which still exists and still
+// awards its own (higher) XP tier unchanged.
+//
+// WHY THE CONFIDENCE THRESHOLD MATTERS: an LLM asked "did you just learn
+// something?" will say yes far more often than is true, because agreeing
+// sounds helpful. Without a real skepticism bias and a confidence cutoff,
+// XP would inflate on ordinary small talk within days and the whole system
+// would stop meaning anything. The threshold below (0.7) is the actual
+// guardrail — do not lower it without expecting more false awards.
+async function judgeAndAwardLearning(userText, replyText) {
+  try {
+    const JUDGE_SYSTEM = `You are a strict, skeptical judge — not Flow, not an assistant, just a classifier.
+Given ONE exchange between Joel and Flow, decide: did Joel's message state a genuinely NEW, SPECIFIC fact or correction that Flow did not already know?
+Casual conversation, questions, opinions, jokes, or vague statements do NOT count — default to "no" unless it's clearly a real new piece of information or a real correction.
+Reply with ONLY raw JSON, nothing else, no markdown fences:
+{"learned": true|false, "category": "correction"|"fact"|"none", "confidence": 0.0-1.0, "summary": "under 12 words"}`;
+
+    const r = await fetch("/api/chat", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: JUDGE_SYSTEM },
+          { role: "user", content: `Joel said: "${userText.slice(0, 500)}"\nFlow replied: "${replyText.slice(0, 500)}"` },
+        ],
+        // Hint to chat.js this is a small classification call, not a real
+        // conversational turn — keeps it cheap and fast on the Groq/Cerebras
+        // "chat" tier rather than routing through heavier code/research models.
+        force_intent: "chat",
+      }),
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.reply) return;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(data.reply.trim().replace(/^```json\s*|\s*```$/g, ""));
+    } catch (_) {
+      return; // judge didn't return clean JSON — skip silently, never throw into the main flow
+    }
+
+    if (parsed.learned === true && parsed.confidence >= 0.7 && parsed.category !== "none") {
+      awardCasualLearningXp(parsed.summary || userText.slice(0, 60));
+      console.log(`[Flow] Self-judged learning: ${parsed.category} (confidence ${parsed.confidence}) — ${parsed.summary}`);
+    }
+  } catch (e) {
+    console.warn("[Flow] judgeAndAwardLearning failed silently:", e.message);
+  }
+}
+
 export async function sendMessage(overrideText, opts = {}) {
   // Always query DOM fresh — never cache
   const inputEl = document.getElementById("user-input");
@@ -158,6 +216,7 @@ export async function sendMessage(overrideText, opts = {}) {
     _chat.hideTyping();
     const _wrap = _chat.add(data.reply, "bot");
     Memory.add("assistant", data.reply);
+    judgeAndAwardLearning(text, data.reply); // fire-and-forget, never awaited — see function above
     _orb.setState("speaking");
     Speech.speak(data.reply, () => { _orb.setState("idle"); }, _wrap);
 
@@ -203,6 +262,7 @@ export async function sendToAI(text) {
     _chat.hideTyping();
     const _wrap = _chat.add(data.reply, "bot");
     Memory.add("assistant", data.reply);
+    judgeAndAwardLearning(text, data.reply); // fire-and-forget, never awaited — see function above
     _orb.setState("speaking");
     Speech.speak(data.reply, () => { _orb.setState("idle"); }, _wrap);
 
