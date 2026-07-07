@@ -44,11 +44,11 @@ let _twoFingerBase = null;  // y position where two-finger gesture started
 let _curX = 0.5, _curY = 0.5;
 
 // Constants
-const PINCH_ON    = 0.045;   // thumb-index normalised distance to enter pinch
+const PINCH_ON    = 0.050;   // thumb-index normalised distance to enter pinch
 const PINCH_OFF   = 0.075;   // must open wider than this to exit pinch
-const CLICK_HOLD  = 7;       // frames to hold pinch before firing click
+const CLICK_HOLD  = 10;       // frames to hold pinch before firing click
 const REL_FRAMES  = 4;       // open frames to confirm pinch released
-const SCROLL_DEAD = 0.02;    // minimum y-travel for two-finger scroll trigger
+const SCROLL_DEAD = 0.08;    // minimum y-travel for two-finger scroll trigger
 
 const PROXY = '/api/mediapipe?f=';
 const IS_ELECTRON = !!window.__flowElectron;
@@ -194,7 +194,7 @@ export async function start(videoEl) {
       maxNumHands:            1,
       modelComplexity:        0,    // 0 = fast, 1 = accurate — use 0 for real-time
       minDetectionConfidence: 0.65,
-      minTrackingConfidence:  0.55,
+      minTrackingConfidence:  0.65,
     });
     _hands.onResults(_onResults);
 
@@ -227,10 +227,6 @@ export async function start(videoEl) {
 
     if (_Chat) _Chat.add(
       '✅ **Gesture Control Ready!**\n\n' +
-      '• ☝️ Point (1 finger) → move cursor\n' +
-      '• 🤏 Pinch thumb+index → click\n' +
-      '• ✌️ Two fingers + swipe up/down → scroll\n' +
-      '• ✋ Open palm → right-click\n\n' +
       '_Say "stop gesture control" to exit._', 'bot');
 
     _animate();
@@ -399,7 +395,7 @@ const BONES = [
 function _drawSkeleton(lm) {
   const cw = _canvas.width, ch = _canvas.height;
   _ctx.strokeStyle = '#a78bfa';
-  _ctx.lineWidth   = 1.5;
+  _ctx.lineWidth   = 1.9;
   _ctx.lineCap     = 'round';
   for (const [s, e] of BONES) {
     _ctx.beginPath();
