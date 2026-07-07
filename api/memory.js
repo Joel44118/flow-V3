@@ -17,12 +17,27 @@ async function kvGet(key) {
 
   // Self-healing for data already corrupted by the bug below, written
   // before this fix existed: if a stored string is itself a JSON-encoded
-  // string (starts and ends with a literal quote character), unwrap it
+  // value (starts with a literal quote, [, or { character), unwrap it
   // once so old double-encoded values (PIN hashes, recovery answers,
-  // etc. saved before this fix) still compare correctly instead of
-  // permanently failing every check against them.
-  if (typeof result === "string" && result.length >= 2 && result[0] === '"' && result[result.length - 1] === '"') {
-    try { result = JSON.parse(result); } catch (_) { /* leave as-is if not actually valid JSON */ }
+  // arrays like flow_joel_style_samples, etc. saved before/around this
+  // fix) still compare and behave correctly instead of permanently
+  // failing every check against them.
+  //
+  // WIDENED from the original version, which only checked for a
+  // quote-wrapped STRING (e.g. '"somehash"' -> "somehash"). That missed
+  // the equally-real case of an ARRAY or OBJECT value that Upstash
+  // handed back as a raw JSON-shaped string instead of an already-parsed
+  // structure — e.g. persona.js's flow_joel_style_samples key came back
+  // as the literal string '["hey flow"]' instead of a real array,
+  // which broke samples.push() downstream since strings don't have
+  // that method. Any value starting with ", [, or { is now attempted
+  // as JSON — if it doesn't actually parse, it's left completely as-is,
+  // so this can never turn a genuinely plain string into something else.
+  if (typeof result === "string" && result.length >= 2) {
+    const first = result[0];
+    if (first === '"' || first === '[' || first === '{') {
+      try { result = JSON.parse(result); } catch (_) { /* leave as-is if not actually valid JSON */ }
+    }
   }
   return result;
 }
