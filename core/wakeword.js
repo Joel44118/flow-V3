@@ -110,7 +110,7 @@ async function _getToken() {
     _lastTokenError = d.error || "Deepgram not configured";
     return null;
   }
-  _tokenExpiresAt = Date.now() + 4.5 * 60 * 1000; // token is 5min TTL, refresh a bit early
+  _tokenExpiresAt = Date.now() + 55 * 60 * 1000; // matches the 3600s (1hr) TTL now requested in api/tts.js, refreshed a bit early
   return d.key;
 }
 
@@ -213,12 +213,22 @@ async function _buildSettings() {
 
 // ── Core: connect to the Voice Agent socket ────────────────────────────
 async function _connectAgent() {
-  const token = await _getToken();
-  if (!token) return false;
-
   try {
+    // Get mic permission FIRST, then mint the Deepgram token LAST, right
+    // before opening the socket. Previously the token was minted before
+    // getUserMedia() — but getUserMedia() can take anywhere from
+    // instantly to several seconds (waiting on the OS permission prompt,
+    // or the user hesitating on it), and that delay was eating directly
+    // into the token's TTL before the socket ever got a chance to use it.
+    // A "HTTP Authentication failed; no valid credentials available"
+    // error at the WebSocket handshake is exactly what a stale/expired
+    // token looks like from Deepgram's side. Reordering this so the
+    // token is as fresh as possible at the moment it's actually used.
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
     _stream = stream;
+
+    const token = await _getToken();
+    if (!token) { stream.getTracks().forEach(t => t.stop()); return false; }
 
     // Browsers can't set custom headers on WebSocket handshakes, so the
     // token rides the Sec-WebSocket-Protocol field instead — this is
