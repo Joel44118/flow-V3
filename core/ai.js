@@ -19,6 +19,7 @@ import { Projects } from "./projects.js";
 import { getAgentContext, restoreAgent } from "./agent.js";
 import { getFeedbackContext } from "./feedback.js";
 import { awardCasualLearningXp } from "./leveling.js";
+import { getPersonaPromptBlock } from "./persona.js";
 import { runtimeStateBlock } from "./runtime.js";
 
 // UI refs injected at init (avoids circular imports)
@@ -29,7 +30,7 @@ export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 // Restore persisted agent on boot
 restoreAgent();
 
-function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbackCtx) {
+function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbackCtx, personaBlock) {
   const p = Memory.getProfile();
   const ragBlock = ragContext
     ? `\nKNOWLEDGE BASE (relevant to this query):\n${ragContext}\n`
@@ -57,7 +58,7 @@ function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbac
     ? `\nSKILL CONTEXT — you are acting as a ${skillContext.name} specialist for this response:\n${skillContext.content}\n`
     : "";
 
-  return `${CONFIG.PERSONALITY}
+  return `${CONFIG.PERSONALITY}${personaBlock || ""}
 
 ${selfKnowledgeBlock()}
 ${feedbackBlock}${ragBlock}${agentBlock}${skillBlock}${extractedBlock}${projectsBlock}
@@ -191,15 +192,17 @@ export async function sendMessage(overrideText, opts = {}) {
 
   try {
     // Run weather + RAG search in parallel
-    const [weather, ragContext, skillContext] = await Promise.all([
+    const [weather, ragContext, skillContext, personaBlock] = await Promise.all([
       Weather.get(),
       RAG.search(text),
       getSkillContext(text),
+      getPersonaPromptBlock(window.location.origin),
     ]);
     const extractedMemory = getExtractedMemoryContext();
+    recordJoelMessage(window.location.origin, text); // fire-and-forget — feeds the style profile, never blocks
 
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext()) },
+      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext(), personaBlock) },
       ...Memory.forAPI(),
     ];
 
@@ -238,15 +241,17 @@ export async function sendToAI(text) {
   _chat.showTyping();
 
   try {
-    const [weather, ragContext, skillContext] = await Promise.all([
+    const [weather, ragContext, skillContext, personaBlock] = await Promise.all([
       Weather.get(),
       RAG.search(text),
       getSkillContext(text),
+      getPersonaPromptBlock(window.location.origin),
     ]);
     const extractedMemory = getExtractedMemoryContext();
+    recordJoelMessage(window.location.origin, text); // fire-and-forget — feeds the style profile, never blocks
 
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext()) },
+      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext(), personaBlock) },
       ...Memory.forAPI(),
       { role: "user", content: text },
     ];
