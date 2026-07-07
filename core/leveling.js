@@ -137,8 +137,9 @@ function _awardXp(amount, reason) {
 
   if (leveledUp && _onLevelUp) {
     _onLevelUp(newLevel, reason);
-  } else if (_onXpChange) {
-    _onXpChange();
+  }
+  if (_onXpChange) {
+    _onXpChange(amount, reason, leveledUp); // fires on EVERY award, level-up or not, so the bar and a "+N XP" toast can update live regardless of which happened
   }
 }
 
