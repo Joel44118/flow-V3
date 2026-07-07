@@ -456,10 +456,35 @@ function _showLevelUpCard(newLevel) {
   setTimeout(() => card.classList.remove("show"), 3200);
 }
 
-initLeveling((newLevel) => {
-  _renderLevelBar();
-  _showLevelUpCard(newLevel);
-}).then(_renderLevelBar);
+// Small "+N XP" toast that floats up near the level bar on every award,
+// separate from the (rarer) full level-up card — this is what makes XP
+// gains visible in real time instead of only becoming visible after a
+// page reload, which was the actual gap: _renderLevelBar existed, but
+// nothing was calling it except on boot and on a full level-up.
+let _xpToastTimeout = null;
+function _showXpToast(amount, reason) {
+  let toast = document.getElementById("xp-toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "xp-toast";
+    document.body.appendChild(toast);
+  }
+  toast.textContent = `+${amount} XP`;
+  toast.title = reason || "";
+  toast.classList.remove("show"); // restart animation even if a toast is already mid-fade
+  void toast.offsetWidth; // force reflow so the removed class actually re-applies
+  toast.classList.add("show");
+  clearTimeout(_xpToastTimeout);
+  _xpToastTimeout = setTimeout(() => toast.classList.remove("show"), 1800);
+}
+
+initLeveling(
+  (newLevel, reason) => { _showLevelUpCard(newLevel); },     // fires only on an actual level-up
+  (amount, reason, leveledUp) => {                              // fires on EVERY award, level-up or not
+    _renderLevelBar();
+    if (amount) _showXpToast(amount, reason);
+  }
+).then(_renderLevelBar);
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 (async () => {
