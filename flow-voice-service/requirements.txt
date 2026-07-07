@@ -1,0 +1,4 @@
+openwakeword==0.4.0
+faster-whisper==1.2.1
+websockets==16.0
+numpy
