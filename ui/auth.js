@@ -617,7 +617,7 @@ function _buildPanel(mode, faceEnrolled) {
       <div id="flow-auth-input-row">
 ${!isSetup ? `
         <div id="flow-pin-boxes"></div>
-        <input id="flow-auth-input" type="password" style="position:absolute;opacity:0;pointer-events:none;width:1px;height:1px;" autocomplete="current-password" maxlength="32">
+        <input id="flow-auth-input" type="password" style="position:absolute;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;" autocomplete="current-password" maxlength="32">
       ` : `
         <input id="flow-auth-input"
           type="password"
@@ -729,6 +729,13 @@ ${!isSetup ? `
 
   setTimeout(() => input?.focus(), 100);
   [input, confirm].forEach(el => el?.addEventListener("keydown", e => { if (e.key === "Enter") btn.click(); }));
+  // Extra safety net: clicking ANYWHERE in the auth panel refocuses the
+  // real input, not just the box row — covers Electron's window/focus
+  // timing potentially differing from a browser tab's, which could have
+  // silently left the input unfocused with no visible way to tell.
+  document.getElementById("flow-auth-panel")?.addEventListener("click", (e) => {
+    if (e.target.tagName !== "BUTTON" && e.target.tagName !== "A") input?.focus();
+  });
 
   // ── Segmented digit-box display (unlock mode only) ──────────────────
   // The real, hidden <input> above still does all the actual work
@@ -752,6 +759,14 @@ ${!isSetup ? `
   if (boxesEl) {
     input.addEventListener("input", _renderPinBoxes);
     _renderPinBoxes();
+    // BUG FIX: the real <input> is positioned off-screen (so only the
+    // visible box row shows), which means clicking the box row itself
+    // did nothing — there was no way to (re)focus the real input if
+    // focus was ever lost after the initial auto-focus, which is exactly
+    // why typing appeared completely broken. Now clicking anywhere on
+    // the box row refocuses the real input immediately.
+    boxesEl.style.cursor = "text";
+    boxesEl.addEventListener("click", () => input.focus());
   }
 
   // Flashes every box red + shakes, then clears — called on a wrong PIN.
