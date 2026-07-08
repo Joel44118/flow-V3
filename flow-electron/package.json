@@ -47,6 +47,7 @@
   "dependencies": {
     "electron-updater": "^6.1.8",
     "@jitsi/robotjs": "^0.6.12",
+    "active-win": "^8.2.1",
     "active-win": "^9.0.0"
   }
 }
