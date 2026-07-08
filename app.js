@@ -11,7 +11,7 @@ import { Speech }        from "./core/speech.js";
 import { sendMessage, sendToAI, setUI } from "./core/ai.js";
 import { initSlash, getSlashState, clearSlash } from "./ui/slash.js";
 import { activateAgent, deactivateAgent, getActiveAgent, onAgentChange, AGENTS } from "./core/agent.js";
-import { startWakeListener, startCommandListen, init as initWake } from "./core/wakeword.js";
+import { startRecording, stopRecordingAndTranscribe, cancelRecording } from "./core/whisper.js";
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
 import {
@@ -414,10 +414,44 @@ inputEl.addEventListener("keydown", e => {
 });
 
 sendBtn.addEventListener("click", doSend);
-micBtn.addEventListener("click",  () => startCommandListen());
 
-// Pass flowSend to wakeword
-initWake(flowSend, (s) => Orb.setState(s));
+// ── Mic button: click-to-record, click again to stop + transcribe ──────
+// Replaces the old wake-word/Deepgram continuous-listening approach —
+// after extensive debugging (token freshness, TTL, scope, think-provider
+// config all checked and fixed, then a completely raw WebSocket test
+// OUTSIDE Flow's own code ALSO failed with zero diagnostic detail),
+// Deepgram's connection kept failing for reasons pointing at Joel's local
+// network/security-software environment, not a code bug. This uses
+// Hugging Face's hosted Whisper instead — same proven-working token
+// pattern already used by ui/imagine.js and ui/videogen.js — via simple
+// click-to-record rather than continuous wake-word streaming, which
+// needs a separate always-on backend service that isn't built/deployed.
+let _isRecording = false;
+micBtn.addEventListener("click", async () => {
+  if (!_isRecording) {
+    try {
+      await startRecording();
+      _isRecording = true;
+      micBtn.classList.add("recording");
+      Orb.setState("listening");
+    } catch (e) {
+      Chat.addError?.(`Couldn't access microphone: ${e.message}`);
+    }
+    return;
+  }
+
+  _isRecording = false;
+  micBtn.classList.remove("recording");
+  Orb.setState("thinking");
+  try {
+    const text = await stopRecordingAndTranscribe();
+    Orb.setState("idle");
+    if (text) flowSend(text);
+  } catch (e) {
+    Orb.setState("idle");
+    Chat.addError?.(`Voice transcription failed: ${e.message}`);
+  }
+});
 
 // ── Vision popup ──────────────────────────────────────────────────────────
 const visionToggle = document.getElementById("vision-toggle-btn");
@@ -591,7 +625,9 @@ initLeveling(
   Alarms.init((t) => Speech.speak(t));
   Weather.get();
   startAutoSync();
-  startWakeListener();
+  // startWakeListener() removed — replaced by click-to-record Whisper
+  // flow on the mic button (see micBtn handler above). No continuous
+  // background listener needed for this simpler, more reliable approach.
   startGoalDeadlineWatcher((msg) => Speech.speak(msg), (msg, who) => Chat.add(msg, who));
 
   // Greeting throttle — only greet if >5 hours since last greeting
