@@ -56,11 +56,11 @@ MAX_RECORDING_FRAMES = 375        # ~30 seconds hard cap per utterance, so a stu
 MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "base")  # "tiny"/"base"/"small" — base is a reasonable accuracy/speed/memory tradeoff for CPU-only free-tier hosting; bump to "small" only if Railway's plan has enough RAM headroom
 
 WAKE_MODEL_PATH = os.path.join(
-    os.path.dirname(__import__("openwakeword").__file__),
-    "resources", "models", "hey_jarvis_v0.1.onnx"
+    os.path.dirname(os.path.abspath(__file__)),
+    "models", "hey_flow.onnx"
 )
 
-print(f"[Voice Service] Loading openWakeWord (hey_jarvis)...")
+print(f"[Voice Service] Loading openWakeWord (hey_flow — Joel's real trained wake phrase, via outspoken.cloud, Prototype/Internal Evaluation license)...")
 wake_model = WakeModel(wakeword_model_paths=[WAKE_MODEL_PATH], vad_threshold=0.5)
 
 print(f"[Voice Service] Loading faster-whisper ({MODEL_SIZE})...")
@@ -93,7 +93,7 @@ async def handle_connection(websocket):
 
             if session.mode == "listening":
                 prediction = wake_model.predict(audio_chunk)
-                score = prediction.get("hey_jarvis_v0.1", 0.0)
+                score = prediction.get("hey_flow", 0.0)
 
                 if score >= WAKE_THRESHOLD:
                     print(f"[Voice Service] Wake word detected (score: {score:.2f}) — recording...")
