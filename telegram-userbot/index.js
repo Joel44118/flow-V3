@@ -15,14 +15,18 @@
 //   1b. On top of that, a KV-stored username blocklist for specific humans
 //      Joel doesn't want auto-replied to — just plain usernames, no ID
 //      lookups needed, editable without redeploying (see bottom of file).
-//   2. Presence-aware behavior — tracks Joel's own Telegram online/offline
-//      status via Telegram's real UpdateUserStatus events (no manual toggle,
-//      no polling Flow's own app):
-//        - Joel ONLINE: userbot stays silent. If 10+ min pass with the
-//          message still unread/unanswered by Joel, it sends ONE nudge
-//          asking the sender if they want to wait for Joel or have Flow
-//          continue helping — then goes quiet again either way.
-//        - Joel OFFLINE: full auto-reply, exactly as before.
+//   2. Per-chat activity awareness — replaces the earlier global
+//      online/offline approach, which had a real flaw: the userbot's own
+//      GramJS session shares Joel's account, so Telegram's account-wide
+//      presence status wasn't reliably distinguishable from the
+//      userbot's own connection activity. Now tracks, per conversation,
+//      whether JOEL HIMSELF sent a message in that specific chat within
+//      the last 5 minutes:
+//        - Joel active in THIS chat: userbot stays silent. If 10+ min
+//          pass with the message still unread/unanswered by Joel, it
+//          sends ONE nudge asking the sender if they want to wait for
+//          Joel or have Flow continue helping — then goes quiet again.
+//        - Joel not recently active in this chat: full auto-reply.
 //   3. Joel's own outgoing message to a chat is treated as "Joel handled
 //      this" — clears the pending-nudge state for that chat immediately.
 //
@@ -189,34 +193,33 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
   const myId = me.id.toString();
   console.log(`👤 Logged in as ${me.firstName || me.username} (id: ${myId})`);
 
-  // Joel's live online/offline status, updated in real time by Telegram itself.
-  // Starts assumed offline until the first status update arrives.
-  let joelOnline = false;
-
-  client.addEventHandler((update) => {
-    try {
-      if (update instanceof Api.UpdateUserStatus && update.userId?.toString() === myId) {
-        joelOnline = update.status instanceof Api.UserStatusOnline;
-        console.log(`[Presence] Joel is now ${joelOnline ? "ONLINE" : "OFFLINE"}`);
-      }
-    } catch (e) {
-      console.error("[Userbot] status update error:", e.message);
-    }
-  });
+  // ── Per-chat activity tracking, replacing global online/offline ────────
+  // PREVIOUS APPROACH (removed): watched Telegram's UpdateUserStatus for
+  // Joel's account-wide online/offline state. Real problem, confirmed:
+  // the userbot's OWN GramJS session is logged into the SAME account as
+  // Joel's phone/desktop app, and simply staying connected can itself
+  // affect what Telegram reports as that account's presence — there's no
+  // reliable way to distinguish "Joel is on his phone right now" from
+  // "the userbot's own session is alive" using account-wide status alone.
+  // That's almost certainly why Flow kept auto-replying even while Joel
+  // was visibly active in the real Telegram app — the global "online"
+  // signal wasn't a trustworthy proxy for what Joel was actually doing.
+  //
+  // NEW APPROACH: track, per chat, the timestamp of Joel's last OUTGOING
+  // message in THAT specific conversation. If Joel personally sent
+  // something in this exact chat within the last ACTIVE_WINDOW_MS, treat
+  // him as "actively handling this conversation right now" and hold
+  // auto-replies — regardless of what Telegram's global status says. This
+  // is deterministic (based on Joel's own real actions, not a fuzzy
+  // presence heartbeat) and per-conversation, which is also more correct
+  // behavior anyway — Joel might be actively texting one person while
+  // genuinely away from everyone else.
+  const ACTIVE_WINDOW_MS = 5 * 60 * 1000; // Joel's own last message in THIS chat within 5 min = treat him as actively on it right now
+  const lastJoelActivityByChat = new Map(); // senderId -> timestamp of Joel's last outgoing message in that chat (in-memory; fine to reset on restart, worst case one extra reply right after a redeploy)
 
   // Track recent senders to avoid double-replying to rapid multi-message bursts
   const recentReplies = new Map();
   const COOLDOWN_MS = 8000;
-
-  // Periodic sweep: check any chat that's been "waiting on Joel" past the
-  // nudge delay while Joel is still online and hasn't personally replied yet.
-  setInterval(async () => {
-    if (!joelOnline) return; // only relevant while Joel is online and silent
-    // Sweep is intentionally lightweight — real check happens per-chat
-    // inside the message handler below using each chat's own state key,
-    // so this interval just exists as a safety net comment for future
-    // extension (e.g. a scheduled digest). Left as a no-op for now.
-  }, 60 * 1000);
 
   client.addEventHandler(async (event) => {
     try {
@@ -226,9 +229,11 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
 
       const senderId = message.senderId?.toString() || "unknown";
 
-      // ── Joel's own outgoing message: treat as "Joel handled this chat" ──
+      // ── Joel's own outgoing message: record it as recent activity in
+      // THIS chat specifically, and clear any pending nudge state ──────
       if (message.out) {
-        await memSet(chatStateKey(senderId), null); // clear any pending nudge state
+        lastJoelActivityByChat.set(senderId, Date.now());
+        await memSet(chatStateKey(senderId), null);
         return;
       }
 
@@ -250,22 +255,25 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
       const text = message.message;
       console.log(`📨 ${senderName}: ${text.slice(0, 80)}`);
 
-      // ── Joel is ONLINE: stay quiet, but track how long it's been unread ──
-      if (joelOnline) {
+      // ── Joel is actively handling THIS specific chat right now ──────
+      const lastActivity = lastJoelActivityByChat.get(senderId) || 0;
+      const joelActiveHere = (now - lastActivity) < ACTIVE_WINDOW_MS;
+
+      if (joelActiveHere) {
         const key = chatStateKey(senderId);
         const state = await memGet(key);
 
         if (!state) {
-          // First unread message while Joel's online — start the clock, no reply yet.
+          // First unread message while Joel's actively on this chat — start the clock, no reply yet.
           await memSet(key, { firstUnreadTs: now, nudged: false });
-          await notifyFlow(senderName, text, "(Joel is online — held for now)");
+          await notifyFlow(senderName, text, "(Joel is active in this chat — held for now)");
           return;
         }
 
         const elapsed = now - state.firstUnreadTs;
         if (elapsed >= NUDGE_DELAY_MS && !state.nudged) {
-          // Been unanswered 10+ min while Joel's online — send ONE nudge, then go quiet.
-          const nudge = "Hey! Joel's online but hasn't gotten to this yet — want to wait a bit for him, or should I go ahead and help in the meantime?";
+          // Been unanswered 10+ min while Joel's still marked active here — send ONE nudge, then go quiet.
+          const nudge = "Hey! Joel's active on this chat but hasn't gotten to this yet — want to wait a bit for him, or should I go ahead and help in the meantime?";
           await client.sendMessage(message.peerId, { message: nudge });
           await memSet(key, { firstUnreadTs: state.firstUnreadTs, nudged: true });
           console.log(`💬 Sent wait-or-continue nudge to ${senderName}`);
@@ -274,7 +282,7 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
         return;
       }
 
-      // ── Joel is OFFLINE: full auto-reply, same as before ────────────────
+      // ── Joel hasn't been active in THIS chat recently — full auto-reply ──
       await client.invoke(
         new Api.messages.SetTyping({
           peer:   message.peerId,
