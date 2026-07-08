@@ -210,6 +210,31 @@ async function handleSlashCmd(cmd, prompt) {
       sendMessage(p);
       break;
     }
+    case "/gesture": {
+      // Detection needs a real <video> element for MediaPipe's Camera
+      // utility to attach to, but Joel never sees this one directly —
+      // the actual visible camera preview is the separate, always-on-top,
+      // click-through Electron overlay window (see main.js createOverlay,
+      // which already renders the feed pinned to the screen's top-left
+      // corner, independent of Flow's own window). This hidden element
+      // exists purely as MediaPipe's required attachment point.
+      if (/^stop\b/i.test(p || "")) {
+        Gesture.stop?.();
+        Chat.add("✋ Gesture control stopped.", "bot");
+        break;
+      }
+      let hiddenVideo = document.getElementById("gesture-hidden-video");
+      if (!hiddenVideo) {
+        hiddenVideo = document.createElement("video");
+        hiddenVideo.id = "gesture-hidden-video";
+        hiddenVideo.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;";
+        hiddenVideo.autoplay = true;
+        hiddenVideo.muted = true;
+        document.body.appendChild(hiddenVideo);
+      }
+      await Gesture.start(hiddenVideo);
+      break;
+    }
     default:         sendMessage(cmd + " " + p);
   }
 }
@@ -298,6 +323,19 @@ async function flowSend(text) {
     // Vision commands (camera, screen, yolo)
     const vis = await parseVisionCommand(text);
     if (vis !== false) { if (vis !== null) { Chat.add(vis,"bot"); Speech.speak(vis); } return; }
+
+    // Gesture control — explicit phrase check here rather than relying on
+    // whatever mechanism the other slash commands use for natural-language
+    // matching (not fully traced), since this needs to reliably work from
+    // both typed text and voice transcripts without guessing.
+    if (/\b(start|begin|activate)\b.*\bgesture\b|\bgesture\s*control\b/i.test(text) && !/\bstop\b/i.test(text)) {
+      await handleSlashCmd("/gesture", "");
+      return;
+    }
+    if (/\bstop\b.*\bgesture\b/i.test(text)) {
+      await handleSlashCmd("/gesture", "stop");
+      return;
+    }
 
     // Project workspace commands
     const projCmd = Projects.parse(text);
