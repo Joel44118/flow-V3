@@ -12,6 +12,26 @@ const KV_KEY    = process.env.KV_REST_API_TOKEN;
 const SITE      = 'https://flow-v3-mu.vercel.app';
 
 // ── Shared: per-chat conversation history in KV ───────────────────────────
+// ── Shared KV-result parser ──────────────────────────────────────────────
+// Fixes the SAME double-encoding bug found and fixed today in
+// api/memory.js and the pending-post draft logic below: Upstash's REST
+// /get/ endpoint can return a stored object/array back as a raw JSON-
+// shaped STRING rather than an already-parsed structure, depending on how
+// it was originally written. Every .result access in this file that
+// assumes an already-parsed array/object was a potential instance of this
+// exact bug. This one helper is now used everywhere in this file instead
+// of each call site re-implementing (or forgetting) the same parse check.
+function safeKvResult(raw) {
+  let result = raw ?? null;
+  if (typeof result === "string" && result.length >= 2) {
+    const first = result[0];
+    if (first === '"' || first === '{' || first === '[') {
+      try { result = JSON.parse(result); } catch (_) { /* leave as-is if not actually valid JSON */ }
+    }
+  }
+  return result;
+}
+
 // Root cause of "Flow always says Hi": askFlow used to send only the current
 // message with zero prior turns, so every reply looked like the start of a
 // brand-new conversation to the model. This stores the last 12 turns per
@@ -23,7 +43,8 @@ async function getHistory(histKey) {
       headers: { Authorization: `Bearer ${KV_KEY}` },
     });
     const d = r.ok ? await r.json() : null;
-    return Array.isArray(d?.result) ? d.result : [];
+    const result = safeKvResult(d?.result);
+    return Array.isArray(result) ? result : [];
   } catch (_) { return []; }
 }
 
@@ -168,7 +189,7 @@ async function pushNotif(source, text) {
   }
   try {
     const r   = await fetch(`${KV_URL}/get/flow_pending_notifs`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
-    const cur = r.ok ? ((await r.json()).result || []) : [];
+    const cur = r.ok ? safeKvResult((await r.json()).result) || [] : [];
     const arr = Array.isArray(cur) ? cur : [];
     arr.push({ source, text: text.slice(0, 200), ts: Date.now(), read: false });
     await fetch(`${KV_URL}/set/flow_pending_notifs`, {
@@ -328,7 +349,7 @@ async function handleGroupAdminCommand(tgFetch, tgFetchStrict, msg, chatId, text
     }
     if (/^warn\b/.test(cmd)) {
       const key = `flow_warns_${chatId}_${targetId}`;
-      const cur = await (async () => { try { const r = await fetch(`${KV_URL}/get/${key}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }); return r.ok ? ((await r.json()).result || 0) : 0; } catch(_) { return 0; } })();
+      const cur = await (async () => { try { const r = await fetch(`${KV_URL}/get/${key}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }); return r.ok ? (safeKvResult((await r.json()).result) || 0) : 0; } catch(_) { return 0; } })();
       const count = cur + 1;
       await fetch(`${KV_URL}/set/${key}`, { method: 'POST', headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify(count) });
       await tgFetch('sendMessage', { chat_id: chatId, text: `${targetName} has been warned (${count}/3). ${count >= 3 ? 'Auto-muting for 1 hour.' : ''}` });
@@ -884,7 +905,16 @@ async function handlePendingApprovalReply(tgFetch, tgFetchStrict, chatId, text) 
   try {
     const r = await fetch(`${KV_URL}/get/flow_pending_post`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
     const d = await r.json();
-    pending = d.result || null;
+    // BUG FIX: same double-encoding pattern found and fixed elsewhere
+    // this session (api/memory.js's kvGet had the identical issue).
+    // Upstash's REST /get/ returns the stored value as a raw STRING even
+    // when what was stored was an object — this was never JSON.parse'd
+    // back into a real object, so pending.caption was always undefined
+    // even when a real draft with real caption text was sitting in KV.
+    // That's why the "empty draft" guard kept firing and clearing
+    // perfectly good drafts — it wasn't actually empty, it just was
+    // never parsed back into a usable shape.
+    pending = safeKvResult(d.result);
   } catch (_) { return false; }
   if (!pending) return false;
 
