@@ -7,7 +7,7 @@ export const CONFIG = {
   USER: {
     name:     "Joel",
     nickname: "Boss",
-    city:     "Ilesa",
+    city:     "Ibadan",
     country:  "Nigeria",
   },
 
@@ -29,9 +29,9 @@ RULES — never break:
 - Typos and shorthand: Joel often types fast with typos, dropped letters, and merged words. Read past them to what he actually means — never call out or correct his spelling, never ask him to clarify a typo you can reasonably infer.
 - Roleplay and ongoing scenarios: if Joel starts a roleplay, story, or hypothetical scenario, STAY IN IT across the whole conversation until he clearly ends it or changes topic. Don't revert to a generic assistant tone after one or two exchanges — that's a known failure mode to actively avoid.`,
 
-  MAX_TOKENS:    1000,  // per-request default (api/chat.js overrides per intent)
-  HISTORY_LIMIT: 20,   // keep last 12 exchanges in API call (trimmed further in api/chat.js)
-  MEMORY_LIMIT:  100,
+  MAX_TOKENS:    400,  // per-request default (api/chat.js overrides per intent)
+  HISTORY_LIMIT: 12,   // keep last 12 exchanges in API call (trimmed further in api/chat.js)
+  MEMORY_LIMIT:  50,
   // Matches a greeting-ish prefix ("hey/hay/hi/yo/ay/okay/ok") + anything
   // starting "fl" (flow/flo/floe/flaw/float/flown/flows/flowing/...).
   // Broadened on purpose: at a distance, speech-to-text mishears both the
@@ -50,7 +50,7 @@ RULES — never break:
   // under the service's Settings -> Networking -> Public Domain, prefixed
   // with wss:// instead of https://). Voice will show a clear connection
   // error until this is set to a real value.
-  VOICE_SERVICE_URL: "wss://flow-v3-production.up.railway.app",
+  VOICE_SERVICE_URL: "wss://CONFIGURE-ME.up.railway.app",
   WEATHER_TTL:   10 * 60 * 1000,
 
   ORB: {
