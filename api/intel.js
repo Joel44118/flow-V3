@@ -58,8 +58,12 @@ async function fetchTargetedNews(query) {
           const pub   = block.match(/<pubDate>([^<]+)<\/pubDate>/)?.[1]?.trim();
           const src   = block.match(/<source[^>]*>([^<]+)<\/source>/)?.[1]?.trim() || "News";
           const link  = block.match(/<link>([^<]+)<\/link>/)?.[1]?.trim() || "";
+          const mediaThumb   = block.match(/<media:thumbnail[^>]*url=["']([^"']+)["']/)?.[1];
+          const enclosureImg = block.match(/<enclosure[^>]*url=["']([^"']+)["'][^>]*type=["']image[^"']*["']/)?.[1];
+          const descImgTag   = block.match(/<img[^>]*src=["']([^"']+)["']/)?.[1];
+          const image = mediaThumb || enclosureImg || descImgTag || null;
           if (title && title.length > 10) {
-            items.push({ title, pub: pub || "", source: src, url: link });
+            items.push({ title, pub: pub || "", source: src, url: link, image });
           }
         });
       } catch {}
@@ -107,12 +111,33 @@ async function fetchNews() {
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
       const text = await r.text();
-      // Simple XML title extraction - no parser needed
-      const titles = [...text.matchAll(/<title><!\[CDATA\[(.+?)\]\]><\/title>|<title>([^<]{10,})<\/title>/g)]
-        .slice(1, 6) // skip feed title, take next 5
-        .map(m => (m[1] || m[2]).trim())
-        .filter(t => t.length > 10);
-      titles.forEach(title => items.push({ source, title }));
+      // Parse full <item> blocks (not just titles) so real per-article
+      // images can be pulled from whichever tag the feed actually uses —
+      // different outlets use different conventions:
+      //   - BBC/Al Jazeera commonly use <media:thumbnail url="..."/>
+      //   - Many WordPress-based feeds (TechCabal) use <enclosure url="..." type="image/...">
+      //   - Some embed an <img> tag directly inside <description>'s CDATA
+      // Trying all three, in order, and taking whichever one actually
+      // matches — real images tied to the real article, not a generic
+      // web image search, so there's no ambiguity about what the image
+      // is actually depicting.
+      const itemBlocks = [...text.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, 6);
+      itemBlocks.forEach(m => {
+        const block = m[1];
+        const title = (block.match(/<title><!\[CDATA\[(.+?)\]\]><\/title>/) ||
+                       block.match(/<title>([^<]{10,})<\/title>/))?.[1]?.trim();
+        if (!title || title.length <= 10) return;
+
+        const link = block.match(/<link>([^<]+)<\/link>/)?.[1]?.trim() || "";
+
+        const mediaThumb   = block.match(/<media:thumbnail[^>]*url=["']([^"']+)["']/)?.[1];
+        const enclosureImg = block.match(/<enclosure[^>]*url=["']([^"']+)["'][^>]*type=["']image[^"']*["']/)?.[1];
+        const descImgTag   = block.match(/<img[^>]*src=["']([^"']+)["']/)?.[1]; // sometimes embedded inside <description> CDATA
+
+        const image = mediaThumb || enclosureImg || descImgTag || null;
+
+        items.push({ source, title, link, image });
+      });
     } catch {}
   }));
 
