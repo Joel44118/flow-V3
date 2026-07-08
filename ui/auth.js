@@ -485,9 +485,26 @@ function _buildFaceCapture(mode, onResult, onCancel) {
             radar.classList.remove("active");
             wave.classList.remove("active");
             status.textContent = "Scan complete";
-            const vector = await _captureFaceVector(video);
+            // SECURITY FIX: previously captured exactly ONE vector at the
+            // end of the good-frame window and compared it once — a
+            // single transient false-positive match (bad lighting moment,
+            // brief angle glitch) was enough to fully unlock. Given the
+            // documented ~64% real-world accuracy ceiling of this
+            // geometric-vector approach, that's a genuine gap, confirmed
+            // in practice when it accepted someone who wasn't Joel.
+            // Now captures 3 SEPARATE vectors across brief pauses within
+            // the already-held-still window (cheap — Joel is already
+            // holding still for the frame count anyway, adds negligible
+            // time) and requires the CALLER to check all 3 independently
+            // against the enrolled vector, rather than trusting one shot.
+            const vectors = [];
+            for (let i = 0; i < 3; i++) {
+              const v = await _captureFaceVector(video);
+              if (v) vectors.push(v);
+              if (i < 2) await new Promise(r => setTimeout(r, 150)); // brief gap between captures, still well within a natural "hold still" pause
+            }
             cleanup();
-            onResult(vector);
+            onResult(vectors); // now an array of up to 3 vectors, not a single one — callers must be updated to check all of them
             return;
           }
         }
@@ -521,10 +538,19 @@ function _buildFaceCapture(mode, onResult, onCancel) {
 }
 
 async function _enrollFaceInline(onDone) {
-  _buildFaceCapture("enroll", async (vector) => {
-    if (!vector) { onDone?.(false, "No face detected clearly enough."); return; }
-    localStorage.setItem(FACE_KEY, JSON.stringify(vector));
-    await _kvSave("flow_face_vector", vector);
+  _buildFaceCapture("enroll", async (vectors) => {
+    // onResult now delivers an array of up to 3 captures — average them
+    // into one enrolled reference vector, which is itself a small
+    // accuracy improvement over enrolling from a single frame (smooths
+    // out one-off measurement noise from a single capture).
+    const valid = (vectors || []).filter(Boolean);
+    if (!valid.length) { onDone?.(false, "No face detected clearly enough."); return; }
+    const dims = valid[0].length;
+    const avgVector = Array.from({ length: dims }, (_, i) =>
+      valid.reduce((sum, v) => sum + v[i], 0) / valid.length
+    );
+    localStorage.setItem(FACE_KEY, JSON.stringify(avgVector));
+    await _kvSave("flow_face_vector", avgVector);
     onDone?.(true, "Face Unlock set up.");
   }, () => { onDone?.(false, "Skipped."); });
 }
@@ -790,15 +816,28 @@ export async function initAuth() {
           if (!enrolledVector) return;
 
           document.getElementById("flow-auth-panel").style.display = "none";
-          _buildFaceCapture("verify", (capturedVector) => {
+          _buildFaceCapture("verify", (capturedVectors) => {
             document.getElementById("flow-auth-panel").style.display = "flex";
-            const similarity = _cosineSimilarity(enrolledVector, capturedVector);
-            if (capturedVector && similarity >= MATCH_THRESHOLD) {
+            // SECURITY FIX: previously compared ONE captured vector once —
+            // a single transient false-positive was enough to fully
+            // unlock, confirmed in practice when it accepted someone who
+            // wasn't Joel. Now requires ALL 3 independently-captured
+            // vectors to each individually clear MATCH_THRESHOLD against
+            // the enrolled vector. A genuine match (Joel's actual face)
+            // clears this consistently across all 3 captures a fraction
+            // of a second apart; a borderline false-positive from a
+            // different person is much less likely to clear the bar on
+            // EVERY one of 3 separate captures, since real geometric
+            // measurement noise varies slightly frame to frame.
+            const valid = (capturedVectors || []).filter(Boolean);
+            const allMatch = valid.length === 3 && valid.every(v => _cosineSimilarity(enrolledVector, v) >= MATCH_THRESHOLD);
+
+            if (allMatch) {
               _setUnlocked();
               document.getElementById("flow-auth-panel")?.remove();
               resolve();
             } else {
-              err.textContent = capturedVector
+              err.textContent = valid.length
                 ? "Face didn't match closely enough — try again, or use your PIN."
                 : "Couldn't get a clear face reading — try again, or use your PIN.";
             }
