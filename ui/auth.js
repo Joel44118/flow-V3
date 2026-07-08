@@ -615,11 +615,16 @@ function _buildPanel(mode, faceEnrolled) {
       <div id="flow-auth-sub">${isSetup ? "Create your access PIN" : "Enter your PIN to unlock"}</div>
 
       <div id="flow-auth-input-row">
+${!isSetup ? `
+        <div id="flow-pin-boxes"></div>
+        <input id="flow-auth-input" type="password" style="position:absolute;opacity:0;pointer-events:none;width:1px;height:1px;" autocomplete="current-password" maxlength="32">
+      ` : `
         <input id="flow-auth-input"
           type="password"
-          placeholder="${isSetup ? "Create PIN (4+ characters)" : "Enter PIN"}"
+          placeholder="Create PIN (4+ characters)"
           autocomplete="current-password"
           maxlength="32">
+      `}
         ${!isSetup ? `<button id="flow-face-eye-btn" title="Unlock with face">👁</button>` : ""}
       </div>
 
@@ -652,6 +657,41 @@ function _buildPanel(mode, faceEnrolled) {
       background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.18); color:#fff; font-size:18px;
       letter-spacing:.25em; text-align:center; outline:none; font-family:monospace; transition:border-color .2s; }
     #flow-auth-input:focus, #flow-auth-confirm:focus { border-color:rgba(56,189,248,0.55); }
+
+    /* ── Segmented PIN digit boxes — replaces the flat text input for
+       unlock mode. Each box glows green by default (matches Joel's
+       "green light" request), individually flashes red + the whole row
+       shakes on a wrong PIN, then clears for a fresh attempt. ────────── */
+    #flow-pin-boxes { display:flex; gap:10px; justify-content:center; }
+    .flow-pin-box {
+      width:46px; height:54px; border-radius:12px;
+      background:rgba(255,255,255,0.06);
+      border:1.5px solid rgba(74,222,128,0.4);
+      box-shadow:0 0 10px rgba(74,222,128,0.15) inset;
+      display:flex; align-items:center; justify-content:center;
+      font-size:22px; color:#fff; font-family:monospace;
+      transition:border-color .15s, box-shadow .15s, background .15s;
+    }
+    .flow-pin-box.filled {
+      border-color:rgba(74,222,128,0.75);
+      box-shadow:0 0 14px rgba(74,222,128,0.35) inset, 0 0 10px rgba(74,222,128,0.25);
+      background:rgba(74,222,128,0.08);
+    }
+    .flow-pin-box.error {
+      border-color:rgba(239,68,68,0.9) !important;
+      box-shadow:0 0 16px rgba(239,68,68,0.5) inset, 0 0 14px rgba(239,68,68,0.4) !important;
+      background:rgba(239,68,68,0.12) !important;
+    }
+    #flow-pin-boxes.shake { animation: flow-pin-shake .42s ease; }
+    @keyframes flow-pin-shake {
+      0%, 100% { transform:translateX(0); }
+      15%      { transform:translateX(-10px); }
+      30%      { transform:translateX(9px); }
+      45%      { transform:translateX(-7px); }
+      60%      { transform:translateX(6px); }
+      75%      { transform:translateX(-4px); }
+      90%      { transform:translateX(3px); }
+    }
     #flow-face-eye-btn { flex-shrink:0; width:48px; border-radius:14px; border:1px solid rgba(167,139,250,0.35);
       background:rgba(167,139,250,0.1); font-size:20px; cursor:pointer; transition:background .2s; }
     #flow-face-eye-btn:hover { background:rgba(167,139,250,0.22); }
@@ -690,7 +730,45 @@ function _buildPanel(mode, faceEnrolled) {
   setTimeout(() => input?.focus(), 100);
   [input, confirm].forEach(el => el?.addEventListener("keydown", e => { if (e.key === "Enter") btn.click(); }));
 
-  return { input, confirm, recoveryQ, recoveryA, btn, err, eyeBtn, forgot };
+  // ── Segmented digit-box display (unlock mode only) ──────────────────
+  // The real, hidden <input> above still does all the actual work
+  // (keystroke capture, paste support, mobile keyboard triggering) —
+  // this just renders a visual box per character, growing as Joel types,
+  // shrinking as he backspaces. Kept flexible-length (not a fixed 4-box
+  // grid) since PINs aren't restricted to exactly 4 characters.
+  const boxesEl = document.getElementById("flow-pin-boxes");
+  function _renderPinBoxes() {
+    if (!boxesEl || !input) return;
+    const val = input.value;
+    const len = Math.max(val.length, 4); // always show at least 4 boxes, even before typing starts
+    boxesEl.innerHTML = "";
+    for (let i = 0; i < len; i++) {
+      const box = document.createElement("div");
+      box.className = "flow-pin-box" + (i < val.length ? " filled" : "");
+      box.textContent = i < val.length ? "•" : "";
+      boxesEl.appendChild(box);
+    }
+  }
+  if (boxesEl) {
+    input.addEventListener("input", _renderPinBoxes);
+    _renderPinBoxes();
+  }
+
+  // Flashes every box red + shakes, then clears — called on a wrong PIN.
+  // Exposed on the returned object so the unlock click-handler (which
+  // knows about wrong-attempt state) can trigger it directly.
+  function _flashPinBoxesRed() {
+    if (!boxesEl) return;
+    const boxes = boxesEl.querySelectorAll(".flow-pin-box");
+    boxes.forEach(b => b.classList.add("error"));
+    boxesEl.classList.add("shake");
+    setTimeout(() => {
+      boxesEl.classList.remove("shake");
+      boxes.forEach(b => b.classList.remove("error"));
+    }, 420);
+  }
+
+  return { input, confirm, recoveryQ, recoveryA, btn, err, eyeBtn, forgot, flashPinBoxesRed: _flashPinBoxesRed };
 }
 
 // ── Main export ───────────────────────────────────────────────────────────
@@ -784,7 +862,7 @@ export async function initAuth() {
       let attempts = 0;
       const faceVectorRaw = localStorage.getItem(FACE_KEY);
       const faceEnrolled = !!faceVectorRaw;
-      const { input, btn, err, eyeBtn, forgot } = _buildPanel("unlock", faceEnrolled);
+      const { input, btn, err, eyeBtn, forgot, flashPinBoxesRed } = _buildPanel("unlock", faceEnrolled);
 
       btn.addEventListener("click", async () => {
         const val = input.value.trim();
@@ -796,15 +874,13 @@ export async function initAuth() {
           resolve();
         } else {
           attempts++;
-          input.value = "";
           err.textContent = attempts >= 3 ? `Wrong PIN (${attempts} attempts). Try again, or use "Forgot PIN?" below.` : "Wrong PIN.";
-          const inner = document.getElementById("flow-auth-inner");
-          if (inner) {
-            inner.style.transition = "transform .07s";
-            inner.style.transform = "translateX(-8px)";
-            setTimeout(() => { inner.style.transform = "translateX(8px)"; }, 70);
-            setTimeout(() => { inner.style.transform = "translateX(0)"; }, 140);
-          }
+          flashPinBoxesRed?.();
+          setTimeout(() => {
+            input.value = "";
+            input.dispatchEvent(new Event("input")); // re-renders the box row back to empty
+            input.focus();
+          }, 420); // matches the flash/shake duration, so boxes clear right as the red flash finishes
         }
       });
 
@@ -885,16 +961,47 @@ export async function enrollFace(onDone) {
 
 export function hasFaceEnrolled() { return !!localStorage.getItem(FACE_KEY); }
 
-export function resetFace() {
+// ── Shared recovery-question gate for in-app resets ─────────────────────
+// PREVIOUSLY: resetFace() and resetPin(), when triggered from the brain
+// menu while already unlocked, needed no secondary confirmation at all —
+// a real gap Joel correctly flagged, since anyone with momentary access
+// to an already-unlocked session could silently reset either credential.
+// Now both require correctly answering the same secret question used by
+// the lock-screen's "Forgot PIN?" flow, before proceeding at all.
+async function _confirmViaRecoveryQuestion(actionLabel) {
+  const question = await _kvLoad("flow_recovery_question", RECOVERY_Q_KEY);
+  const answerHash = await _kvLoad("flow_recovery_answer_hash", RECOVERY_A_KEY);
+  if (!question || !answerHash) {
+    // No recovery question was ever set up — can't gate on something
+    // that doesn't exist. Fall back to the browser confirm() rather than
+    // silently blocking Joel from ever resetting anything.
+    return confirm(`No secret question is set up, so this can't be double-checked. Proceed with ${actionLabel} anyway?`);
+  }
+
+  const answer = prompt(`To confirm ${actionLabel}, answer your secret question:\n\n${question}`);
+  if (answer == null) return false; // cancelled
+  const h = await _hash(answer.trim().toLowerCase());
+  if (h !== answerHash) {
+    alert("That answer doesn't match — reset cancelled.");
+    return false;
+  }
+  return true;
+}
+
+export async function resetFace() {
+  const ok = await _confirmViaRecoveryQuestion("resetting Face Unlock");
+  if (!ok) return;
   localStorage.removeItem(FACE_KEY);
   _kvSave("flow_face_vector", null);
 }
 
-// Reset PIN from the brain menu (already unlocked) — separate from the
-// lock-screen "Forgot PIN?" flow, no secret question needed here since
-// you're already inside the app.
-export function resetPin() {
-  if (!confirm("Reset your Flow PIN? You'll create a new one (and a new secret question) on next load.")) return;
+// Reset PIN from the brain menu (already unlocked) — now requires
+// answering the secret question first, same gate as resetFace() above,
+// instead of resetting on a bare confirm() with no real verification.
+export async function resetPin() {
+  const ok = await _confirmViaRecoveryQuestion("resetting your PIN");
+  if (!ok) return;
+  if (!confirm("This will require setting up a brand new PIN and secret question on next load. Continue?")) return;
   localStorage.removeItem(LOCK_KEY);
   localStorage.removeItem(UNLOCK_KEY);
   localStorage.removeItem(RECOVERY_Q_KEY);
