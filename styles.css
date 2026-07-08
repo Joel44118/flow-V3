@@ -684,6 +684,19 @@ body {
 .msg-play-btn[data-state="playing"] { background:rgba(255,255,255,0.14); border-color:rgba(255,255,255,0.3); color:#fff; }
 .msg-play-btn[data-state="paused"]  { background:rgba(251,191,36,0.1); border-color:rgba(251,191,36,0.3); color:#fbbf24; }
 
+/* ── Mic button recording state — pulses red while actively recording
+   via the new Whisper click-to-record flow, so it's visually obvious
+   Flow is listening right now. ──────────────────────────────────────── */
+#mic-btn.recording {
+  background: rgba(239,68,68,0.18) !important;
+  border-color: rgba(239,68,68,0.5) !important;
+  animation: mic-recording-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mic-recording-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(239,68,68,0.3); }
+  50%      { box-shadow: 0 0 18px rgba(239,68,68,0.6); }
+}
+
 /* ── Feedback thumbs — same visual language as the other round message
    controls, styled neutrally until clicked, then feedback.js sets the
    text/color/disabled state directly via JS on click. ────────────────── */
