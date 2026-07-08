@@ -782,6 +782,58 @@ async function handleAutoPost(req, res) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
 
+  // ── Railway trial deadline warning ─────────────────────────────────
+  // Piggybacks on this SAME daily cron invocation rather than adding a
+  // second cron entry — Vercel Hobby's cron limits make that the more
+  // fragile choice. Railway's free Trial is a hard 30-day cutoff
+  // regardless of remaining $5 credit balance (confirmed: real accounts
+  // have had deployments paused on day 30 with the full $5 still
+  // untouched) — so this warns Joel with real lead time to migrate or
+  // upgrade before Railway just stops the userbot/voice service outright.
+  //
+  // SETUP NEEDED ONCE: set RAILWAY_TRIAL_STARTED_AT in Vercel env vars to
+  // the exact date the Railway account was created, as an ISO string,
+  // e.g. "2026-07-06". Everything else here is automatic from that point.
+  try {
+    const trialStart = process.env.RAILWAY_TRIAL_STARTED_AT;
+    if (trialStart) {
+      const startMs = new Date(trialStart).getTime();
+      const daysElapsed = Math.floor((Date.now() - startMs) / (24 * 60 * 60 * 1000));
+      const daysLeft = 30 - daysElapsed;
+
+      // Warn at day 25 (5 days left), then every day after that once
+      // inside the final week — repetition is intentional here, since
+      // missing this deadline means services actually stop, unlike most
+      // of Flow's other notifications which are fine to see once.
+      if (daysLeft <= 5 && daysLeft >= 0) {
+        const warnKey = `flow_railway_warn_day_${daysLeft}`;
+        const alreadyWarned = await fetch(`${KV_URL}/get/${warnKey}`, {
+          headers: { Authorization: `Bearer ${KV_KEY}` },
+        }).then(r => r.json()).then(d => d.result).catch(() => null);
+
+        if (!alreadyWarned) {
+          const msg = daysLeft === 0
+            ? `🚨 Railway's 30-day trial ENDS TODAY. Your Telegram userbot and voice service will stop working the moment it expires, regardless of remaining $5 credit. Migrate or add a payment method now if you want them to keep running.`
+            : `⚠️ Railway's 30-day trial has ${daysLeft} day${daysLeft === 1 ? '' : 's'} left. After that, your Telegram userbot and voice service stop, even if you still have $5 credit left — it's a hard 30-day cutoff, confirmed by other users hitting this exact thing. Plan to migrate or upgrade before then.`;
+
+          await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: joelId, text: msg }),
+          });
+
+          await fetch(`${KV_URL}/set/${warnKey}`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+            body: 'true',
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[AutoPost] Railway deadline check failed silently:', e.message);
+  }
+
   const joelId = process.env.JOEL_TELEGRAM_CHAT_ID;
   if (!joelId) return res.status(200).json({ ok: false, error: 'JOEL_TELEGRAM_CHAT_ID not set — nowhere to send the draft for approval.' });
   if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
