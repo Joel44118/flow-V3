@@ -60,6 +60,7 @@ body {
   background:linear-gradient(180deg,rgba(6,10,26,0.92) 0%,transparent 100%);
   z-index:20;
   -webkit-app-region: drag; /* whole bar drags the window in Electron; no-op in browser */
+  user-select: none; -webkit-user-select: none; /* stops accidental text selection when dragging the window by the title bar (e.g. selecting "FLOW" or the build stamp mid-drag) */
 }
 
 /* ── Level bar (v2) — moved from a full-width top strip to a compact
