@@ -178,6 +178,23 @@ async function handleSlashCmd(cmd, prompt) {
       setGlobeBackground(true);   // transform background to world map
       try {
         const data   = await fetchIntel(focus);
+
+        // Real images, pulled directly from each story's own RSS feed
+        // entry (media:thumbnail/enclosure tags) — NOT a generic web
+        // image search, so every image shown is actually the real
+        // photo attached to that specific real news item, correctly
+        // attributed to its source, not a loosely-related stock photo.
+        const allItems = [
+          ...(data.news || []),
+          ...(data.conflicts || []),
+          ...(data.targeted || []),
+        ];
+        const withImages = allItems.filter(item => item.image).slice(0, 4);
+
+        if (withImages.length) {
+          _renderIntelGallery(withImages);
+        }
+
         const prompt = buildIntelPrompt(data, focus);
         await sendToAI(prompt);
       } catch(e) {
@@ -442,6 +459,46 @@ function _renderLevelBar() {
   if (numEl)  numEl.textContent = s.level;
   if (fillEl) fillEl.style.width = s.percent + "%";
   if (xpEl)   xpEl.textContent = `${s.xp}/${s.xpNeeded}`;
+}
+
+// Renders a small inline image gallery in chat for /intel results — real
+// images pulled directly from each story's own RSS entry (see
+// api/intel.js), each one clickable through to its actual source
+// article. Kept simple (a lightweight <div> grid, not a full Visualizer
+// widget) since this is chat-embedded content, not a standalone view.
+function _renderIntelGallery(items) {
+  const wrap = document.createElement("div");
+  wrap.className = "mwrap mleft";
+
+  const gallery = document.createElement("div");
+  gallery.className = "intel-gallery";
+
+  items.forEach(item => {
+    const card = document.createElement("a");
+    card.className = "intel-gallery-card";
+    card.href = item.link || item.url || "#";
+    card.target = "_blank";
+    card.rel = "noopener noreferrer";
+    card.title = item.title;
+
+    const img = document.createElement("img");
+    img.src = item.image;
+    img.alt = item.title;
+    img.loading = "lazy";
+    img.onerror = () => card.remove(); // if the image URL is dead/blocked, just drop that card rather than show a broken image icon
+
+    const caption = document.createElement("div");
+    caption.className = "intel-gallery-caption";
+    caption.textContent = `${item.source || ""} — ${item.title}`.slice(0, 90);
+
+    card.appendChild(img);
+    card.appendChild(caption);
+    gallery.appendChild(card);
+  });
+
+  wrap.appendChild(gallery);
+  document.getElementById("col-left")?.appendChild(wrap);
+  wrap.scrollIntoView({ behavior: "smooth", block: "end" });
 }
 
 function _showLevelUpCard(newLevel) {
