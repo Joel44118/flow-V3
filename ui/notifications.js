@@ -43,6 +43,7 @@ function _buildUI() {
     position:absolute;top:4px;right:4px;width:9px;height:9px;
     border-radius:50%;background:#ef4444;border:2px solid #060a1a;
     display:none;animation:pulseDot 2s infinite;
+    pointer-events:none;
   `;
 
   // Pulse animation
