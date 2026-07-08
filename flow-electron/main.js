@@ -2,7 +2,7 @@
 // Single instance + native title bar + overlay gesture window +
 // system tray + cache clear + auto-updater + FLOW SENTINEL
 
-const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCapturer, powerMonitor } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCapturer, powerMonitor, globalShortcut } = require('electron');
 const path = require('path');
 
 // ── Single instance — prevents double windows on double-click ─────────────
@@ -68,6 +68,15 @@ function createWindow() {
       preload:          path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration:  false,
+      // Without this, Chromium aggressively throttles/pauses
+      // requestAnimationFrame and timers the moment this window is
+      // minimized or hidden — which is exactly why gesture control (whose
+      // detection loop in ui/gesture.js runs on requestAnimationFrame)
+      // would stop working the instant Joel minimized Flow. This keeps
+      // the renderer running at full speed regardless of window
+      // visibility, which is required for gesture tracking to survive
+      // minimizing, per Joel's actual request.
+      backgroundThrottling: false,
     },
     icon: path.join(__dirname, 'icon.png'),
     show: false,
@@ -368,10 +377,21 @@ async function notifyJoelViaTelegram(text) {
 
 // Pushes to the same flow_pending_notifs key the bell UI polls — read then
 // write, matching the exact pattern api/social.js already uses for this key.
+// Also fires a REAL native OS notification (Windows toast) at the same
+// time, so important events surface even if Flow's window isn't focused
+// or is minimized — the in-app bell alone only helps if you're looking
+// at the window.
 async function pushBellNotification(text) {
   try {
     const r   = await fetch('https://flow-v3-mu.vercel.app/api/memory?key=flow_pending_notifs');
-    const cur = r.ok ? (await r.json()).value : null;
+    const d   = r.ok ? await r.json() : null;
+    let cur = d?.value ?? null;
+    // Same double-encoding bug pattern found and fixed elsewhere this
+    // session — Upstash's REST /get/ can return a stored array back as a
+    // raw JSON-shaped STRING rather than an already-parsed array.
+    if (typeof cur === "string" && cur.length >= 2 && (cur[0] === '[' || cur[0] === '{')) {
+      try { cur = JSON.parse(cur); } catch (_) { /* leave as-is if not actually valid JSON */ }
+    }
     const arr = Array.isArray(cur) ? cur : [];
     arr.push({ source: 'Sentinel', text: text.slice(0, 200), ts: Date.now(), read: false });
     await fetch('https://flow-v3-mu.vercel.app/api/memory', {
@@ -379,7 +399,36 @@ async function pushBellNotification(text) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: 'flow_pending_notifs', value: arr.slice(-30) }),
     });
+
+    showNativeNotification('Flow', text.slice(0, 200));
   } catch (e) { console.warn('[Sentinel] bell push failed:', e.message); }
+}
+
+// ── Native OS notifications ─────────────────────────────────────────────
+// Real Windows/macOS/Linux toast popups via Electron's built-in
+// Notification API — works even when Flow's window is minimized or not
+// focused, unlike the in-app bell which only helps if you're looking at
+// the window. Uses the OS's native notification center, so these also
+// respect the user's system-level notification settings (Do Not Disturb,
+// Focus Assist, etc.) automatically — no extra permission handling needed
+// on Flow's side.
+const { Notification } = require('electron');
+function showNativeNotification(title, body, onClick) {
+  try {
+    if (!Notification.isSupported()) {
+      console.warn('[Flow] Native notifications not supported on this system.');
+      return;
+    }
+    const notif = new Notification({
+      title,
+      body,
+      icon: path.join(__dirname, 'icon.png'), // matches the same icon path used by createWindow() and createTray() above
+    });
+    if (onClick) notif.on('click', onClick);
+    notif.show();
+  } catch (e) {
+    console.warn('[Flow] showNativeNotification failed:', e.message);
+  }
 }
 
 async function sentinelTick() {
@@ -603,7 +652,51 @@ ipcMain.handle('sentinel_replay_execute', (_e, { action, x, y, text, direction }
 });
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────
-app.whenReady().then(() => { createWindow(); createOverlay(); createTray(); });
+// ── Global keyboard shortcuts ─────────────────────────────────────────────
+// Works system-wide, not just when Flow's window is focused — e.g. Joel
+// can bring Flow to front from inside any other app with one keypress,
+// without alt-tabbing or clicking the tray icon first. Kept to one
+// genuinely useful default (show/focus Flow) rather than guessing at
+// several — easy to add more registerGlobalShortcut calls here later for
+// specific actions (e.g. toggle Sentinel, start voice) once Joel knows
+// which ones he'd actually reach for.
+function registerGlobalShortcuts() {
+  try {
+    const ok = globalShortcut.register('CommandOrControl+Shift+F', () => {
+      if (!mainWin) return;
+      if (mainWin.isMinimized()) mainWin.restore();
+      mainWin.show();
+      mainWin.focus();
+    });
+    if (!ok) console.warn('[Flow] Global shortcut Ctrl+Shift+F registration failed — may conflict with another app.');
+  } catch (e) {
+    console.warn('[Flow] registerGlobalShortcuts failed:', e.message);
+  }
+}
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll(); // required cleanup — an unregistered shortcut can silently keep working even after the app closes otherwise
+});
+// Uses Electron's built-in setLoginItemSettings — registers Flow with the
+// OS's own startup mechanism (Windows: Task Manager > Startup apps /
+// registry Run key; macOS: Login Items) so it launches automatically when
+// the computer starts, without Joel needing to open it manually. Set to
+// launch hidden/minimized to the tray rather than popping the full window
+// immediately on every boot — Flow's tray icon (already built via
+// createTray()) is there to bring it up on demand.
+function setupAutoStart() {
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: true,
+      openAsHidden: true, // starts minimized to tray, doesn't grab focus on every boot
+      path: app.getPath('exe'),
+    });
+  } catch (e) {
+    console.warn('[Flow] setupAutoStart failed:', e.message);
+  }
+}
+
+app.whenReady().then(() => { createWindow(); createOverlay(); createTray(); setupAutoStart(); registerGlobalShortcuts(); });
 app.on('activate',         () => { if (!mainWin) createWindow(); else mainWin.show(); });
 app.on('window-all-closed',() => { /* stay in tray */ });
 app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); });
