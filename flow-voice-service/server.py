@@ -57,10 +57,10 @@ MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "base")  # "tiny"/"base"/"smal
 
 WAKE_MODEL_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "models", "hey_flow.onnx"
+    "models", "Wake_up_Flow.onnx"  # Joel's actual filename from Outspoken, unchanged — kept as-is rather than renamed, to avoid the exact confusion that happened when it was silently renamed to hey_flow.onnx earlier
 )
 
-print(f"[Voice Service] Loading openWakeWord (hey_flow — Joel's real trained wake phrase, via outspoken.cloud, Prototype/Internal Evaluation license)...")
+print(f"[Voice Service] Loading openWakeWord (Wake_up_Flow — Joel's real trained wake phrase, via outspoken.cloud, Prototype/Internal Evaluation license)...")
 wake_model = WakeModel(wakeword_model_paths=[WAKE_MODEL_PATH], vad_threshold=0.5)
 
 print(f"[Voice Service] Loading faster-whisper ({MODEL_SIZE})...")
@@ -93,7 +93,7 @@ async def handle_connection(websocket):
 
             if session.mode == "listening":
                 prediction = wake_model.predict(audio_chunk)
-                score = prediction.get("hey_flow", 0.0)
+                score = prediction.get("Wake_up_Flow", 0.0)
 
                 if score >= WAKE_THRESHOLD:
                     print(f"[Voice Service] Wake word detected (score: {score:.2f}) — recording...")
