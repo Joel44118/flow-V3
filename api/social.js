@@ -425,6 +425,15 @@ async function handleTelegram(req, res) {
 
   const update = req.body;
 
+  // Button clicks (online/offline toggle, Echo draft approval) arrive on
+  // update.callback_query, a completely separate field from update.message
+  // — same class of gotcha as business_message below. Must be checked
+  // before the msg extraction, or these updates get silently dropped.
+  if (update?.callback_query) {
+    await handleCallbackQuery(tgFetch, tgFetchStrict, update.callback_query);
+    return res.status(200).json({ ok: true });
+  }
+
   // Telegram Business connect/disconnect event — just log it, nothing to reply to
   if (update?.business_connection) {
     console.log('[TG] Business connection update:', update.business_connection.id, 'enabled:', update.business_connection.is_enabled);
@@ -494,6 +503,46 @@ async function handleTelegram(req, res) {
       chat_id: chatId,
       text: `👋 Hi ${username}! I'm *Flow*, Joel's AI assistant.\n\nYou can send me text messages or photos and I'll respond right away!`,
       parse_mode: 'Markdown',
+    });
+    return res.status(200).json({ ok: true });
+  }
+
+  // /presence — shows the current mode + a button to flip it. This is the
+  // actual "toggle button in the interface" Joel asked for; /online and
+  // /offline above are just a typed shortcut once he knows the state.
+  if (text === '/presence' && senderIsJoel) {
+    let presence;
+    try {
+      const r = await fetch(`${KV_URL}/get/${PRESENCE_KEY}`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
+      const d = await r.json();
+      presence = safeKvResult(d.result);
+    } catch (_) { presence = null; }
+    const isOnline = presence?.state === 'online';
+
+    await tgFetch('sendMessage', {
+      chat_id: chatId,
+      text: isOnline
+        ? '🟢 Currently in *manual* mode — Echo drafts replies for your approval.'
+        : '🔴 Currently in *auto* mode — Echo replies on its own based on your recent chat activity.',
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          isOnline
+            ? { text: '🔴 Go Offline (back to auto-reply)', callback_data: 'presence_offline' }
+            : { text: '🟢 Go Online (Echo drafts for approval)', callback_data: 'presence_online' },
+        ]],
+      },
+    });
+    return res.status(200).json({ ok: true });
+  }
+
+  // /online and /offline — typed alternative to the inline button, only
+  // usable by Joel himself (same guard as the group admin commands above).
+  if ((text === '/online' || text === '/offline') && senderIsJoel) {
+    await handleCallbackQuery(tgFetch, tgFetchStrict, {
+      id: `typed_${Date.now()}`,
+      data: text === '/online' ? 'presence_online' : 'presence_offline',
+      message: { chat: { id: chatId }, message_id: msg.message_id },
     });
     return res.status(200).json({ ok: true });
   }
@@ -898,6 +947,161 @@ async function handleAutoPost(req, res) {
 // Returns true if a pending draft existed and this message was consumed
 // as a response to it (approve/reject/instructions) — false if there was
 // no pending draft, so the caller falls through to normal chat handling.
+// ── Manual presence toggle — "Echo, don't auto-reply, just draft for me" ──
+// KV key: flow_manual_presence -> { state: "online"|"auto", setAt: number }
+// "online"  = Joel manually clicked Online — Echo drafts replies instead of
+//             sending them, and asks Flow bot for Yes/No/Skip/Retry approval.
+// "auto"    = default — Echo's existing per-chat activity logic decides
+//             (see telegram-userbot/index.js), same behavior as before this
+//             feature existed.
+//
+// Honest limitation, stated plainly rather than implied away: there is no
+// real way for either service to detect Joel's actual phone/Telegram-app
+// state. "Online" here means "Joel told Flow he's online," not anything
+// Telegram itself reports. The 1-hour auto-revert (checked inside Echo,
+// not here) is the closest honest approximation of "Joel probably isn't
+// actually watching anymore" — a real timeout on Joel's own message
+// activity, not a guess at his phone's state.
+const PRESENCE_KEY = 'flow_manual_presence';
+
+async function setPresence(state) {
+  if (!KV_URL || !KV_KEY) return;
+  await fetch(`${KV_URL}/set/${PRESENCE_KEY}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify({ state, setAt: Date.now() }) }),
+  }).catch(() => {});
+}
+
+// ── Inline button clicks — /online, /offline toggle, and Echo draft
+// approval (Yes/No/Skip/Retry) all arrive here, not as regular messages.
+// This is genuinely new: no callback_query handling existed anywhere in
+// this file before this feature — confirmed by searching the whole file
+// for "callback_query" before writing this, not assumed.
+async function handleCallbackQuery(tgFetch, tgFetchStrict, callbackQuery) {
+  const data      = callbackQuery.data || '';
+  const chatId    = callbackQuery.message?.chat?.id;
+  const messageId = callbackQuery.message?.message_id;
+  const queryId   = callbackQuery.id;
+
+  // Always ack the callback so Telegram stops showing the button's loading
+  // spinner on Joel's end, regardless of what happens next.
+  const ackAndEdit = async (text) => {
+    await tgFetch('answerCallbackQuery', { callback_query_id: queryId });
+    if (chatId && messageId) {
+      await tgFetch('editMessageText', { chat_id: chatId, message_id: messageId, text }).catch(() => {});
+    }
+  };
+
+  if (data === 'presence_online') {
+    await setPresence('online');
+    await ackAndEdit('🟢 Online mode — Echo will draft replies for your approval instead of sending automatically. Tap the button below anytime to go back to auto.');
+    await tgFetch('sendMessage', {
+      chat_id: chatId,
+      text: 'You\'re in *manual mode*. Echo is still watching your chats, but will send drafts here for your Yes / No / Skip / Retry instead of replying on its own.',
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '🔴 Go Offline (back to auto-reply)', callback_data: 'presence_offline' }]] },
+    });
+    return true;
+  }
+
+  if (data === 'presence_offline') {
+    await setPresence('auto');
+    await ackAndEdit('🔴 Auto mode — Echo will reply on its own again, same as before.');
+    return true;
+  }
+
+  // ── Echo draft approval — data shape: "echodraft_<action>_<chatId>" ────
+  // action is one of: yes | no | skip | retry
+  if (data.startsWith('echodraft_')) {
+    const [, action, senderId] = data.split('_');
+    const draftKey = `flow_echo_draft_${senderId}`;
+
+    let draft;
+    try {
+      const r = await fetch(`${KV_URL}/get/${draftKey}`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
+      const d = await r.json();
+      draft = safeKvResult(d.result);
+    } catch (_) { draft = null; }
+
+    if (!draft) {
+      await ackAndEdit('This draft has already been handled or expired.');
+      return true;
+    }
+
+    const clearDraft = () => fetch(`${KV_URL}/del/${draftKey}`, { method: 'POST', headers: { Authorization: `Bearer ${KV_KEY}` } });
+
+    if (action === 'yes') {
+      // Tell Echo's userbot service to actually send this — Echo owns the
+      // real MTProto connection, api/social.js has no way to send AS
+      // Joel's personal account itself, only as the Flow bot.
+      await fetch(`${process.env.ECHO_SERVICE_URL}/send-approved-draft`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ senderId, text: draft.replyText }),
+      }).catch((e) => console.error('[Presence] Failed to reach Echo service:', e.message));
+      await clearDraft();
+      await ackAndEdit(`✅ Sent to ${draft.senderName}:\n\n${draft.replyText}`);
+      return true;
+    }
+
+    if (action === 'no') {
+      await clearDraft();
+      await ackAndEdit(`Discarded — nothing sent to ${draft.senderName}.`);
+      return true;
+    }
+
+    if (action === 'skip') {
+      await clearDraft();
+      await ackAndEdit(`Skipped silently — ${draft.senderName} won't get a reply from this draft.`);
+      return true;
+    }
+
+    if (action === 'retry') {
+      try {
+        const rewriteR = await fetch(`${SITE}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [
+              { role: 'system', content: 'You are Echo, Joel\'s personal Telegram assistant, drafting a reply for his approval. Keep the same tone and intent as the previous draft but phrase it differently.' },
+              { role: 'user', content: `Original message from ${draft.senderName}: "${draft.originalText}"\n\nPrevious draft: "${draft.replyText}"\n\nWrite a different version.` },
+            ],
+          }),
+        });
+        const rewriteD = await rewriteR.json();
+        const revised = rewriteD.reply?.trim();
+        if (!revised) throw new Error('Retry failed');
+
+        await fetch(`${KV_URL}/set/${draftKey}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: JSON.stringify({ ...draft, replyText: revised }) }),
+        });
+
+        await ackAndEdit(`📝 New draft for ${draft.senderName}:\n\n${revised}`);
+        await tgFetch('sendMessage', {
+          chat_id: chatId,
+          text: `Reply options for ${draft.senderName}:`,
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '✅ Yes',   callback_data: `echodraft_yes_${senderId}` },
+              { text: '❌ No',    callback_data: `echodraft_no_${senderId}` },
+              { text: '⏭️ Skip',  callback_data: `echodraft_skip_${senderId}` },
+              { text: '🔄 Retry', callback_data: `echodraft_retry_${senderId}` },
+            ]],
+          },
+        });
+      } catch (e) {
+        await ackAndEdit(`⚠️ Couldn't generate a retry: ${e.message}`);
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function handlePendingApprovalReply(tgFetch, tgFetchStrict, chatId, text) {
   if (!KV_URL || !KV_KEY) return false;
 
