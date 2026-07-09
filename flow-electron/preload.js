@@ -29,4 +29,13 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     replayPlan:    (instruction)               => ipcRenderer.invoke('sentinel_replay_plan', { instruction }),
     replayExecute: (action, x, y, text, direction) => ipcRenderer.invoke('sentinel_replay_execute', { action, x, y, text, direction }),
   },
+
+  // ── Wake word — "Wake up Flow" ──────────────────────────────────────
+  // Fully local detection (main process). Fires once per detected wake
+  // word; the renderer's listener should call the existing
+  // core/whisper.js startRecording()/stopRecordingAndTranscribe() flow —
+  // no new transcription logic needed here.
+  wakeword: {
+    onDetected: (cb) => ipcRenderer.on('wakeword-detected', () => cb()),
+  },
 });
