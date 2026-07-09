@@ -39,8 +39,22 @@ async function handleSpeak(req, res) {
     });
 
     if (!r.ok) {
-      const err = await r.text();
-      return res.status(r.status).json({ error: err });
+      const errText = await r.text();
+      // ElevenLabs returns 401 for TWO different causes that look identical
+      // at the status-code level: an invalid/rotated API key, or a valid key
+      // that's simply out of free-tier quota (10,000 chars/month). Parse the
+      // real "status" field out of their JSON body so the caller (and Joel,
+      // reading the console) can tell which one it actually is instead of
+      // guessing — this was previously being swallowed as an opaque string.
+      let reason = "unknown";
+      try {
+        const parsed = JSON.parse(errText);
+        reason = parsed?.detail?.status || "unknown";
+      } catch {
+        // response wasn't JSON — leave reason as "unknown"
+      }
+      console.error(`[Flow TTS] ElevenLabs ${r.status} — reason: ${reason}`);
+      return res.status(r.status).json({ error: errText, reason });
     }
 
     const buf = await r.arrayBuffer();
