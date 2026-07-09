@@ -32,24 +32,27 @@ RULES — never break:
   MAX_TOKENS:    400,  // per-request default (api/chat.js overrides per intent)
   HISTORY_LIMIT: 12,   // keep last 12 exchanges in API call (trimmed further in api/chat.js)
   MEMORY_LIMIT:  50,
-  // Matches a greeting-ish prefix ("hey/hay/hi/yo/ay/okay/ok") + anything
-  // starting "fl" (flow/flo/floe/flaw/float/flown/flows/flowing/...).
-  // Broadened on purpose: at a distance, speech-to-text mishears both the
-  // greeting AND "flow" itself, so this trades a little false-positive risk
-  // (harmless — it just opens the mic and times out after 3s) for much
-  // better recall on quiet/far-away audio.
-  // Wake pattern — wider net for how Web Speech API actually mishears
-  // "Hey Flow" in practice: "a/hay/hey/ay/yo/okay" + up to 2 filler words/punctuation + "flo*"
-  // "flo*" alone (without a trigger word) is no longer required to also match "they/say/play" etc,
-  // because those gave false POSITIVES before. This version trades a few more false negatives
-  // for far fewer accidental triggers, and widens the "flow" misheard-spelling set.
-  WAKE_REGEX: /\b(?:hey|hay|hi+|yo|ay|okay|ok|k|hyy|ei|eh)\b[\s,.!]{0,4}\b(?:flow|flo|floe|floh|floor|flue|flew|flu|flau)\w{0,3}\b/i,
+  // Wake pattern — updated to match Joel's REAL trained wake phrase,
+  // "Wake up Flow" (trained via outspoken.cloud, verified working — see
+  // flow-voice-service/models/Wake_up_Flow.onnx), replacing the old "Hey
+  // Flow" pattern this regex was originally built for. Kept as a regex
+  // (not just a literal string match) for the same reason as before —
+  // wider net for how speech-to-text may mishear the phrase: "wake/wek/
+  // wayk" + "up/ap" + "flow/flo/floe" variants, tolerating filler
+  // words/punctuation between each part.
+  //
+  // NOTE: this regex is only actually used by the OLD browser-
+  // SpeechRecognition-based wake detection in core/wakeword.js, which
+  // app.js no longer imports as of the switch to Hugging Face Whisper +
+  // the self-hosted openWakeWord service (core/wakeconnect.js). Kept
+  // correct here anyway rather than left stale, in case that file is
+  // ever reused or referenced again.
+  WAKE_REGEX: /\b(?:wake|woke|wek|wayk|weyk)\b[\s,.!]{0,3}\b(?:up|ap)\b[\s,.!]{0,3}\b(?:flow|flo|floe|floh|floor|flue|flew|flu|flau)\w{0,3}\b/i,
   // Self-hosted voice service (openWakeWord + faster-whisper), replacing
-  // Deepgram's Voice Agent — set this to your Railway deployment's real
-  // WebSocket URL once flow-voice-service is deployed (Railway shows this
-  // under the service's Settings -> Networking -> Public Domain, prefixed
-  // with wss:// instead of https://). Voice will show a clear connection
-  // error until this is set to a real value.
+  // Deepgram's Voice Agent. Points at Joel's real Railway deployment
+  // (flow-voice-service) — update this if the Railway domain ever
+  // changes (Settings -> Networking -> Public Domain, prefixed with
+  // wss:// instead of https://).
   VOICE_SERVICE_URL: "wss://flow-v3-production.up.railway.app",
   WEATHER_TTL:   10 * 60 * 1000,
 
