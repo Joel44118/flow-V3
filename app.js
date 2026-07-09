@@ -521,9 +521,6 @@ if (window.__flowElectron?.wakeword) {
     }, 4000); // 4s recording window after wake word — tune based on real testing
   });
 }
-    Chat.addError?.(`Voice transcription failed: ${e.message}`);
-}
-});
 
 // ── Vision popup ──────────────────────────────────────────────────────────
 const visionToggle = document.getElementById("vision-toggle-btn");
@@ -697,9 +694,13 @@ initLeveling(
   Alarms.init((t) => Speech.speak(t));
   Weather.get();
   startAutoSync();
-  // startWakeListener() removed — replaced by click-to-record Whisper
-  // flow on the mic button (see micBtn handler above). No continuous
-  // background listener needed for this simpler, more reliable approach.
+  // Continuous background wake-word listening ("Wake up Flow") now exists
+  // again, but runs entirely in the Electron main process
+  // (flow-electron/wakeword-engine.js) rather than here in the browser —
+  // see the window.__flowElectron.wakeword.onDetected() listener near the
+  // mic button above. The web/browser build still has no background
+  // listener (a browser tab can't keep a mic hot when not focused), so it
+  // stays click-to-record only, same as before.
   startGoalDeadlineWatcher((msg) => Speech.speak(msg), (msg, who) => Chat.add(msg, who));
 
   // Greeting throttle — only greet if >5 hours since last greeting
