@@ -13,8 +13,13 @@
     "files": [
       "main.js",
       "preload.js",
+      "wakeword-engine.js",
       "icon.png",
       "build-info.json"
+    ],
+    "extraResources": [
+      { "from": "resources/wakeword", "to": "wakeword" },
+      { "from": "resources/sox",      "to": "sox" }
     ],
     "publish": {
       "provider": "github",
@@ -47,7 +52,7 @@
   "dependencies": {
     "electron-updater": "^6.1.8",
     "@jitsi/robotjs": "^0.6.12",
-    "active-win": "^8.2.1",
-    "active-win": "^9.0.0"
+    "active-win": "^9.0.0",
+    "onnxruntime-node": "^1.19.0"
   }
 }
