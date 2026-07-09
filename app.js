@@ -27,7 +27,7 @@ import { Notepad }     from "./ui/notepad.js";
 import { handleFiles, initFileUpload } from "./ui/fileupload.js";
 import { initStagedFiles, stageFiles, clearStaged, getStagedFiles, hasStagedFiles } from "./ui/stagedfiles.js";
 import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
-import { initVideoGen, generateVideo } from "./ui/videogen.js";
+import { initVideoGen, generateVideo, generateVideoFromImage } from "./ui/videogen.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -55,10 +55,24 @@ async function handleSlashCmd(cmd, prompt) {
       if (!p) { Chat.add("What should I generate? e.g. a sunset over Lagos", "bot"); return; }
       await generateImage(p, p);
       break;
-    case "/video":
-      if (!p) { Chat.add("What should the video show? e.g. waves crashing on a beach at sunset", "bot"); return; }
+    case "/video": {
+      // If Joel attached an image (via the existing staged-files upload
+      // UI) before running this command, animate that image instead of
+      // generating from text alone — this is the image-to-video path,
+      // using Stable Video Diffusion (see ui/videogen.js for why that
+      // model specifically, and its real limitation: it animates the
+      // image only, it does not also follow a text prompt).
+      const staged = getStagedFiles?.() || [];
+      const imageFile = staged.find(f => f.type?.startsWith("image/"));
+      if (imageFile) {
+        await generateVideoFromImage(imageFile);
+        clearStaged?.();
+        return;
+      }
+      if (!p) { Chat.add("What should the video show? e.g. waves crashing on a beach at sunset — or attach an image first to animate it instead.", "bot"); return; }
       await generateVideo(p);
       break;
+    }
     case "/scrape":
       if (!p) { Chat.add("What URL should I scrape? e.g. https://client-website.com", "bot"); return; }
       Chat.add(`🕸️ Scraping ${p}...`, "bot");
