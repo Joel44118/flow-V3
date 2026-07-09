@@ -51,6 +51,8 @@ const SITE_URL = process.env.FLOW_SITE_URL || "https://flow-v3-mu.vercel.app";
 const ECHO_NAME = "Echo";
 
 const NUDGE_DELAY_MS = 10 * 60 * 1000; // 10 minutes
+const PRESENCE_KEY = "flow_manual_presence"; // shared KV key, also read/written by api/social.js
+const PRESENCE_AUTOREVERT_MS = 60 * 60 * 1000; // 1 hour — matches Joel's chosen timeout
 
 if (!apiId || !apiHash || !sessStr) {
   console.error("❌ Missing TELEGRAM_API_ID, TELEGRAM_API_HASH, or TELEGRAM_SESSION.");
@@ -130,7 +132,42 @@ async function notifyFlow(senderName, text, reply) {
   }
 }
 
-// ── KV helpers — reuses api/memory.js's generic key/value store ───────────
+// ── Manual-mode draft notification — sends the drafted reply to Joel via
+// the FLOW BOT (not Echo's own account) with Yes/No/Skip/Retry buttons.
+// Uses TELEGRAM_BOT_TOKEN + JOEL_TELEGRAM_CHAT_ID directly here rather than
+// routing through /api/memory, since this needs Telegram's real
+// sendMessage + reply_markup, which the generic KV bridge doesn't expose.
+async function notifyFlowDraft(senderName, originalText, draftText, senderId) {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const joelChatId = process.env.JOEL_TELEGRAM_CHAT_ID;
+  if (!botToken || !joelChatId) {
+    console.error("[Presence] Can't send draft for approval — TELEGRAM_BOT_TOKEN or JOEL_TELEGRAM_CHAT_ID not set on Echo's Railway env.");
+    return;
+  }
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: joelChatId,
+        text: `📨 *${senderName}:* ${originalText.slice(0, 200)}\n\n📝 *Echo's draft:*\n${draftText}`,
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "✅ Yes",   callback_data: `echodraft_yes_${senderId}` },
+            { text: "❌ No",    callback_data: `echodraft_no_${senderId}` },
+            { text: "⏭️ Skip",  callback_data: `echodraft_skip_${senderId}` },
+            { text: "🔄 Retry", callback_data: `echodraft_retry_${senderId}` },
+          ]],
+        },
+      }),
+    });
+  } catch (e) {
+    console.error("[Presence] Failed to send draft notification:", e.message);
+  }
+}
+
+
 // NOTE: api/memory.js already fixed the double-encoding bug (only
 // JSON.stringify non-string values on the way in). We rely on that here:
 // we always send/receive plain JS values through the existing /api/memory
@@ -259,6 +296,58 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
       const lastActivity = lastJoelActivityByChat.get(senderId) || 0;
       const joelActiveHere = (now - lastActivity) < ACTIVE_WINDOW_MS;
 
+      // ── Joel hasn't been active in THIS chat recently ──────────────────
+      // Before falling through to full auto-reply, check Joel's MANUAL
+      // presence toggle (set via the Flow bot's /presence button — see
+      // api/social.js). This is a real, separate switch from the per-chat
+      // activity tracking above: activity tracking is automatic and
+      // per-conversation; manual presence is Joel explicitly saying
+      // "I'm around right now, draft things for me instead of sending."
+      const manualPresence = await memGet(PRESENCE_KEY);
+      const isManualOnline = manualPresence?.state === "online";
+
+      // Auto-revert after 1 hour of no activity from Joel in ANY chat —
+      // the closest honest approximation available of "he's probably not
+      // actually watching anymore," since neither service can see Joel's
+      // real phone/Telegram-app state. Uses the same lastJoelActivityByChat
+      // map already being maintained, just checked globally instead of
+      // per-chat.
+      if (isManualOnline) {
+        const anyRecentActivity = [...lastJoelActivityByChat.values()].some(
+          (ts) => (now - ts) < PRESENCE_AUTOREVERT_MS
+        );
+        if (!anyRecentActivity && manualPresence.setAt && (now - manualPresence.setAt) > PRESENCE_AUTOREVERT_MS) {
+          await memSet(PRESENCE_KEY, { state: "auto", setAt: now });
+          await notifyFlow(
+            "System",
+            "",
+            "🔴 Auto-reverted to auto-reply mode after 1hr of no activity from you anywhere. If you were actually online and just quiet, tap /presence to go back to manual."
+          );
+          console.log("[Presence] Auto-reverted to 'auto' after 1hr of inactivity.");
+          // fall through to normal auto-reply below, since we just reverted
+        } else {
+          // Genuinely in manual mode right now — draft instead of send.
+          await client.invoke(
+            new Api.messages.SetTyping({
+              peer:   message.peerId,
+              action: new Api.SendMessageTypingAction(),
+            })
+          ).catch(() => {});
+
+          const draftText = await askFlow(text, senderName);
+          await memSet(`flow_echo_draft_${senderId}`, {
+            senderId, senderName,
+            originalText: text,
+            replyText: draftText,
+            createdAt: now,
+          });
+
+          await notifyFlowDraft(senderName, text, draftText, senderId);
+          console.log(`📝 Drafted (not sent) for ${senderName} — awaiting Joel's approval via Flow bot.`);
+          return;
+        }
+      }
+
       if (joelActiveHere) {
         const key = chatStateKey(senderId);
         const state = await memGet(key);
@@ -307,6 +396,57 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
     console.log("Shutting down gracefully...");
     await client.disconnect();
     process.exit(0);
+  });
+
+  // ── Minimal HTTP endpoint — lets api/social.js's "Yes" button tell Echo
+  // to actually send an approved draft. Uses Node's built-in http module,
+  // not express — this is the ONLY inbound endpoint this service needs,
+  // and adding a whole framework dependency for one route isn't worth the
+  // extra weight on a free-tier Railway service. Railway auto-detects the
+  // PORT env var and routes to it; no railway.json change needed since
+  // this doesn't change the start command, just adds a listener alongside
+  // the existing Telegram client connection.
+  const http = require("http");
+  const PORT = process.env.PORT || 3000;
+
+  http.createServer(async (req, res) => {
+    if (req.method !== "POST" || req.url !== "/send-approved-draft") {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", async () => {
+      try {
+        const { senderId, text } = JSON.parse(body);
+        if (!senderId || !text) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "senderId and text required" }));
+          return;
+        }
+        // senderId is a plain numeric Telegram user ID (string), which
+        // GramJS's sendMessage accepts directly as a peer.
+        // NOTE: GramJS needs to have this user's "entity" cached to resolve
+        // a bare numeric ID — normally true here since senderId came from
+        // a real recent incoming message, but if Echo's Railway service
+        // restarted between the draft being created and Joel clicking Yes,
+        // this can fail with "Could not find the input entity". If that
+        // happens, the fix is having Joel send that contact ANY message
+        // first (even just opening the chat) to re-cache it, then retry.
+        await client.sendMessage(senderId, { message: text });
+        console.log(`✅ Sent approved draft to ${senderId} via Joel's approval.`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        console.error("[Presence] Failed to send approved draft:", e.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+  }).listen(PORT, () => {
+    console.log(`🌐 Echo's approval endpoint listening on port ${PORT}`);
   });
 })();
 
