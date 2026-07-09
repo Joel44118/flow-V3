@@ -43,6 +43,85 @@ const VIDEO_MODELS = [
   { id: "Lightricks/LTX-Video",   label: "LTX-Video" },
 ];
 
+// ── Image-to-video model ────────────────────────────────────────────────
+// Stable Video Diffusion — a real, HF-hosted, genuinely servable
+// image-to-video model, unlike Wan2.2-I2V-A14B (checked directly:
+// documented as needing 80GB VRAM minimum, not realistically free-tier
+// servable). SVD is IMAGE-ONLY — per Stability's own model card, "the
+// model cannot be controlled through text" — so this animates the given
+// image with implicit motion, it does not follow a text prompt. That's a
+// real, honest limitation, not a bug: true image+text-to-video isn't
+// confirmed available on any free tier as of this integration.
+const IMG2VIDEO_MODEL = "stabilityai/stable-video-diffusion-img2vid-xt";
+
+async function callImageToVideoModel(imageBlob, token) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 180000);
+
+  try {
+    const r = await fetch(`https://router.huggingface.co/hf-inference/models/${IMG2VIDEO_MODEL}`, {
+      method:  "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type":  imageBlob.type || "image/png",
+        "x-use-cache":   "false",
+      },
+      body: imageBlob, // raw image bytes, same pattern as Whisper's audio upload — this endpoint takes the image directly, not wrapped in JSON
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    const ct = r.headers.get("content-type") || "";
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      if (r.status === 503 && err.estimated_time) {
+        throw new Error(`Model is loading (cold start) — try again in about ${Math.ceil(err.estimated_time)}s`);
+      }
+      throw new Error(err.error || `HTTP ${r.status}`);
+    }
+    if (!ct.startsWith("video/") && !ct.includes("octet-stream")) {
+      const txt = await r.text();
+      throw new Error(`Unexpected response: ${txt.slice(0, 100)}`);
+    }
+    return { blob: await r.blob(), contentType: ct };
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e.name === "AbortError") throw new Error("Timed out after 3 minutes — the model may be under heavy load right now.");
+    throw e;
+  }
+}
+
+// Public entry point for image-to-video — takes a File/Blob the user
+// attached (e.g. via the existing file-upload UI), animates it.
+export async function generateVideoFromImage(imageFile) {
+  _chat?.add(
+    `Animating your image into a short video clip...\n\nThis runs on free shared GPU capacity, so it can take anywhere from 30 seconds to a few minutes.`,
+    "bot"
+  );
+  _orb?.setState("thinking");
+
+  let token;
+  try {
+    token = await getToken();
+  } catch (e) {
+    _chat?.addError(e.message);
+    _orb?.setState("idle");
+    return;
+  }
+
+  try {
+    const result = await callImageToVideoModel(imageFile, token);
+    console.log(`[VideoGen] ✓ image-to-video — ${result.blob.size} bytes`);
+    if (result.blob.size < 2000) throw new Error("Response too small — likely not a real video");
+    _renderCard(URL.createObjectURL(result.blob), imageFile.name || "your image", "Stable Video Diffusion");
+    Speech.speak("Your video's ready, Boss.");
+    _orb?.setState("idle");
+  } catch (e) {
+    _chat?.addError(`Image-to-video failed: ${e.message} — free-tier video GPUs can be busy or cold, worth trying again in a minute.`);
+    _orb?.setState("idle");
+  }
+}
+
 async function callVideoModel(modelId, prompt, token) {
   // Video generation is slow — give it real room (3 minutes) rather than
   // hitting a default fetch timeout and reporting a false failure.
