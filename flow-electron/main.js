@@ -4,6 +4,7 @@
 
 const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCapturer, powerMonitor, globalShortcut } = require('electron');
 const path = require('path');
+const { startWakeWordEngine, stopWakeWordEngine } = require('./wakeword-engine');
 
 // ── Single instance — prevents double windows on double-click ─────────────
 const gotLock = app.requestSingleInstanceLock();
@@ -696,7 +697,43 @@ function setupAutoStart() {
   }
 }
 
-app.whenReady().then(() => { createWindow(); createOverlay(); createTray(); setupAutoStart(); registerGlobalShortcuts(); });
+// ── Wake word — "Wake up Flow" ───────────────────────────────────────────
+// Fully local: no Railway, no fallback service. Runs the real 3-stage
+// openWakeWord pipeline (melspectrogram → embedding → Wake_up_Flow
+// classifier) fed by a bundled SoX child process capturing the mic
+// continuously. On detection, tells the renderer to start the existing
+// Whisper recording flow (core/whisper.js) — same transcription path
+// Joel already has working, just triggered locally instead of by clicking
+// the mic button.
+//
+// SOX_BINARY_PATH assumes sox.exe is bundled at
+// flow-electron/resources/sox/sox.exe and declared in package.json's
+// "build.files"/"extraResources" so electron-builder actually ships it in
+// the packaged app — this must be added there or the packaged .exe won't
+// find it (works from source during `npm start` via the raw path below,
+// but won't survive packaging without that config change).
+function startWakeWord() {
+  const resourcesPath  = path.join(__dirname, 'resources');
+  const soxBinaryPath  = path.join(resourcesPath, 'sox', 'sox.exe');
+
+  startWakeWordEngine({
+    resourcesPath,
+    soxBinaryPath,
+    onWakeDetected: () => {
+      if (!mainWin) return;
+      // Bring Flow to front so Joel can see it's listening, same as the
+      // existing global-shortcut behavior — then tell the renderer to
+      // start recording via the same IPC push pattern already used for
+      // sentinel-observation/sentinel-toggled.
+      if (mainWin.isMinimized()) mainWin.restore();
+      mainWin.show();
+      mainWin.focus();
+      mainWin.webContents.send('wakeword-detected');
+    },
+  });
+}
+
+app.whenReady().then(() => { createWindow(); createOverlay(); createTray(); setupAutoStart(); registerGlobalShortcuts(); startWakeWord(); });
 app.on('activate',         () => { if (!mainWin) createWindow(); else mainWin.show(); });
 app.on('window-all-closed',() => { /* stay in tray */ });
-app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); });
+app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); stopWakeWordEngine(); });
