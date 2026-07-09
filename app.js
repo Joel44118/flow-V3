@@ -437,9 +437,13 @@ sendBtn.addEventListener("click", doSend);
 // Deepgram's connection kept failing for reasons pointing at Joel's local
 // network/security-software environment, not a code bug. This uses
 // Hugging Face's hosted Whisper instead — same proven-working token
-// pattern already used by ui/imagine.js and ui/videogen.js — via simple
-// click-to-record rather than continuous wake-word streaming, which
-// needs a separate always-on backend service that isn't built/deployed.
+// pattern already used by ui/imagine.js and ui/videogen.js — via
+// click-to-record, PLUS local wake-word ("Wake up Flow") in the Electron
+// build specifically. The Electron main process runs its own always-on
+// detection pipeline (flow-electron/wakeword-engine.js) and pushes a
+// 'wakeword-detected' IPC event here when it hears the phrase — see the
+// listener below. Web/browser builds still rely on click-to-record only,
+// since a browser tab can't keep a mic hot in the background.
 let _isRecording = false;
 micBtn.addEventListener("click", async () => {
   if (!_isRecording) {
@@ -463,6 +467,60 @@ micBtn.addEventListener("click", async () => {
     if (text) flowSend(text);
   } catch (e) {
     Orb.setState("idle");
+    Chat.addError?.(`Transcription failed: ${e.message}`);
+  } finally {
+    cancelRecording?.();
+  }
+});
+
+// ── Wake word — "Wake up Flow" (Electron only) ──────────────────────────
+// window.__flowElectron only exists inside the Electron build (exposed by
+// preload.js's contextBridge) — this whole block is a silent no-op in the
+// regular web app, so it's safe to leave in shared app.js without an
+// extra environment check beyond this one guard.
+if (window.__flowElectron?.wakeword) {
+  window.__flowElectron.wakeword.onDetected(async () => {
+    // Ignore if already mid-recording (e.g. Joel clicked the mic manually
+    // right before saying the wake word) — avoids double-triggering the
+    // same start/stop cycle from two different sources at once.
+    if (_isRecording) return;
+
+    try {
+      await startRecording();
+      _isRecording = true;
+      micBtn.classList.add("recording");
+      Orb.setState("listening");
+    } catch (e) {
+      Chat.addError?.(`Couldn't access microphone: ${e.message}`);
+      return;
+    }
+
+    // Wake-word start has no manual "click again to stop" step — Flow
+    // needs to decide on its own when Joel has stopped talking. Reuses
+    // whatever silence/end-of-speech detection startRecording()/
+    // stopRecordingAndTranscribe() already implement internally; this
+    // just waits a fixed window before calling stop. If core/whisper.js
+    // has its own voice-activity-detection already built in, this timeout
+    // can likely be removed entirely — worth checking before assuming a
+    // fixed delay is the best approach long-term.
+    setTimeout(async () => {
+      if (!_isRecording) return; // already stopped some other way
+      _isRecording = false;
+      micBtn.classList.remove("recording");
+      Orb.setState("thinking");
+      try {
+        const text = await stopRecordingAndTranscribe();
+        Orb.setState("idle");
+        if (text) flowSend(text);
+      } catch (e) {
+        Orb.setState("idle");
+        Chat.addError?.(`Transcription failed: ${e.message}`);
+      } finally {
+        cancelRecording?.();
+      }
+    }, 4000); // 4s recording window after wake word — tune based on real testing
+  });
+}
     Chat.addError?.(`Voice transcription failed: ${e.message}`);
   }
 });
