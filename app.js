@@ -522,7 +522,7 @@ if (window.__flowElectron?.wakeword) {
   });
 }
     Chat.addError?.(`Voice transcription failed: ${e.message}`);
-  }
+  
 });
 
 // ── Vision popup ──────────────────────────────────────────────────────────
