@@ -21,6 +21,7 @@ import { getFeedbackContext } from "./feedback.js";
 import { awardCasualLearningXp } from "./leveling.js";
 import { getPersonaPromptBlock, recordJoelMessage } from "./persona.js";
 import { runtimeStateBlock } from "./runtime.js";
+import { getToolsPromptContext, parseToolProposal } from "./selftools.js";
 
 // UI refs injected at init (avoids circular imports)
 let _chat = null;
@@ -54,6 +55,28 @@ function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbac
     ? `\nAGENT MODE ACTIVE — ${agentCtx.icon} ${agentCtx.name.toUpperCase()}:\n${agentCtx.content}\n`
     : "";
 
+  const existingTools = getToolsPromptContext();
+  const selfToolsBlock = `
+SELF-TOOLS — restricted, Joel-approved only:
+You may propose a small JS helper tool ONLY when you genuinely need a
+capability you don't already have, and ONLY plain JavaScript with no
+filesystem, network, GitHub, or OS access — that restriction is
+deliberate and Joel-approved, not a limitation to work around.
+${existingTools ? `\nTools you ALREADY have (call these directly in your reasoning if relevant — do not re-propose them):\n${existingTools}\n` : "You have no self-created tools yet."}
+To propose a NEW tool (only when genuinely needed, not speculatively),
+output EXACTLY this tagged block, with nothing else inside it besides
+valid JSON — Joel will see this as an Approve/Reject prompt, and NOTHING
+runs or saves until he approves:
+[SELFTOOL_PROPOSAL]
+{"name": "toolName", "description": "one plain sentence explaining what it does", "params": ["paramName1", "paramName2"], "code": "return paramName1 + paramName2;"}
+[/SELFTOOL_PROPOSAL]
+Write your normal conversational reply around this block as usual — Joel
+will still see your regular text, just with the approval prompt attached.
+Never say a tool was "created" or is "ready to use" unless Joel has
+actually approved it — that would be exactly the kind of false claim the
+HARD LIMITS section above forbids.
+`;
+
   const skillBlock = !agentCtx && skillContext
     ? `\nSKILL CONTEXT — you are acting as a ${skillContext.name} specialist for this response:\n${skillContext.content}\n`
     : "";
@@ -61,7 +84,7 @@ function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbac
   return `${CONFIG.PERSONALITY}${personaBlock || ""}
 
 ${selfKnowledgeBlock()}
-${feedbackBlock}${ragBlock}${agentBlock}${skillBlock}${extractedBlock}${projectsBlock}
+${feedbackBlock}${ragBlock}${agentBlock}${skillBlock}${extractedBlock}${projectsBlock}${selfToolsBlock}
 LIVE CONTEXT:
 Time: ${getTime()}
 Date: ${getDate()}
@@ -217,11 +240,22 @@ export async function sendMessage(overrideText, opts = {}) {
 
     console.log("[Flow] ←", data.reply.slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
     _chat.hideTyping();
-    const _wrap = _chat.add(data.reply, "bot");
-    Memory.add("assistant", data.reply);
-    judgeAndAwardLearning(text, data.reply); // fire-and-forget, never awaited — see function above
+
+    // Check for a self-tool proposal BEFORE displaying the reply normally
+    // — if Flow proposed a new tool, show the approval UI instead of the
+    // raw tagged JSON block, using the cleaned (tag-stripped) text for the
+    // conversational part of the reply.
+    const proposal = parseToolProposal(data.reply);
+    const displayText = proposal ? proposal.cleanedReply : data.reply;
+
+    const _wrap = _chat.add(displayText, "bot");
+    if (proposal && _chat.addToolProposal) {
+      _chat.addToolProposal(proposal);
+    }
+    Memory.add("assistant", displayText);
+    judgeAndAwardLearning(text, displayText); // fire-and-forget, never awaited — see function above
     _orb.setState("speaking");
-    Speech.speak(data.reply, () => { _orb.setState("idle"); }, _wrap);
+    Speech.speak(displayText, () => { _orb.setState("idle"); }, _wrap);
 
   } catch(err) {
     _chat.hideTyping();
@@ -265,11 +299,18 @@ export async function sendToAI(text) {
     if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
 
     _chat.hideTyping();
-    const _wrap = _chat.add(data.reply, "bot");
-    Memory.add("assistant", data.reply);
-    judgeAndAwardLearning(text, data.reply); // fire-and-forget, never awaited — see function above
+
+    const proposal = parseToolProposal(data.reply);
+    const displayText = proposal ? proposal.cleanedReply : data.reply;
+
+    const _wrap = _chat.add(displayText, "bot");
+    if (proposal && _chat.addToolProposal) {
+      _chat.addToolProposal(proposal);
+    }
+    Memory.add("assistant", displayText);
+    judgeAndAwardLearning(text, displayText); // fire-and-forget, never awaited — see function above
     _orb.setState("speaking");
-    Speech.speak(data.reply, () => { _orb.setState("idle"); }, _wrap);
+    Speech.speak(displayText, () => { _orb.setState("idle"); }, _wrap);
 
   } catch (err) {
     _chat.hideTyping();
