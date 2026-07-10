@@ -261,18 +261,61 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
   client.addEventHandler(async (event) => {
     try {
       const message = event.message;
-      if (!message?.message) return;           // ignore non-text (handle media separately below)
+      const senderIdEarly = message?.senderId?.toString() || "unknown";
+
+      // ── Joel's own outgoing message: record activity and bail out
+      // BEFORE running the (costly) vision description below — there's no
+      // reason to describe a photo Joel himself just sent. Moved ahead of
+      // the photo-handling block specifically for this reason.
+      if (message?.out) {
+        lastJoelActivityByChat.set(senderIdEarly, Date.now());
+        await memSet(chatStateKey(senderIdEarly), null);
+        return;
+      }
+
+      // ── Photo handling — converts an incoming photo into a text
+      // description via Flow's existing /api/vision endpoint (same one
+      // ui/vision.js already uses for the camera/screen-share features —
+      // reused here, not duplicated), then treats that description AS the
+      // message text for everything below. This is deliberate: it means
+      // photos automatically get the same activity-check, manual-presence
+      // drafting, and auto-reply behavior as text messages, with zero
+      // special-casing needed in the rest of this handler.
+      let textOverride = null;
+      if (message?.media?.className === "MessageMediaPhoto" && !message.message) {
+        try {
+          const buffer = await client.downloadMedia(message, {});
+          if (buffer) {
+            const base64 = buffer.toString("base64");
+            const visionR = await fetch(`${SITE_URL}/api/vision`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                image: base64,
+                prompt: "Describe this photo someone sent Joel on Telegram. Be specific about what's shown.",
+              }),
+            });
+            const visionD = await visionR.json();
+            if (visionD.description) {
+              textOverride = `[Photo] ${visionD.description}`;
+              console.log(`🖼️  Described incoming photo via ${visionD.provider}: ${visionD.description.slice(0, 80)}`);
+            } else {
+              console.warn("[Userbot] Vision description failed:", visionD.error);
+            }
+          }
+        } catch (e) {
+          console.error("[Userbot] Photo download/description failed:", e.message);
+        }
+        // If vision genuinely failed (no textOverride set), fall through
+        // to the normal !message?.message check below, which will
+        // correctly skip this message rather than crash on empty text —
+        // better to silently miss one photo than break the whole handler.
+      }
+
+      if (!textOverride && !message?.message) return;  // ignore non-text/non-photo (other media types not yet handled)
       if (!message.isPrivate) return;            // only direct messages, not group chats
 
       const senderId = message.senderId?.toString() || "unknown";
-
-      // ── Joel's own outgoing message: record it as recent activity in
-      // THIS chat specifically, and clear any pending nudge state ──────
-      if (message.out) {
-        lastJoelActivityByChat.set(senderId, Date.now());
-        await memSet(chatStateKey(senderId), null);
-        return;
-      }
 
       // ── Blocklist check (includes the Flow bot itself once ID is set) ──
       const sender = await message.getSender();
@@ -289,7 +332,7 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
       if (now - last < COOLDOWN_MS) return;      // debounce rapid messages from same person
       recentReplies.set(senderId, now);
 
-      const text = message.message;
+      const text = textOverride || message.message;
       console.log(`📨 ${senderName}: ${text.slice(0, 80)}`);
 
       // ── Joel is actively handling THIS specific chat right now ──────
