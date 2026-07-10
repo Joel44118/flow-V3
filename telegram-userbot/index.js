@@ -61,99 +61,86 @@ if (!apiId || !apiHash || !sessStr) {
 }
 
 // ── Ask Flow's existing AI chain for a reply (reuses everything already built) ──
-// Style-profile sample collection & generation — this is the genuine
-// missing half of "put my brain into Echo". getPersonaBlock() below reads
-// a style profile from shared KV; collectStyleSample/regenerateStyleProfile
-// are what actually WRITE it, built this session (confirmed no prior code
-// anywhere ever wrote flow_joel_style_profile before this).
-const STYLE_SAMPLE_KEY = "flow_style_samples";
-const STYLE_PROFILE_KEY = "flow_joel_style_profile";
-const MAX_SAMPLES = 60;              // rolling window — recent style matters more than year-old messages
-const REGEN_EVERY_N_SAMPLES = 15;    // regenerate the profile every N new real messages, not every single one
+// REAL FIX: core/persona.js is an ES module (export/import syntax), but
+// this userbot runs as CommonJS (package.json declares "type": "commonjs")
+// — a plain require() of an ES module file throws a SyntaxError at
+// runtime. This isn't a style choice; it's a genuine module-system
+// incompatibility, and Joel's GitHub-web-only, no-CLI workflow doesn't
+// support adding a build/transpile step to bridge it. These two thin
+// functions call the EXACT SAME shared KV keys core/persona.js uses
+// (PROFILE_KEY / RAW_SAMPLES_KEY, confirmed by reading that file
+// directly), so both the web app and Echo read/write the same
+// underlying style profile — just without literally importing the ES
+// module file, which would crash this process.
+const PERSONA_PROFILE_KEY = "flow_joel_style_profile";      // must match core/persona.js's PROFILE_KEY exactly
+const PERSONA_SAMPLES_KEY = "flow_joel_style_samples";      // must match core/persona.js's RAW_SAMPLES_KEY exactly
+const PERSONA_UPDATE_INTERVAL = 20;                          // must match core/persona.js's UPDATE_INTERVAL
+const PERSONA_MAX_SAMPLES = 40;                              // must match core/persona.js's MAX_SAMPLES
 
-async function collectStyleSample(text) {
-  const samples = (await memGet(STYLE_SAMPLE_KEY)) || [];
-  const list = Array.isArray(samples) ? samples : [];
-  list.push(text);
-  const trimmed = list.slice(-MAX_SAMPLES);
-  await memSet(STYLE_SAMPLE_KEY, trimmed);
+async function recordJoelMessage(siteUrl, text) {
+  if (!text || text.trim().length < 4) return;
+  try {
+    const samples = (await memGet(PERSONA_SAMPLES_KEY)) || [];
+    const list = Array.isArray(samples) ? samples : [];
+    list.push(text.trim().slice(0, 400));
+    const trimmed = list.slice(-PERSONA_MAX_SAMPLES);
+    await memSet(PERSONA_SAMPLES_KEY, trimmed);
 
-  // Only regenerate the actual profile every REGEN_EVERY_N_SAMPLES new
-  // messages — regenerating on every single outgoing message would be
-  // real, unnecessary AI-call cost for something that doesn't need to
-  // update that often; Joel's writing style doesn't meaningfully shift
-  // message-to-message.
-  if (trimmed.length > 0 && trimmed.length % REGEN_EVERY_N_SAMPLES === 0) {
-    await regenerateStyleProfile(trimmed);
+    if (trimmed.length > 0 && trimmed.length % PERSONA_UPDATE_INTERVAL === 0) {
+      await _rebuildPersonaProfile(siteUrl, trimmed);
+    }
+  } catch (e) {
+    console.warn("[Persona] recordJoelMessage failed silently:", e.message);
   }
 }
 
-async function regenerateStyleProfile(samples) {
+async function _rebuildPersonaProfile(siteUrl, samples) {
+  // Same extraction prompt as core/persona.js's _rebuildProfile, kept
+  // identical so the profile's quality/behavior doesn't differ depending
+  // on which side (web app vs Echo) happened to trigger the rebuild.
+  const EXTRACT_SYSTEM = `You are a writing-style analyst, not an assistant. You will be given a batch of real messages written by one person, Joel.
+Extract ONLY concrete, observable patterns in how Joel writes — NOT what he's talking about, NOT any opinions or facts he states, just HOW he writes.
+Look for: typical sentence length, directness, typos/shorthand patterns, filler words he uses or avoids, how he opens/closes messages, tone (casual/formal/blunt), any recurring phrases.
+Reply in plain prose, under 100 words, describing the style only. No preamble, no markdown, no bullet points — just a short paragraph a system prompt could reuse directly.
+If the samples don't show a clear consistent pattern yet, say so plainly instead of inventing one.`;
   try {
-    // Combine the real writing sample with memextract.js's extracted
-    // memory (projects, preferences, decisions) — per Joel's explicit
-    // choice to use BOTH sources together. Reads from the shared KV key
-    // memextract.js now pushes to (flow_shared_extracted_memory) — this
-    // required a real fix in memextract.js itself, since its data
-    // previously lived only in browser localStorage, unreachable from
-    // Echo's separate Railway process.
-    const extracted = await memGet("flow_shared_extracted_memory");
-    const memoryContext = extracted?.summary || "";
-
-    const r = await fetch(`${SITE_URL}/api/chat`, {
+    const r = await fetch(`${siteUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         messages: [
-          {
-            role: "system",
-            content: "Analyze these real message samples from a person named Joel and produce a SHORT (3-4 sentence) description of his actual writing style — tone, formality level, common phrases, sentence length habits, use of emoji/punctuation. Be specific and concrete, not generic. Do not invent facts about him, only describe HOW he writes, not what he says. Respond with ONLY the description, no preamble.",
-          },
-          {
-            role: "user",
-            content: `Message samples:\n${samples.join("\n---\n")}\n\n${memoryContext ? `Additional context about Joel: ${memoryContext}` : ""}`,
-          },
+          { role: "system", content: EXTRACT_SYSTEM },
+          { role: "user", content: samples.join("\n---\n") },
         ],
         force_intent: "chat",
       }),
     });
-    const d = await r.json();
-    const description = d.reply?.trim();
-    if (description) {
-      await memSet(STYLE_PROFILE_KEY, { description, updatedAt: Date.now(), sampleCount: samples.length });
-      console.log(`[Style] Profile regenerated from ${samples.length} real samples.`);
-    }
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.reply) return;
+    await memSet(PERSONA_PROFILE_KEY, { description: data.reply.trim(), updatedAt: Date.now(), sampleCount: samples.length });
+    console.log("[Persona] Style profile rebuilt from", samples.length, "samples");
   } catch (e) {
-    console.error("[Style] Profile regeneration failed:", e.message);
+    console.warn("[Persona] _rebuildPersonaProfile failed silently:", e.message);
   }
 }
 
-async function getPersonaBlock() {
+// NOTE: no seed/guessed baseline here, per Joel's explicit instruction —
+// if no profile exists yet, this correctly returns "" (no style guidance
+// injected), meaning Flow's own default tone applies until real samples
+// accumulate via recordJoelMessage above.
+async function getPersonaPromptBlock(siteUrl) {
   try {
-    // REAL FIX: was doing its own raw fetch + d?.value?.description,
-    // which would have hit the same double-encoding bug already found
-    // and fixed in memGet elsewhere this session (d.value being a raw
-    // JSON string, not a parsed object, meaning .description would
-    // always be undefined). Using memGet directly here instead, which
-    // already correctly parses it.
-    const profile = await memGet(STYLE_PROFILE_KEY);
-    const desc = profile?.description || SEED_STYLE_DESCRIPTION;
-    if (!desc) return "";
-    return `\n\nJOEL'S WRITING STYLE (learned from his real messages, for matching tone only): ${desc}\nLet this inform tone and phrasing only — never invent facts, commitments, or opinions Joel hasn't actually stated.`;
-  } catch (_) { return ""; }
+    const profile = await memGet(PERSONA_PROFILE_KEY);
+    if (!profile?.description) return "";
+    return `\n\nJOEL'S WRITING STYLE (learned from his real messages, for matching tone only — this describes HOW Joel writes, not what to claim as his opinions or decisions):\n${profile.description}\n\nWhen writing AS Joel or ON Joel's behalf, let this style inform tone and phrasing. Never use this to invent facts, commitments, or opinions Joel hasn't actually stated.`;
+  } catch (_) {
+    return "";
+  }
 }
 
-// ── Seed style baseline ──────────────────────────────────────────────────
-// Joel has very little Telegram history yet (installed Flow only days
-// ago) — per his explicit request, this is a genuine, observed baseline
-// from real conversation patterns, not invented flattery, used ONLY
-// until enough real Telegram samples exist to replace it via
-// regenerateStyleProfile above. This is intentionally a starting point,
-// not a permanent substitute for real data.
-const SEED_STYLE_DESCRIPTION = "Direct and informal — gets to the point without corporate filler. Comfortable saying 'I'm overwhelmed' or asking to slow down rather than pushing through confusion silently. Pushes back and asks for real verification rather than accepting claims at face value. Cares about intellectual honesty and originality — avoids borrowed/derivative phrasing. Thinks in terms of underlying systems and root causes even when starting from a specific, narrow problem. Uses minimal emoji, prefers concise responses over lengthy ones.";
-
 async function askFlow(message, senderName) {
-  const personaBlock = await getPersonaBlock();
+  const personaBlock = await getPersonaPromptBlock(SITE_URL);
   const SYSTEM = `You are ${ECHO_NAME}, Joel Olanrewaju's personal AI assistant answering on
 his PERSONAL Telegram account (not his Flow bot — you are a separate persona
 from Flow, even though you're powered by the same underlying AI chain).
@@ -362,17 +349,12 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
       if (message?.out) {
         lastJoelActivityByChat.set(senderIdEarly, Date.now());
         await memSet(chatStateKey(senderIdEarly), null);
-        // ── Style-profile sample collection — this is the actual
-        // missing piece behind "put my brain into Echo": getPersonaBlock()
-        // (further up this file) already reads a style profile from KV,
-        // but nothing ever WROTE one — confirmed by searching the whole
-        // codebase for writes to flow_joel_style_profile and finding
-        // none. This collects a rolling sample of Joel's REAL outgoing
-        // text (never anyone else's messages) and periodically turns it
-        // into an actual style description.
+        // Feed Joel's real outgoing text to core/persona.js's rolling
+        // style-sample buffer — fire-and-forget, never blocks or delays
+        // anything else in this handler.
         if (message.message && message.message.trim().length > 3) {
-          collectStyleSample(message.message.trim()).catch((e) =>
-            console.error("[Style] sample collection failed:", e.message)
+          recordJoelMessage(SITE_URL, message.message.trim()).catch((e) =>
+            console.error("[Persona] recordJoelMessage failed:", e.message)
           );
         }
         return;
