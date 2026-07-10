@@ -179,6 +179,15 @@ body {
   -webkit-app-region: no-drag; /* buttons must stay clickable, not part of the drag zone */
   display:flex; align-items:center; gap:10px; margin-left:16px;
 }
+#notif-wrap {
+  /* REAL BUG FIX: the notification bell is injected dynamically by
+     ui/notifications.js into #top-bar, which has -webkit-app-region:
+     drag applied to the whole bar. #win-controls got a no-drag
+     exception when it was built, but #notif-wrap was added later and
+     never got the same treatment — so clicking the bell moved the
+     window instead of opening the dropdown. Same fix, extended here. */
+  -webkit-app-region: no-drag;
+}
 #win-controls button {
   width:12px; height:12px; border-radius:50%; border:none; cursor:pointer;
   padding:0; position:relative; transition:filter .15s, transform .15s;
