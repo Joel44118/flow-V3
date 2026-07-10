@@ -53,7 +53,25 @@ export async function searchRepos(query) {
 // ── Smart file picker ─────────────────────────────────────────────────────
 // Given a tree + optional intent, picks the most relevant files to fetch
 // Priority: files matching intent keywords, then entry points, then small files
-export function pickRelevantFiles(files, intent = "", maxFiles = 5, maxBytes = 8000) {
+// REAL FIX: previous defaults (5 files, 8000 bytes) were the confirmed
+// root cause of Flow making blind full-file rewrites instead of targeted
+// edits — with that little actual context, Flow couldn't see enough of
+// the real codebase to understand what it was editing, so it guessed at
+// what the WHOLE file should look like rather than seeing and adjusting
+// the real one. This session's Nemotron 3 Ultra upgrade in api/chat.js
+// (large-context provider, ~256K tokens on the hosted free endpoint) is
+// what makes a much higher limit actually usable now — raising the
+// defaults without that upgrade would have just meant more requests
+// silently failing on providers that couldn't handle the payload size.
+//
+// 40 files / 300,000 bytes is a real, deliberate ceiling, not "no limit"
+// — leaves room in the ~256K token budget for the system prompt,
+// self-tools context, and the actual response, using the standard
+// ~4 chars/token estimate (300,000 bytes ≈ 75,000 tokens of file
+// content). Still not infinite — a genuinely huge multi-hundred-file
+// change would need the file-splitting/multi-provider approach discussed
+// earlier, not just a bigger single-call limit.
+export function pickRelevantFiles(files, intent = "", maxFiles = 40, maxBytes = 300000) {
   const t = intent.toLowerCase();
 
   // Keywords from the intent
