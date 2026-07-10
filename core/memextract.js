@@ -131,6 +131,27 @@ Return only the JSON object.`
     _merge(K.entities,    parsed.entities,    "name");
 
     Storage.set(K.lastRun, Date.now());
+
+    // REAL FIX: previously this data lived ONLY in the browser's
+    // localStorage (via the Storage wrapper) — Echo, running as a
+    // separate Node process on Railway, had no way to read it at all.
+    // Confirmed by checking: nothing anywhere in the codebase ever wrote
+    // this data to the shared server-side KV that Echo's memGet reads
+    // from. Pushing a copy here, under a distinct key name
+    // (flow_shared_extracted_memory) so it's clearly a synced copy, not
+    // confused with any browser-local key.
+    try {
+      const summary = getExtractedMemoryContext();
+      if (summary) {
+        await fetch("/api/memory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "flow_shared_extracted_memory", value: { summary, updatedAt: Date.now() } }),
+        });
+      }
+    } catch (e) {
+      console.warn("[MemExtract] Failed to sync to shared KV (Echo won't see this update):", e.message);
+    }
     console.log("[MemExtract] extraction complete");
 
   } catch(e) {
