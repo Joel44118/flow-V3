@@ -266,6 +266,52 @@ ipcMain.on('gesture_stop',   ()           => overlayWin?.webContents.send('dot-h
 ipcMain.on('cursor_held',    (_e, {x, y}) => moveDot(x, y, 'held'));
 ipcMain.on('type_text',      (_e, {text}) => { try { robot?.typeString(text || ''); } catch(_) {} });
 
+// ── Code syntax validation — TRUE node --check ───────────────────────────
+// Runs actual `node --check` against code the renderer wants to push to
+// GitHub, BEFORE it's ever committed. This is genuine Node syntax
+// validation, not an approximation — possible here specifically because
+// this runs in Electron's MAIN process, which has a real Node.js runtime.
+// The renderer (browser context) cannot do this itself; that's the whole
+// reason this exists as an IPC handler rather than renderer-side code.
+//
+// Real limitation, stated plainly: this only validates JAVASCRIPT syntax
+// via Node's own parser. It does NOT catch logic bugs, does NOT know
+// whether the code integrates correctly with the rest of Joel's codebase,
+// and does NOT validate non-JS files (HTML, CSS, JSON, Python, etc.) —
+// each of those would need its own separate validator, not built here.
+// This specifically targets the class of error that broke app.js earlier
+// this session (leftover fragments causing a genuine syntax error) —
+// nothing more, nothing less.
+const { spawnSync } = require('child_process');
+const os = require('os');
+const fsSync = require('fs');
+
+ipcMain.handle('validate_js_syntax', (_e, { code, moduleType }) => {
+  // module-mode files (app.js and anything using import/export) need
+  // --input-type=module + stdin, matching exactly the command that
+  // caught the real app.js bug earlier this session. Script-mode files
+  // (plain CommonJS, like most of core/ and api/) use --check against a
+  // real temp file instead, since --input-type=module + stdin is
+  // specifically for ES module syntax checking.
+  if (moduleType === 'module') {
+    const result = spawnSync(process.execPath, ['--input-type=module', '--check'], { input: code, encoding: 'utf8' });
+    if (result.status === 0) return { valid: true };
+    return { valid: false, error: (result.stderr || result.error?.message || 'Unknown syntax error').trim() };
+  }
+
+  const tmpFile = path.join(os.tmpdir(), `flow-validate-${Date.now()}-${Math.random().toString(36).slice(2)}.js`);
+  try {
+    fsSync.writeFileSync(tmpFile, code, 'utf8');
+    const result = spawnSync(process.execPath, ['--check', tmpFile], { encoding: 'utf8' });
+    if (result.status === 0) return { valid: true };
+    return { valid: false, error: (result.stderr || result.error?.message || 'Unknown syntax error').trim() };
+  } catch (e) {
+    return { valid: false, error: `Validator itself failed: ${e.message}` };
+  } finally {
+    try { fsSync.unlinkSync(tmpFile); } catch (_) {}
+  }
+});
+
 ipcMain.handle('get_screen_size', () => {
   const d = screen.getPrimaryDisplay();
   return { width: d.bounds.width, height: d.bounds.height };
