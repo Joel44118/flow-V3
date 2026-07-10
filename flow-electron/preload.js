@@ -38,4 +38,11 @@ contextBridge.exposeInMainWorld('__flowElectron', {
   wakeword: {
     onDetected: (cb) => ipcRenderer.on('wakeword-detected', () => cb()),
   },
+
+  // ── Main-process log forwarding ─────────────────────────────────────
+  // Real fix for debugging main-process-only code (wakeword-engine.js,
+  // and anything else running outside the renderer) in a packaged app
+  // with no terminal window. app.js registers a listener that prints
+  // these to the real DevTools console (opened via Ctrl+Shift+I).
+  onMainLog: (cb) => ipcRenderer.on('main-process-log', (_e, entry) => cb(entry)),
 });
