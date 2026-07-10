@@ -224,28 +224,37 @@ async function tryOpenRouter(messages, intent, key) {
 }
 
 // ── 3. GROQ ───────────────────────────────────────────────────────────────
+// REAL BUG FIX: every model previously listed here was confirmed dead or
+// actively deprecating, per Groq's own deprecation docs:
+//   mixtral-8x7b-32768      — deprecated 2025-03-20
+//   gemma2-9b-it            — deprecated 2025-10-08
+//   llama-3.1-8b-instant    — deprecated June 17, 2026
+//   llama-3.3-70b-versatile — deprecated June 17, 2026
+// Same bug class as the Cerebras fix earlier this session — Groq was
+// silently failing every call and falling through to HuggingFace.
+// Replaced with Groq's own currently-recommended migration targets:
+// openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.6-27b.
 const GROQ_MODELS = {
   code:     [
-    { model: 'mixtral-8x7b-32768',      maxTokens: 3200 },
-    { model: 'llama-3.3-70b-versatile', maxTokens: 2700 },
-    { model: 'llama-3.1-8b-instant',    maxTokens: 2200 },
+    { model: 'openai/gpt-oss-120b', maxTokens: 3200 },
+    { model: 'qwen/qwen3.6-27b',    maxTokens: 2700 },
+    { model: 'openai/gpt-oss-20b',  maxTokens: 2200 },
   ],
   research: [
-    { model: 'llama-3.3-70b-versatile', maxTokens: 1700 },
-    { model: 'gemma2-9b-it',            maxTokens: 1400 },
+    { model: 'openai/gpt-oss-120b', maxTokens: 1700 },
+    { model: 'qwen/qwen3.6-27b',    maxTokens: 1400 },
   ],
   creative: [
-    { model: 'llama-3.3-70b-versatile', maxTokens: 1200 },
-    { model: 'gemma2-9b-it',            maxTokens: 1000  },
+    { model: 'qwen/qwen3.6-27b',    maxTokens: 1200 },
+    { model: 'openai/gpt-oss-20b',  maxTokens: 1000  },
   ],
   pdf:      [
-    { model: 'llama-3.1-8b-instant',    maxTokens: 1400 },
-    { model: 'gemma2-9b-it',            maxTokens: 1200 },
+    { model: 'openai/gpt-oss-20b',  maxTokens: 1400 },
+    { model: 'qwen/qwen3.6-27b',    maxTokens: 1200 },
   ],
   chat:     [
-    { model: 'llama-3.1-8b-instant',    maxTokens: 900  },
-    { model: 'gemma2-9b-it',            maxTokens: 900  },
-    { model: 'mixtral-8x7b-32768',      maxTokens: 900  },
+    { model: 'openai/gpt-oss-20b',  maxTokens: 900  },
+    { model: 'qwen/qwen3.6-27b',    maxTokens: 900  },
   ],
 };
 
