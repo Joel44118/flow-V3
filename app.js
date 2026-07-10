@@ -522,6 +522,22 @@ if (window.__flowElectron?.wakeword) {
   });
 }
 
+// ── Main-process log forwarding (Electron only) ──────────────────────────
+// Real fix for debugging code that runs in Electron's main process
+// (wakeword-engine.js, main.js itself) — a packaged .exe has no terminal
+// window, so those console.log calls were previously invisible with no
+// way to see them at all. Prints them here using the REAL console
+// methods (not a custom log box) so DevTools' own log-level
+// filtering/coloring/search all work normally on these lines too.
+if (window.__flowElectron?.onMainLog) {
+  window.__flowElectron.onMainLog(({ level, msg }) => {
+    const prefixed = `[main] ${msg}`;
+    if (level === "error") console.error(prefixed);
+    else if (level === "warn") console.warn(prefixed);
+    else console.log(prefixed);
+  });
+}
+
 // ── Vision popup ──────────────────────────────────────────────────────────
 const visionToggle = document.getElementById("vision-toggle-btn");
 const visionPopup  = document.getElementById("vision-popup");
