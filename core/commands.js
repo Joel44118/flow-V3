@@ -501,13 +501,30 @@ export async function parseSearchGoalCommand(text) {
       }
 
       // Pick most relevant files based on intent
+      // REAL FIX: was hardcoding isDeep ? 5 : 3 files / 8000 bytes here,
+      // completely overriding github.js's own default — raising that
+      // default alone would have done nothing, since this is the only
+      // real caller and it always passed its own tiny numbers explicitly.
+      // Now uses github.js's real default (40 files / 300,000 bytes) for
+      // deep analysis, with a smaller-but-still-much-larger-than-before
+      // limit for quick summaries (no need for the full large-context
+      // budget on a "just give me the gist" request).
       const intent  = text.replace(/https?:\/\/\S+/g, "").trim();
-      const toFetch = pickRelevantFiles(tree.files, intent, isDeep ? 5 : 3, 8000);
+      const toFetch = isDeep
+        ? pickRelevantFiles(tree.files, intent)              // use github.js's real default
+        : pickRelevantFiles(tree.files, intent, 10, 40000);  // quick summary: more than before, still modest
 
       _chatAdd?.(`Fetching ${toFetch.length} of ${tree.files.length} files...`, "bot");
       const fetched = await getFiles(owner, repo, toFetch.map(f => f.path));
       let summary = formatRepoSummary(tree, fetched.files, intent);
-      if (summary.length > 5500) summary = summary.slice(0, 5500) + "\n\n[truncated]";
+      // REAL FIX: 5500-char truncation would have silently discarded most
+      // of the extra file content even after fixing the fetch limit above
+      // — same class of bug, a second hardcoded small number nobody
+      // updated when the rest of the pipeline was upgraded. Raised to
+      // match the large-context budget; still truncates rather than
+      // sending unbounded text into the prompt.
+      const summaryLimit = isDeep ? 250000 : 15000;
+      if (summary.length > summaryLimit) summary = summary.slice(0, summaryLimit) + "\n\n[truncated]";
 
       const aiPrompt = isDeep
         ? `Analyse this GitHub repo: what it does, code structure, tech stack, key decisions.\n\n${summary}`
