@@ -551,6 +551,66 @@ async function handleTelegram(req, res) {
     return res.status(200).json({ ok: true });
   }
 
+  // ── Mute system — genuinely separate from tg_blocklist (that's for
+  // anti-spam/anti-bot protection, this is Joel's own deliberate "ignore
+  // this person indefinitely" choice). Stored under its own KV key so
+  // the two systems can never accidentally interact — muting someone
+  // never touches the spam blocklist, and vice versa.
+  // Usage: /mute @username   /unmute @username   /muted (lists current mutes)
+  if (text?.startsWith('/mute ') && senderIsJoel) {
+    const uname = text.slice(6).trim().replace(/^@/, '').toLowerCase();
+    if (!uname) {
+      await tgFetch('sendMessage', { chat_id: chatId, text: 'Usage: /mute @username' });
+      return res.status(200).json({ ok: true });
+    }
+    let muted;
+    try {
+      const r = await fetch(`${KV_URL}/get/flow_muted_contacts`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
+      const d = await r.json();
+      muted = safeKvResult(d.result) || [];
+    } catch (_) { muted = []; }
+    if (!muted.includes(uname)) muted.push(uname);
+    await fetch(`${KV_URL}/set/flow_muted_contacts`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: JSON.stringify(muted) }),
+    });
+    await tgFetch('sendMessage', { chat_id: chatId, text: `🔇 Muted @${uname} — Echo will never auto-reply to them, even after the 1hr online-mode timeout. Use /unmute @${uname} to reverse.` });
+    return res.status(200).json({ ok: true });
+  }
+
+  if (text?.startsWith('/unmute ') && senderIsJoel) {
+    const uname = text.slice(8).trim().replace(/^@/, '').toLowerCase();
+    let muted;
+    try {
+      const r = await fetch(`${KV_URL}/get/flow_muted_contacts`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
+      const d = await r.json();
+      muted = safeKvResult(d.result) || [];
+    } catch (_) { muted = []; }
+    muted = muted.filter(u => u !== uname);
+    await fetch(`${KV_URL}/set/flow_muted_contacts`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: JSON.stringify(muted) }),
+    });
+    await tgFetch('sendMessage', { chat_id: chatId, text: `🔊 Unmuted @${uname} — Echo will respond to them normally again.` });
+    return res.status(200).json({ ok: true });
+  }
+
+  if (text === '/muted' && senderIsJoel) {
+    let muted;
+    try {
+      const r = await fetch(`${KV_URL}/get/flow_muted_contacts`, { headers: { Authorization: `Bearer ${KV_KEY}` } });
+      const d = await r.json();
+      muted = safeKvResult(d.result) || [];
+    } catch (_) { muted = []; }
+    await tgFetch('sendMessage', {
+      chat_id: chatId,
+      text: muted.length ? `🔇 Currently muted:\n${muted.map(u => `@${u}`).join('\n')}` : 'No one is currently muted.',
+    });
+    return res.status(200).json({ ok: true });
+  }
+
   // Show typing indicator
   await tgFetch('sendChatAction', { chat_id: chatId, action: 'typing' });
 
