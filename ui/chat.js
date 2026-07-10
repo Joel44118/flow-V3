@@ -4,6 +4,7 @@
 import { Memory }                  from "../core/memory.js";
 import { hasCode, renderWithCode } from "./codeblock.js";
 import { Speech }                  from "../core/speech.js";
+import { approveTool }             from "../core/selftools.js";
 
 const colLeft  = () => document.getElementById("col-left");
 const colRight = () => document.getElementById("col-right");
@@ -241,5 +242,77 @@ export const Chat = {
 
   hideTyping() {
     document.getElementById("typing-indicator")?.remove();
+  },
+
+  // ── Self-tool proposal — shows Flow's proposed code with real
+  // Approve/Reject buttons. Nothing is saved or ever runs until Joel
+  // clicks Approve; Reject just removes the message with no side effects.
+  // Modeled on the existing message-bubble pattern above rather than a
+  // separate ad-hoc UI, so it looks and feels consistent with the rest
+  // of the chat.
+  addToolProposal(proposal) {
+    const col = colLeft();
+    if (!col) return;
+
+    const wrap = document.createElement("div");
+    wrap.className = "mwrap mleft fresh";
+
+    const label = document.createElement("div");
+    label.className = "mlabel";
+    label.textContent = "FLOW WANTS TO CREATE A TOOL";
+
+    const bubble = document.createElement("div");
+    bubble.className = "mbubble mbot";
+
+    const desc = document.createElement("p");
+    desc.textContent = proposal.description;
+    desc.style.marginBottom = "8px";
+
+    const codeBlock = document.createElement("pre");
+    codeBlock.className = "tool-proposal-code";
+    codeBlock.style.cssText = "background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;overflow-x:auto;font-size:12px;white-space:pre-wrap;";
+    codeBlock.textContent = `function ${proposal.name}(${proposal.params.join(", ")}) {\n  ${proposal.code}\n}`;
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:8px;margin-top:10px;";
+
+    const approveBtn = document.createElement("button");
+    approveBtn.textContent = "✅ Approve";
+    approveBtn.className = "msg-feedback-btn";
+
+    const rejectBtn = document.createElement("button");
+    rejectBtn.textContent = "❌ Reject";
+    rejectBtn.className = "msg-feedback-btn";
+
+    const statusMsg = document.createElement("p");
+    statusMsg.style.cssText = "margin-top:8px;font-size:13px;opacity:0.8;";
+
+    approveBtn.addEventListener("click", () => {
+      const result = approveTool(proposal);
+      if (result.ok) {
+        statusMsg.textContent = `✅ "${proposal.name}" saved — Flow can use it from now on.`;
+        approveBtn.disabled = true;
+        rejectBtn.disabled  = true;
+      } else {
+        statusMsg.textContent = `⚠️ ${result.error}`;
+      }
+      bubble.appendChild(statusMsg);
+    });
+
+    rejectBtn.addEventListener("click", () => {
+      wrap.remove(); // no side effects — nothing was ever saved or run
+    });
+
+    btnRow.appendChild(approveBtn);
+    btnRow.appendChild(rejectBtn);
+
+    bubble.appendChild(desc);
+    bubble.appendChild(codeBlock);
+    bubble.appendChild(btnRow);
+
+    wrap.appendChild(label);
+    wrap.appendChild(bubble);
+    col.appendChild(wrap);
+    col.scrollTop = col.scrollHeight;
   },
 };
