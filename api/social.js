@@ -430,7 +430,11 @@ async function handleTelegram(req, res) {
   // — same class of gotcha as business_message below. Must be checked
   // before the msg extraction, or these updates get silently dropped.
   if (update?.callback_query) {
-    await handleCallbackQuery(tgFetch, tgFetchStrict, update.callback_query);
+    try {
+      await handleCallbackQuery(tgFetch, tgFetchStrict, update.callback_query);
+    } catch (e) {
+      console.error('[TG] callback_query handler error:', e.message);
+    }
     return res.status(200).json({ ok: true });
   }
 
@@ -984,14 +988,25 @@ async function handleCallbackQuery(tgFetch, tgFetchStrict, callbackQuery) {
   const messageId = callbackQuery.message?.message_id;
   const queryId   = callbackQuery.id;
 
-  // Always ack the callback so Telegram stops showing the button's loading
-  // spinner on Joel's end, regardless of what happens next.
-  const ackAndEdit = async (text) => {
-    await tgFetch('answerCallbackQuery', { callback_query_id: queryId });
+  // Ack the callback query IMMEDIATELY, first, unconditionally — this is
+  // what actually stops Telegram's button spinner/shine on Joel's end.
+  // Real bug this fixes: the previous version only acked from inside
+  // ackAndEdit(), called AFTER setPresence()/KV lookups/etc — if any of
+  // that work threw, or even just took a moment, the button kept
+  // spinning with no feedback at all. Telegram's own guidance is to
+  // answerCallbackQuery as the very first thing, then do the real work
+  // and edit the message afterward if needed.
+  await tgFetch('answerCallbackQuery', { callback_query_id: queryId }).catch(() => {});
+
+  const editText = async (text) => {
     if (chatId && messageId) {
       await tgFetch('editMessageText', { chat_id: chatId, message_id: messageId, text }).catch(() => {});
     }
   };
+  // Kept as an alias so the rest of this function (written before this
+  // fix) doesn't need every call site renamed — ackAndEdit now only edits,
+  // since the actual "ack" already happened above.
+  const ackAndEdit = editText;
 
   if (data === 'presence_online') {
     await setPresence('online');
