@@ -274,8 +274,11 @@ export function addNotification({ source, text, ts }) {
   _saveNotifs(notifs);
   _updateDot();
   _renderList();
-  // Also add to Flow chat
-  _chatAdd?.(`📨 **${source}:** ${text}`);
+  // REMOVED: this used to also echo every notification into the main
+  // chat panel via _chatAdd(...). Joel explicitly asked for these to
+  // stay in the bell/notification panel only, not the conversation
+  // window — this was a deliberate design choice in an earlier session,
+  // now deliberately reversed per his direct request.
 }
 
 function _updateDot() {
