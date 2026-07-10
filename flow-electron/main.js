@@ -706,14 +706,24 @@ function setupAutoStart() {
 // Joel already has working, just triggered locally instead of by clicking
 // the mic button.
 //
-// SOX_BINARY_PATH assumes sox.exe is bundled at
-// flow-electron/resources/sox/sox.exe and declared in package.json's
-// "build.files"/"extraResources" so electron-builder actually ships it in
-// the packaged app — this must be added there or the packaged .exe won't
-// find it (works from source during `npm start` via the raw path below,
-// but won't survive packaging without that config change).
+// sox.exe is bundled at flow-electron/resources/sox/sox.exe via
+// package.json's build.extraResources, which places it in the packaged
+// app's resources directory — accessed at runtime via
+// process.resourcesPath (see startWakeWord below for why, and the real
+// bug this fixes).
 function startWakeWord() {
-  const resourcesPath  = path.join(__dirname, 'resources');
+  // extraResources (declared in package.json's build.extraResources) are
+  // copied to the packaged app's resources directory, accessible via
+  // process.resourcesPath — NOT relative to __dirname. This was a real
+  // bug in the first version of this function: __dirname only resolves
+  // correctly here in dev mode running unpacked; once electron-builder
+  // packages the app (confirmed: your build succeeded), main.js itself
+  // lives inside app.asar, and __dirname pointed at the wrong location,
+  // so loadModels() was silently failing to find any of the 3 .onnx
+  // files and the whole engine never started — which is exactly why
+  // there was no mic-in-use indicator at all. Verified against
+  // electron-builder's own docs before fixing, not guessed.
+  const resourcesPath  = process.resourcesPath;
   const soxBinaryPath  = path.join(resourcesPath, 'sox', 'sox.exe');
 
   startWakeWordEngine({
