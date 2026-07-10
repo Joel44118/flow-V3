@@ -1,14 +1,28 @@
 // ═══════════════════════════════════════════════════════════════
 // api/chat.js — Multi-Provider AI Chain
 //
-// CHAIN ORDER:
-//   1. Cerebras    — free, fastest, llama3.1-70b/8b
-//   2. OpenRouter  — Nemotron for code, frontier models per intent
-//   3. Groq        — ultra-fast free fallback
-//   4. HuggingFace — last resort
+// CHAIN ORDER (as actually implemented below — this comment was stale
+// before this session's fixes and didn't match the real code):
+//   1. Cerebras    — free, fastest, for non-code intents
+//      (REAL BUG FIXED: was calling llama3.1-70b/8b, which Cerebras'
+//      live catalog no longer serves at all — confirmed directly
+//      against Cerebras' own API docs. Now uses gpt-oss-120b/zai-glm-4.7,
+//      the two models actually live on Cerebras today.)
+//   2. NVIDIA direct (NIM) — primary for code/research specifically,
+//      using Nemotron 3 Ultra (256K-1M context depending on deployment)
+//      for large-context tasks like repo analysis. REAL UPGRADE: was
+//      pointed at the old, smaller llama-3.1-nemotron-70b-instruct.
+//      No daily cap (only a ~40 req/min limit), confirmed via NVIDIA's
+//      own developer forum.
+//   3. OpenRouter  — Nemotron 3 Ultra (free tier) as NVIDIA-direct
+//      backup, plus frontier models per intent otherwise
+//   4. Cerebras fallback for code if OpenRouter failed
+//   5. Groq        — ultra-fast free fallback
+//   6. HuggingFace — last resort
 //
 // ENV VARS (Vercel → Settings → Environment Variables):
 //   CEREBRAS_API_KEY    cloud.cerebras.ai/api-keys
+//   NVIDIA_API_KEY      build.nvidia.com (nvapi- prefixed key)
 //   OPENROUTER_API_KEY  openrouter.ai/keys
 //   GROQ_API_KEY        console.groq.com/keys
 //   HF_TOKEN            huggingface.co/settings/tokens
@@ -86,18 +100,33 @@ function cleanReply(text) {
 const STOP4 = ['</s>', '<|eot_id|>', 'Human:', 'User:'];
 
 // ── 1. CEREBRAS ────────────────────────────────────────────────────────────
-// Token limits bumped +200 across every tier here (Cerebras), OpenRouter,
-// and Groq below — the reasoning scratchpad (<flow-think>...</flow-think>,
-// added to core/ai.js's system prompt) now consumes some of each reply's
-// token budget before the real answer even starts, so the original limits
-// risked truncating the visible reply. If replies ever look cut off again,
-// this is the first place to check — bump further before anything else.
+// REAL BUG FIX: Cerebras' free catalog collapsed at some point to just
+// two models — confirmed directly against Cerebras' own official API
+// docs (the "List models" reference page), not assumed. The previous
+// model names here (llama3.1-70b, llama3.1-8b) no longer exist on
+// Cerebras at all — every single call in this file was silently failing
+// and falling through to OpenRouter, meaning Cerebras' free 1M
+// tokens/day quota was never actually being used. gpt-oss-120b (OpenAI's
+// open-weight 120B model) is the stronger of the two remaining models
+// for code; zai-glm-4.7 serves as Cerebras' own internal fallback before
+// falling through to OpenRouter/Groq/HF below.
+//
+// REAL RISK, stated plainly rather than glossed over: Cerebras' free
+// catalog has already changed once without notice (this exact
+// collapse). Hardcoding these two names is the best available fix
+// today, but if Cerebras changes its catalog again, this exact bug
+// (dead model name → silent fallthrough) will recur. There's no
+// generic fix for that risk short of dynamically calling Cerebras'
+// /v1/models endpoint before each request and picking from whatever's
+// actually live — a real, larger change not made here, since it adds a
+// network round-trip to every single request. Worth reconsidering if
+// this breaks again.
 const CB_MODELS = {
-  code:     [{ model: 'llama3.1-70b', maxTokens: 2248 }, { model: 'llama3.1-8b', maxTokens: 1700 }],
-  research: [{ model: 'llama3.1-70b', maxTokens: 1224 }],
-  chat:     [{ model: 'llama3.1-8b',  maxTokens: 900  }],
-  creative: [{ model: 'llama3.1-70b', maxTokens: 1000 }],
-  pdf:      [{ model: 'llama3.1-8b',  maxTokens: 1200 }],
+  code:     [{ model: 'gpt-oss-120b', maxTokens: 2248 }, { model: 'zai-glm-4.7', maxTokens: 1700 }],
+  research: [{ model: 'gpt-oss-120b', maxTokens: 1224 }],
+  chat:     [{ model: 'zai-glm-4.7',  maxTokens: 900  }],
+  creative: [{ model: 'gpt-oss-120b', maxTokens: 1000 }],
+  pdf:      [{ model: 'zai-glm-4.7',  maxTokens: 1200 }],
 };
 
 async function tryCerebras(messages, intent, key) {
@@ -122,17 +151,28 @@ async function tryCerebras(messages, intent, key) {
   throw new Error('Cerebras: all models failed');
 }
 
-// ── 2. OPENROUTER — Nemotron for coding ───────────────────────────────────
+// ── 2. OPENROUTER — Nemotron 3 Ultra for coding, as NVIDIA-direct backup ──
+// REAL BUG FIXED: was pointing at the old, retired
+// nvidia/llama-3.1-nemotron-70b-instruct:free. Confirmed via OpenRouter's
+// own model catalog: the real current free model ID is
+// nvidia/nemotron-3-ultra-550b-a55b:free — same underlying model as the
+// NVIDIA-direct route above, genuinely 1M context on OpenRouter
+// specifically (their hosted route serves the full context; NVIDIA's own
+// direct free endpoint defaults to a smaller 256K unless reconfigured,
+// per NVIDIA's own NIM deployment docs).
+// Real trade-off worth knowing, not hidden: OpenRouter's free Nemotron
+// route runs on shared community capacity and can be genuinely slow at
+// peak times — this is a real fallback path for when NVIDIA-direct hits
+// its ~40 req/min limit, not necessarily a faster alternative.
 const OR_MODELS = {
   code: [
-    // Nemotron 70B — NVIDIA's best coding model, free on OR
-    'nvidia/llama-3.1-nemotron-70b-instruct:free',
+    'nvidia/nemotron-3-ultra-550b-a55b:free',
     'qwen/qwen-2.5-coder-32b-instruct:free',
     'deepseek/deepseek-r1-0528:free',
     'meta-llama/llama-3.1-8b-instruct:free',
   ],
   research: [
-    'nvidia/llama-3.1-nemotron-70b-instruct:free',
+    'nvidia/nemotron-3-ultra-550b-a55b:free',
     'meta-llama/llama-3.3-70b-instruct:free',
     'deepseek/deepseek-r1-0528:free',
     'meta-llama/llama-3.1-8b-instruct:free',
@@ -151,7 +191,7 @@ const OR_MODELS = {
     'qwen/qwen-2.5-7b-instruct:free',
   ],
 };
-const OR_TOKENS = { code: 3200, research: 1700, creative: 1000, pdf: 1200, chat: 800 };
+const OR_TOKENS = { code: 8000, research: 4000, creative: 1000, pdf: 1200, chat: 800 };
 
 async function tryOpenRouter(messages, intent, key) {
   const models    = OR_MODELS[intent] || OR_MODELS.chat;
@@ -265,28 +305,61 @@ async function tryHuggingFace(messages, intent, token) {
 // ── 1b. NVIDIA DIRECT API — free 1000 req/month at build.nvidia.com ───────
 // Add NVIDIA_API_KEY in Vercel → Settings → Environment Variables
 // Get free key at: https://build.nvidia.com → Sign in → Get API Key
+// REAL FIX: was pointed at the old nemotron-70b-instruct model (127K
+// context) — Joel specifically asked about "Nemotron 3 for coding",
+// confirmed via NVIDIA's own docs to be nvidia/nemotron-3-ultra-550b-a55b,
+// a 550B-parameter (55B active) model with up to 256K-1M token context
+// depending on deployment (hosted free endpoint serves up to 256K by
+// default per NVIDIA's NIM deployment docs — the exact ceiling wasn't
+// independently verified against Joel's own account, so treat 256K as
+// the safe planning number, not 1M). This is the model that can actually
+// hold a large chunk of the repo in one call, directly targeting the
+// "Flow can only see 5 files / 8KB at once" problem.
+//
+// Code/research get the big model since those are the tasks that
+// benefit from large context (reading many files, understanding
+// cross-file structure). Chat/creative/pdf stay on the smaller, faster
+// model — NVIDIA's free tier is governed by a ~40 req/min rate limit
+// (not a daily cap, per NVIDIA's own forum confirmation), so there's no
+// daily-quota reason to downgrade those, but the Ultra model is slower
+// and heavier than needed for a quick chat reply.
 const NV_MODELS = {
-  code:     'nvidia/llama-3.1-nemotron-70b-instruct',
-  research: 'nvidia/llama-3.1-nemotron-70b-instruct',
-  chat:     'nvidia/llama-3.1-nemotron-70b-instruct',
-  creative: 'nvidia/llama-3.1-nemotron-70b-instruct',
-  pdf:      'nvidia/llama-3.1-nemotron-70b-instruct',
+  code:     'nvidia/nemotron-3-ultra-550b-a55b',
+  research: 'nvidia/nemotron-3-ultra-550b-a55b',
+  chat:     'nvidia/nemotron-3-super-120b-a12b',
+  creative: 'nvidia/nemotron-3-super-120b-a12b',
+  pdf:      'nvidia/nemotron-3-super-120b-a12b',
 };
-const NV_TOKENS = { code: 3000, research: 1500, chat: 600, creative: 800, pdf: 1000 };
+// max_tokens bumped for code/research — 3000 was sized for the OLD
+// smaller-context model's typical use; a repo-analysis task feeding in
+// many files needs real room for the response too, not just the input.
+const NV_TOKENS = { code: 8000, research: 4000, chat: 600, creative: 800, pdf: 1000 };
 
 async function tryNvidia(messages, intent, key) {
   const model     = NV_MODELS[intent] || NV_MODELS.chat;
   const maxTokens = NV_TOKENS[intent] || 600;
+  const isUltra   = model === 'nvidia/nemotron-3-ultra-550b-a55b';
   const ctrl = new AbortController();
   const t    = setTimeout(() => ctrl.abort(), 10000);
   try {
+    const body = { model, max_tokens: maxTokens, messages, stream: false };
+    // Nemotron 3 Ultra defaults to a reasoning/thinking mode per NVIDIA's
+    // own docs (chat_template_kwargs.enable_thinking) — leaving this
+    // unset can spend part of the token budget on hidden reasoning
+    // before the visible reply even starts, same class of issue Flow
+    // already handles for its own <flow-think> scratchpad elsewhere in
+    // this file. Explicitly disabling it here keeps behavior predictable
+    // and keeps the full max_tokens budget for the actual visible answer.
+    if (isUltra) {
+      body.chat_template_kwargs = { enable_thinking: false };
+    }
     const r = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
       method:  'POST',
       headers: {
         'Authorization': `Bearer ${key}`,
         'Content-Type':  'application/json',
       },
-      body: JSON.stringify({ model, max_tokens: maxTokens, messages, stream: false }),
+      body: JSON.stringify(body),
       signal: ctrl.signal,
     });
     clearTimeout(t);
@@ -329,9 +402,22 @@ export default async function handler(req, res) {
   const intent   = force_intent || detectIntent(trimmed);
 
   const totalChars = trimmed.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
-  if (totalChars > 18000) {
+  // REAL FIX: this was a flat 18000-char cap on every request regardless
+  // of intent — which would have silently defeated the whole point of
+  // the NVIDIA/OpenRouter Nemotron 3 Ultra upgrade above (large-context
+  // repo analysis) by rejecting exactly the kind of large payload that
+  // upgrade exists to handle. code/research get a much higher ceiling;
+  // ~4 chars/token is a standard rough estimate, so 900,000 chars stays
+  // safely under Nemotron's ~1M token context with room for the
+  // response. Other intents (chat, creative, pdf) keep the original
+  // conservative limit — they were never the bottleneck and don't
+  // benefit from a bigger payload.
+  const sizeLimit = (intent === 'code' || intent === 'research') ? 900000 : 18000;
+  if (totalChars > sizeLimit) {
     return res.status(200).json({
-      reply: "That's too large for me to process in one go, Boss. Try asking about a specific section instead.",
+      reply: intent === 'code' || intent === 'research'
+        ? "That's too large even for the large-context path, Boss. Try narrowing to a specific set of files instead."
+        : "That's too large for me to process in one go, Boss. Try asking about a specific section instead.",
       model: 'Flow:size-guard',
       intent,
     });
@@ -347,8 +433,7 @@ export default async function handler(req, res) {
     catch (e) { errors.push(`Cerebras: ${e.message}`); }
   }
 
-  // OpenRouter first for code (Nemotron), fallback for others
-  // NVIDIA direct API — Nemotron 70B, best for code + research
+  // NVIDIA direct API — Nemotron 3 Ultra (large-context), primary for code + research
   if (NV_KEY) {
     try   { const r = await tryNvidia(trimmed, intent, NV_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`NVIDIA: ${e.message}`); }
