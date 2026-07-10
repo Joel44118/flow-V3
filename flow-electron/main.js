@@ -6,6 +6,28 @@ const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCap
 const path = require('path');
 const { startWakeWordEngine, stopWakeWordEngine } = require('./wakeword-engine');
 
+// ── Main-process log forwarding to renderer DevTools ─────────────────────
+// REAL FIX: a packaged .exe has no terminal window, so console.log calls
+// in THIS file and in wakeword-engine.js (both running in Electron's main
+// process) were previously invisible with no way to see them at all —
+// confirmed the real gap behind not being able to diagnose the wake-word
+// silence. Wraps console.log/warn/error so every main-process log line
+// ALSO gets sent to the renderer's DevTools console (opened via the new
+// Ctrl+Shift+I shortcut below), prefixed so it's clear these came from
+// the main process, not the page itself.
+const _origLog = console.log, _origWarn = console.warn, _origError = console.error;
+function _forwardToRenderer(level, args) {
+  try {
+    if (mainWin && !mainWin.isDestroyed()) {
+      const msg = args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+      mainWin.webContents.send('main-process-log', { level, msg });
+    }
+  } catch (_) { /* never let logging itself crash anything */ }
+}
+console.log = (...args) => { _origLog(...args); _forwardToRenderer('log', args); };
+console.warn = (...args) => { _origWarn(...args); _forwardToRenderer('warn', args); };
+console.error = (...args) => { _origError(...args); _forwardToRenderer('error', args); };
+
 // ── Single instance — prevents double windows on double-click ─────────────
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.quit(); process.exit(0); }
@@ -716,6 +738,22 @@ function registerGlobalShortcuts() {
       mainWin.focus();
     });
     if (!ok) console.warn('[Flow] Global shortcut Ctrl+Shift+F registration failed — may conflict with another app.');
+
+    // REAL FIX: there was previously no way to open DevTools in the
+    // packaged app at all — no menu item, no shortcut, nothing. This
+    // meant any bug (like the wake-word silence this shortcut exists to
+    // help debug) was genuinely invisible: no console, no error message,
+    // nothing to check. Ctrl+Shift+I opens the RENDERER console (F12-style
+    // browser devtools) — this shows renderer-side errors (like the app.js
+    // 401 Joel saw) but NOT main-process console.log output from
+    // wakeword-engine.js, which only appears in the terminal when running
+    // via `npm start` from source, not in a packaged .exe. Documented here
+    // plainly rather than silently leaving that gap unaddressed.
+    const devToolsOk = globalShortcut.register('CommandOrControl+Shift+I', () => {
+      if (!mainWin) return;
+      mainWin.webContents.toggleDevTools();
+    });
+    if (!devToolsOk) console.warn('[Flow] Global shortcut Ctrl+Shift+I registration failed.');
   } catch (e) {
     console.warn('[Flow] registerGlobalShortcuts failed:', e.message);
   }
