@@ -74,7 +74,11 @@ ${snippet}
 Return only the JSON object.`
           }
         ],
-        max_tokens: 600,
+        max_tokens: 1000,  // was 600 — a busy 10-message snippet with several
+                            // projects/decisions can genuinely need more room;
+                            // if the JSON gets cut off mid-object, JSON.parse
+                            // throws exactly the "Expected ',' or '}'" error
+                            // flagged as unresolved in the handoff notes.
         _skipMemory: true  // prevent infinite loop
       })
     });
@@ -84,9 +88,40 @@ Return only the JSON object.`
     const raw  = data.reply || data.content || "";
     if (!raw) return;
 
-    // Parse the extracted JSON
-    const clean   = raw.replace(/```json|```/g, "").trim();
-    const parsed  = JSON.parse(clean);
+    // Parse the extracted JSON. Real fix for the "Expected ',' or '}'"
+    // parse error flagged as unresolved in the handoff notes: the previous
+    // version assumed the ENTIRE response (after stripping ```json fences)
+    // was valid JSON with nothing else around it. LLMs commonly add a
+    // preamble ("Here's the extracted data:") or trailing note even when
+    // told not to — that extra text isn't invalid JSON syntax by itself,
+    // but it means JSON.parse() is being handed "some text {...} more text"
+    // instead of just "{...}", which throws exactly this kind of error.
+    // Fix: extract the outermost {...} substring specifically, ignoring
+    // anything before/after it, rather than assuming the whole string is
+    // clean.
+    const clean = raw.replace(/```json|```/g, "").trim();
+    const firstBrace = clean.indexOf("{");
+    const lastBrace  = clean.lastIndexOf("}");
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
+      console.warn("[MemExtract] no JSON object found in response, skipping this cycle");
+      return;
+    }
+    const jsonSlice = clean.slice(firstBrace, lastBrace + 1);
+
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonSlice);
+    } catch (parseErr) {
+      // Still failed even after isolating the {...} slice — this means the
+      // JSON itself is genuinely malformed (e.g. truncated mid-object by
+      // max_tokens, or the model produced invalid syntax), not just
+      // wrapped in extra text. Log it clearly and skip this cycle rather
+      // than crash — losing one extraction cycle is fine, since this runs
+      // again in 5 minutes; crashing the whole chat flow over a background
+      // memory task would not be.
+      console.warn("[MemExtract] JSON.parse failed on isolated object:", parseErr.message, "— skipping this cycle. Raw snippet:", jsonSlice.slice(0, 200));
+      return;
+    }
 
     // Merge into existing stored facts (don't overwrite, accumulate)
     _merge(K.projects,    parsed.projects,    "name");
