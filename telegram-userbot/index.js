@@ -177,7 +177,24 @@ async function memGet(key) {
     const r = await fetch(`${SITE_URL}/api/memory?key=${encodeURIComponent(key)}`);
     if (!r.ok) return null;
     const d = await r.json();
-    return d?.value ?? null;
+    if (d?.value == null) return null;
+    // REAL BUG FIX: this used to return d.value raw. api/memory.js's KV
+    // backend stores objects as JSON-stringified text (same pattern
+    // already found and fixed in api/social.js's safeKvResult this
+    // session) — so d.value here was literally the STRING
+    // '{"state":"online","setAt":...}', not an object. Every check like
+    // `manualPresence?.state` was reading .state off a plain string,
+    // which is always undefined — meaning isManualOnline was ALWAYS
+    // false no matter what Joel clicked. This is the confirmed root
+    // cause of Echo still auto-replying while "online"/manual mode was
+    // supposedly active. If the value is already a real object (some
+    // older writes may not be double-encoded), JSON.parse would throw on
+    // it, so we fall back to returning it as-is in that case.
+    if (typeof d.value === "string") {
+      try { return JSON.parse(d.value); }
+      catch { return d.value; } // genuinely a plain string value, not JSON — return as-is
+    }
+    return d.value;
   } catch (e) {
     console.error("[Userbot] memGet failed:", e.message);
     return null;
@@ -317,13 +334,30 @@ function chatStateKey(senderId) { return `tg_chat_state_${senderId}`; }
 
       const senderId = message.senderId?.toString() || "unknown";
 
-      // ── Blocklist check (includes the Flow bot itself once ID is set) ──
+      // ── Blocklist check (anti-spam/anti-bot — includes the Flow bot
+      // itself once ID is set) ─────────────────────────────────────────
       const sender = await message.getSender();
       const senderName = sender?.firstName || sender?.username || "Someone";
       const blocklist = await getBlocklist();
       if (isBlocked(sender, blocklist)) {
         const reason = sender?.bot ? "is a bot" : "is on the blocklist";
         console.log(`🚫 Ignored message from ${senderName} — ${reason}`);
+        return;
+      }
+
+      // ── Mute check — genuinely SEPARATE system from the blocklist
+      // above, per Joel's explicit request. This is Joel's own
+      // deliberate "ignore this specific person indefinitely" choice
+      // (via /mute @username on the Flow bot), stored under its own KV
+      // key so it can never be accidentally affected by anti-spam
+      // blocklist changes or vice versa. Checked here, BEFORE the
+      // manual-presence/drafting logic further down, so a muted contact
+      // is skipped silently even while Joel is in online/manual mode —
+      // muting always wins, with no timeout, no draft sent, nothing.
+      const uname = (sender?.username || "").toLowerCase();
+      const mutedList = await memGet("flow_muted_contacts");
+      if (uname && Array.isArray(mutedList) && mutedList.includes(uname)) {
+        console.log(`🔇 Ignored message from ${senderName} — muted by Joel`);
         return;
       }
 
