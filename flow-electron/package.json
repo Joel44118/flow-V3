@@ -1,6 +1,6 @@
 {
   "name": "flow-ai",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Flow AI Desktop",
   "main": "main.js",
   "scripts": {
