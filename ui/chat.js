@@ -278,11 +278,11 @@ export const Chat = {
 
     const approveBtn = document.createElement("button");
     approveBtn.textContent = "✅ Approve";
-    approveBtn.className = "msg-feedback-btn";
+    approveBtn.className = "tool-approval-btn tool-approval-btn--approve";
 
     const rejectBtn = document.createElement("button");
     rejectBtn.textContent = "❌ Reject";
-    rejectBtn.className = "msg-feedback-btn";
+    rejectBtn.className = "tool-approval-btn tool-approval-btn--reject";
 
     const statusMsg = document.createElement("p");
     statusMsg.style.cssText = "margin-top:8px;font-size:13px;opacity:0.8;";
