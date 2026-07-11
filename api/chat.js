@@ -39,7 +39,15 @@ function detectIntent(messages) {
 
   // Code: only if explicitly asking to write/fix/build code
   // NOT triggered by casual mentions like "i built a thing" or "this code is cool"
-  if (/\b(write\s+(me\s+)?(a\s+)?(function|script|code|component|api|endpoint|class|module)|fix\s+(this|the|my)\s+(bug|error|code|function)|debug\s+this|refactor\s+(this|my)|create\s+(a\s+)?(react|vue|angular|node|express|next\.?js)|build\s+(a\s+)?(full|complete|working)\s+\w+\s+(app|api|site|bot)|code\s+for\s+this|implement\s+(this|the|a)\s+\w+)\b/.test(recentUser)) return 'code';
+  // REAL FIX: added a specific pattern for self-tools trigger phrasing
+  // ("I need a tool that...", "build/make something that...") — this was
+  // the confirmed root cause of self-tools proposals failing: without
+  // this pattern, these requests classified as 'chat', routing to a
+  // smaller/faster model (nemotron-3-super-120b) that didn't reliably
+  // follow the self-tools instruction buried in a large system prompt.
+  // Routing to 'code' intent gets a stronger model AND matches what the
+  // request actually is — asking Flow to write a small program.
+  if (/\b(write\s+(me\s+)?(a\s+)?(function|script|code|component|api|endpoint|class|module)|fix\s+(this|the|my)\s+(bug|error|code|function)|debug\s+this|refactor\s+(this|my)|create\s+(a\s+)?(react|vue|angular|node|express|next\.?js)|build\s+(a\s+)?(full|complete|working)\s+\w+\s+(app|api|site|bot)|code\s+for\s+this|implement\s+(this|the|a)\s+\w+|i\s+need\s+(a\s+|an?\s+)?(small\s+)?(tool|function|utility|helper)\s+that|(build|make|create)\s+(me\s+)?(a\s+|an?\s+)?(small\s+|little\s+)?(tool|function|utility|helper|script)\s+(that|to|for))\b/.test(recentUser)) return 'code';
 
   // Research: only explicit research requests
   if (/\b(research\s+\w|explain\s+(in\s+detail|how|why|what)\s+\w{4}|deep\s+dive|summarise\s+this|summarize\s+this|analyse\s+this|analyze\s+this|history\s+of\s+\w|what\s+is\s+\w{5})\b/.test(recentUser)) return 'research';
