@@ -243,6 +243,20 @@ export async function sendMessage(overrideText, opts = {}) {
       body:    JSON.stringify({ messages, max_tokens: CONFIG.MAX_TOKENS }),
     });
 
+    // REAL BUG FIX: res.json() was called unconditionally here — but a
+    // Vercel-level timeout (504) or similar infra error returns plain
+    // text/HTML (e.g. "An error occurred..."), not JSON. Blindly parsing
+    // that as JSON threw a confusing "Unexpected token 'A'..." error
+    // instead of telling Joel what actually happened. Checking the
+    // content-type first gives a clear, specific message instead.
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      if (res.status === 504) {
+        throw new Error("The request timed out (504) — this can happen with large repo-analysis or code-editing requests. Try again, or narrow the request to fewer files.");
+      }
+      throw new Error(`Server returned a non-JSON error (status ${res.status}).`);
+    }
+
     const data = await res.json();
     if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
 
@@ -253,8 +267,55 @@ export async function sendMessage(overrideText, opts = {}) {
     // — if Flow proposed a new tool, show the approval UI instead of the
     // raw tagged JSON block, using the cleaned (tag-stripped) text for the
     // conversational part of the reply.
-    const proposal = parseToolProposal(data.reply);
-    const displayText = proposal ? proposal.cleanedReply : data.reply;
+    let proposal = parseToolProposal(data.reply);
+    let finalReply = data.reply;
+
+    // REAL SAFETY NET: confirmed via real testing that even with correct
+    // intent routing (code) and the self-tools instruction present in the
+    // prompt, larger models sometimes still answer with plain code
+    // instead of using the proposal tag — a genuine instruction-following
+    // gap, not a routing bug (both were verified correct). If the user's
+    // message looks like a self-tools request AND the model's reply
+    // contains a code block but NO proposal tag, retry once with an
+    // explicit correction rather than silently letting the approval step
+    // get bypassed — mirrors the retry-with-error-fed-back pattern
+    // already used in /edit's syntax validation.
+    const looksLikeToolRequest = /\b(i\s+need\s+(a\s+|an?\s+)?(small\s+)?(tool|function|utility|helper)\s+that|(build|make|create)\s+(me\s+)?(a\s+|an?\s+)?(small\s+|little\s+)?(tool|function|utility|helper|script)\s+(that|to|for))\b/i.test(text);
+    const replyHasCodeButNoTag = !proposal && /```/.test(data.reply);
+
+    if (looksLikeToolRequest && replyHasCodeButNoTag) {
+      console.log("[Flow] Self-tool request answered with plain code, not the proposal tag — retrying once with a correction.");
+      try {
+        const retryRes = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [
+              ...messages,
+              { role: "assistant", content: data.reply },
+              { role: "user", content: "You answered with plain code instead of using the [SELFTOOL_PROPOSAL] tagged format. Re-answer this SAME request using ONLY the tagged proposal format as instructed in your system prompt — do not explain, just use the tag." },
+            ],
+            force_intent: "code",
+          }),
+        });
+        const retryContentType = retryRes.headers.get("content-type") || "";
+        if (retryContentType.includes("application/json")) {
+          const retryData = await retryRes.json();
+          if (retryRes.ok && retryData.reply) {
+            const retryProposal = parseToolProposal(retryData.reply);
+            if (retryProposal) {
+              proposal = retryProposal;
+              finalReply = retryData.reply;
+              console.log("[Flow] Retry succeeded — got a real proposal this time.");
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[Flow] Self-tool retry failed, showing original reply:", e.message);
+      }
+    }
+
+    const displayText = proposal ? proposal.cleanedReply : finalReply;
 
     const _wrap = _chat.add(displayText, "bot");
     if (proposal && _chat.addToolProposal) {
@@ -303,6 +364,13 @@ export async function sendToAI(text) {
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ messages, max_tokens: CONFIG.MAX_TOKENS }),
     });
+    const contentType2 = res.headers.get("content-type") || "";
+    if (!contentType2.includes("application/json")) {
+      if (res.status === 504) {
+        throw new Error("The request timed out (504) — try again, or narrow the request.");
+      }
+      throw new Error(`Server returned a non-JSON error (status ${res.status}).`);
+    }
     const data = await res.json();
     if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
 
