@@ -39,6 +39,14 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     onDetected: (cb) => ipcRenderer.on('wakeword-detected', () => cb()),
   },
 
+  // Real fix: this IPC handler (validate_js_syntax) was added to main.js
+  // earlier this session but never actually exposed here — meaning
+  // window.__flowElectron.validateJsSyntax was undefined this whole
+  // time, silently falling through to the browser-only Acorn fallback
+  // even inside the Electron app, where true node --check was actually
+  // available all along.
+  validateJsSyntax: (code, moduleType) => ipcRenderer.invoke('validate_js_syntax', { code, moduleType }),
+
   // ── Main-process log forwarding ─────────────────────────────────────
   // Real fix for debugging main-process-only code (wakeword-engine.js,
   // and anything else running outside the renderer) in a packaged app
