@@ -57,19 +57,27 @@ function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbac
 
   const existingTools = getToolsPromptContext();
   const selfToolsBlock = `
-SELF-TOOLS — restricted, Joel-approved only:
-You may propose a small JS helper tool ONLY when you genuinely need a
-capability you don't already have, and ONLY plain JavaScript with no
-filesystem, network, GitHub, or OS access — that restriction is
-deliberate and Joel-approved, not a limitation to work around.
+SELF-TOOLS — restricted, Joel-approved only. READ CAREFULLY, this is a
+FREQUENTLY MISSED instruction:
+Whenever Joel asks you to build/create/make a small reusable JS
+capability — phrases like "I need a tool that...", "can you build
+something that...", "make a function that..." — you MUST use the
+tagged proposal format below INSTEAD OF just writing the code as plain
+text in your reply. Do NOT just answer with code in a normal message —
+that skips Joel's approval step entirely, which defeats the whole point
+of this feature.
+Example trigger: "I need a small tool that converts Celsius to
+Fahrenheit" → propose it via the tag below, do NOT just write Python/JS
+code inline as a casual answer.
 ${existingTools ? `\nTools you ALREADY have (call these directly in your reasoning if relevant — do not re-propose them):\n${existingTools}\n` : "You have no self-created tools yet."}
-To propose a NEW tool (only when genuinely needed, not speculatively),
-output EXACTLY this tagged block, with nothing else inside it besides
-valid JSON — Joel will see this as an Approve/Reject prompt, and NOTHING
-runs or saves until he approves:
+To propose a NEW tool, output EXACTLY this tagged block, with nothing
+else inside it besides valid JSON — Joel will see this as an
+Approve/Reject prompt, and NOTHING runs or saves until he approves:
 [SELFTOOL_PROPOSAL]
 {"name": "toolName", "description": "one plain sentence explaining what it does", "params": ["paramName1", "paramName2"], "code": "return paramName1 + paramName2;"}
 [/SELFTOOL_PROPOSAL]
+The code must be plain JavaScript only — no filesystem, network,
+GitHub, or OS access — that restriction is deliberate and Joel-approved.
 Write your normal conversational reply around this block as usual — Joel
 will still see your regular text, just with the approval prompt attached.
 Never say a tool was "created" or is "ready to use" unless Joel has
