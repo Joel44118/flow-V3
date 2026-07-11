@@ -18,6 +18,7 @@ import {
   setNotepad, setSpeakFn, setVision, setSearchHandlers, setScreenControl,
   parseCommand, parseVisionCommand, parseSearchGoalCommand,
   handleRepoCommand, handleScaffoldCommand, handlePushCommand,
+  handleEditCommand, confirmPendingEdit,
   checkPendingPush, setHistoryFn, getTime, getDate
 } from "./core/commands.js";
 
@@ -168,6 +169,14 @@ async function handleSlashCmd(cmd, prompt) {
       // Free-form: /push <anything> — e.g. "it to flowpay" or "the files to Joel44118/myapp"
       if (!p) { Chat.add("Tell me what to push. e.g.:\n/push it to flowpay\n/push the structure to Joel44118/myapp", "bot"); return; }
       await parseSearchGoalCommand("push " + p);
+      break;
+    case "/edit":
+      // Real diff-based editing — fetches the actual current file,
+      // grounds the AI's edit in real content, validates syntax, shows
+      // a real diff, only pushes after Joel approves.
+      // Usage: /edit owner/repo path/to/file.js: describe the change
+      if (!p) { Chat.add("Usage: /edit owner/repo path/to/file.js: describe the change you want", "bot"); return; }
+      await handleEditCommand(p);
       break;
     case "/agent": {
       if (!p || p === "exit" || p === "off") {
@@ -321,6 +330,18 @@ async function flowSend(text) {
   Memory.add("user", text);
 
   try {
+    // Intercept pending diff-based edit approval (set by /edit command) —
+    // checked BEFORE checkPendingPush since both use similar "yes"/"no"
+    // style replies and /edit's approval should take priority if one is
+    // actually pending.
+    if (window._flowPendingEdit) {
+      const lower = text.trim().toLowerCase();
+      if (lower === "yes" || lower === "no") {
+        await confirmPendingEdit(lower === "yes");
+        return;
+      }
+    }
+
     // Intercept pending file push (set by /push command)
     if (await checkPendingPush(text)) return;
 
