@@ -92,7 +92,8 @@ HARD LIMITS section above forbids.
   return `${CONFIG.PERSONALITY}${personaBlock || ""}
 
 ${selfKnowledgeBlock()}
-${feedbackBlock}${ragBlock}${agentBlock}${skillBlock}${extractedBlock}${projectsBlock}${selfToolsBlock}
+${selfToolsBlock}
+${feedbackBlock}${ragBlock}${agentBlock}${skillBlock}${extractedBlock}${projectsBlock}
 LIVE CONTEXT:
 Time: ${getTime()}
 Date: ${getDate()}
@@ -281,9 +282,16 @@ export async function sendMessage(overrideText, opts = {}) {
     // get bypassed — mirrors the retry-with-error-fed-back pattern
     // already used in /edit's syntax validation.
     const looksLikeToolRequest = /\b(i\s+need\s+(a\s+|an?\s+)?(small\s+)?(tool|function|utility|helper)\s+that|(build|make|create)\s+(me\s+)?(a\s+|an?\s+)?(small\s+|little\s+)?(tool|function|utility|helper|script)\s+(that|to|for))\b/i.test(text);
-    const replyHasCodeButNoTag = !proposal && /```/.test(data.reply);
+    // REAL BUG FIX: this used to also require /```/ (a literal triple-
+    // backtick code fence) in the reply before retrying — but real
+    // testing showed the model can answer with plain prose / inline
+    // code / no fence at all and still skip the proposal tag. The
+    // robust check is simpler: if the request looked like a tool
+    // request and there's no proposal tag AT ALL, retry — regardless of
+    // what specific format the missed reply happened to use.
+    const missedProposal = looksLikeToolRequest && !proposal;
 
-    if (looksLikeToolRequest && replyHasCodeButNoTag) {
+    if (missedProposal) {
       console.log("[Flow] Self-tool request answered with plain code, not the proposal tag — retrying once with a correction.");
       try {
         const retryRes = await fetch("/api/chat", {
