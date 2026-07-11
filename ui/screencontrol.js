@@ -66,6 +66,14 @@ async function _electronType(text) {
 
 // ── Chrome extension relay (browser tab / non-Electron only) ───────────
 let _extReady       = false;
+let _extId          = null; // REAL BUG FIX: this was assigned at line ~76
+                             // below but never declared anywhere in the
+                             // file — in an ES module (strict mode by
+                             // default), assigning to an undeclared
+                             // variable throws ReferenceError: _extId is
+                             // not defined, exactly the bug flagged in
+                             // the original handoff notes and never
+                             // fixed until now.
 let _chatAdd        = null;
 let _pendingReplies = new Map();
 let _replyTimeouts  = new Map();
