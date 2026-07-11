@@ -779,6 +779,184 @@ Rules:
 // ── Push a single file (/push owner/repo path/to/file.js) ─────────────────
 // If content follows inline after the path, push immediately.
 // If not, set a pending state and push on next message.
+// ── Real syntax validation before any push ───────────────────────────────
+// Uses TRUE node --check (via the IPC handler built earlier this session,
+// running in Electron's real main-process Node runtime) when available.
+// Falls back to Acorn — a real, MIT-licensed, browser-compatible JS
+// parser (github.com/acornjs/acorn), loaded via CDN with no build step,
+// matching Joel's no-CLI, browser-only workflow — when running in a
+// plain browser tab where no Node runtime exists at all to run a real
+// node --check against.
+export async function validateSyntax(code, filePath) {
+  const isModule = /\bimport\s|\bexport\s/.test(code);
+
+  if (window.__flowElectron?.validateJsSyntax) {
+    // Real node --check, genuinely running in Electron's main process.
+    return window.__flowElectron.validateJsSyntax(code, isModule ? "module" : "script");
+  }
+
+  // Browser fallback — only for .js files; non-JS files (css/json/md/etc)
+  // skip validation entirely rather than being incorrectly rejected by a
+  // JS parser.
+  if (!/\.(js|jsx|mjs|cjs)$/i.test(filePath)) {
+    return { valid: true, skipped: true };
+  }
+
+  try {
+    const acorn = await import("https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.mjs");
+    acorn.parse(code, { ecmaVersion: "latest", sourceType: isModule ? "module" : "script" });
+    return { valid: true };
+  } catch (e) {
+    return { valid: false, error: e.message };
+  }
+}
+
+// ── /edit — real diff-based editing, replacing the old paste-the-whole-
+// file-yourself /push flow for actual code changes. Fetches the REAL
+// current file from GitHub (never guesses or reconstructs it), asks the
+// AI to produce a full replacement grounded in that real content, checks
+// real syntax (retrying once with the error fed back if it fails), then
+// shows Joel an actual line-by-line diff — not the whole file — and only
+// pushes after he approves it.
+// Usage: /edit owner/repo path/to/file.js: description of the change
+export async function handleEditCommand(rawInput) {
+  const colonIdx = rawInput.indexOf(":");
+  if (colonIdx === -1) {
+    _chatAdd?.("Usage: /edit owner/repo path/to/file.js: describe the change you want", "bot");
+    return;
+  }
+  const head = rawInput.slice(0, colonIdx).trim();
+  const changeDescription = rawInput.slice(colonIdx + 1).trim();
+  const [repoFull, filePath] = head.split(/\s+/);
+  if (!repoFull || !filePath || !changeDescription) {
+    _chatAdd?.("Usage: /edit owner/repo path/to/file.js: describe the change you want", "bot");
+    return;
+  }
+  const slashIdx = repoFull.indexOf("/");
+  if (slashIdx === -1) {
+    _chatAdd?.(`Format must be owner/repo — got "${repoFull}"`, "bot");
+    return;
+  }
+  const owner = repoFull.slice(0, slashIdx);
+  const repo  = repoFull.slice(slashIdx + 1);
+
+  _chatAdd?.(`Fetching the real current \`${filePath}\` from \`${owner}/${repo}\`...`, "bot");
+
+  let currentFile;
+  try {
+    currentFile = await getFile(owner, repo, filePath);
+  } catch (e) {
+    _chatAdd?.(`Couldn't fetch \`${filePath}\`: ${e.message}`, "bot");
+    return;
+  }
+
+  const originalContent = currentFile.content || "";
+  _chatAdd?.(`Got it (${originalContent.length} chars). Asking the AI to make the change...`, "bot");
+
+  const EDIT_SYSTEM = `You are editing a REAL, EXISTING file. You will be given its exact current content and a description of a change to make.
+Respond with ONLY the complete new file content after the change — nothing else, no explanation, no markdown code fences, no preamble.
+Preserve everything in the original file that isn't related to the requested change — do not rewrite, reformat, or "improve" unrelated code.
+Keep the same overall structure, imports, and style as the original unless the change specifically requires altering them.`;
+
+  async function requestNewContent(extraContext = "") {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: EDIT_SYSTEM },
+          {
+            role: "user",
+            content: `File: ${filePath}\n\nCurrent content:\n${originalContent}\n\nRequested change: ${changeDescription}${extraContext}`,
+          },
+        ],
+        force_intent: "code",
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.reply) throw new Error(d.error || "AI request failed");
+    // Strip markdown fences if the model added them despite instructions —
+    // real models sometimes do this even when told not to.
+    return d.reply.replace(/^```[a-z]*\n?/i, "").replace(/```\s*$/i, "").trim();
+  }
+
+  let newContent;
+  try {
+    newContent = await requestNewContent();
+  } catch (e) {
+    _chatAdd?.(`AI request failed: ${e.message}`, "bot");
+    return;
+  }
+
+  // Real syntax validation, with ONE retry if it fails — feeding the
+  // actual error back to the AI rather than silently pushing broken code
+  // or giving up on the first failure.
+  let validation = await validateSyntax(newContent, filePath);
+  if (!validation.valid && !validation.skipped) {
+    _chatAdd?.(`First attempt had a syntax error (${validation.error}) — retrying once with that fed back...`, "bot");
+    try {
+      newContent = await requestNewContent(`\n\nIMPORTANT: your previous attempt had this syntax error, fix it: ${validation.error}`);
+      validation = await validateSyntax(newContent, filePath);
+    } catch (e) {
+      _chatAdd?.(`Retry failed: ${e.message}`, "bot");
+      return;
+    }
+  }
+
+  if (!validation.valid && !validation.skipped) {
+    _chatAdd?.(`⚠️ Still has a syntax error after retrying: ${validation.error}\nNot pushing — you'll need to look at this one manually.`, "bot");
+    return;
+  }
+
+  // Real line-by-line diff via jsdiff (CDN, no build step) — shown to
+  // Joel instead of the whole file, so review actually focuses on what
+  // changed.
+  const jsdiff = await import("https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.mjs");
+  const changes = jsdiff.diffLines(originalContent, newContent);
+  let diffText = "";
+  for (const part of changes) {
+    const prefix = part.added ? "+ " : part.removed ? "- " : "  ";
+    diffText += part.value.split("\n").filter((l) => l).map((l) => prefix + l).join("\n") + "\n";
+  }
+  // Cap the shown diff length for sanity — a real diff of a huge
+  // rewrite would flood the chat; still push the FULL content
+  // underneath, just don't render an unreadable wall of text.
+  const diffPreview = diffText.length > 4000 ? diffText.slice(0, 4000) + "\n\n[diff truncated for display — full change will still be pushed]" : diffText;
+
+  window._flowPendingEdit = { owner, repo, filePath, newContent };
+  _chatAdd?.(
+    `Syntax check passed${validation.skipped ? " (skipped — non-JS file)" : ""}. Here's the real diff for \`${filePath}\`:\n\n\`\`\`diff\n${diffPreview}\n\`\`\`\n\nReply "yes" to push this, or "no" to cancel.`,
+    "bot"
+  );
+}
+
+// Called from the main message handler when window._flowPendingEdit is
+// set and Joel replies yes/no — mirrors the existing pending-push
+// confirmation pattern already used elsewhere in this file.
+export async function confirmPendingEdit(confirmed) {
+  const pending = window._flowPendingEdit;
+  window._flowPendingEdit = null;
+  if (!pending) return false;
+
+  if (!confirmed) {
+    _chatAdd?.("Cancelled — nothing was pushed.", "bot");
+    return true;
+  }
+
+  _chatAdd?.(`Pushing the approved change to \`${pending.filePath}\`...`, "bot");
+  try {
+    const result = await createOrUpdateFile(
+      pending.owner, pending.repo, pending.filePath,
+      _sanitizeContent(pending.newContent),
+      `edit: ${pending.filePath}`
+    );
+    _chatAdd?.(`✅ Pushed. [View commit](${result.commit?.html_url || "#"})`, "bot");
+  } catch (e) {
+    _chatAdd?.(`Push failed: ${e.message}`, "bot");
+  }
+  return true;
+}
+
 export async function handlePushCommand(rawInput) {
   const tokens = rawInput.trim().split(/\s+/);
   if (tokens.length < 2) {
