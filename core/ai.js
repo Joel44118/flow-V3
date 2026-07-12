@@ -257,16 +257,54 @@ export async function sendMessage(overrideText, opts = {}) {
     _chat.hideTyping();
 
     // REAL AUTONOMOUS TOOL-USE: if the model's own judgment chose to
-    // call a client-side tool (camera, image generation), api/chat.js
-    // signals that via clientAction rather than pretending to have done
-    // it server-side (which is structurally impossible — a serverless
-    // function has no camera or browser access). Dispatched via a
-    // callback (_onClientAction) that app.js registers, rather than
-    // importing ui/imagine.js or ui/vision.js directly here — core/ai.js
-    // importing UI modules would be a backwards architectural
-    // dependency (UI should depend on core, not the reverse).
+    // call a client-side tool, api/chat.js signals that via clientAction
+    // rather than pretending to have done it server-side (which is
+    // structurally impossible — a serverless function has no camera,
+    // browser fetch, or localStorage access). Dispatched via a callback
+    // (_onClientAction) that app.js registers, rather than importing UI
+    // modules directly here — core/ai.js importing UI would be a
+    // backwards architectural dependency (UI should depend on core, not
+    // the reverse).
+    //
+    // TWO REAL SHAPES, by design:
+    //   - Action tools (open_camera, generate_image, toggle_sentinel,
+    //     open_notepad): fire-and-forget. app.js's handler does the
+    //     thing and prints its own canned confirmation line — there's
+    //     nothing for the model to say beyond what already happened.
+    //   - Info tools (get_my_level, get_my_live_state,
+    //     get_my_capabilities, check_for_updates): the handler in app.js
+    //     returns the real fetched data as a string. When it does, THIS
+    //     function does a genuine second round-trip to /api/chat with
+    //     that real result appended as a tool message — so Flow's actual
+    //     reply is grounded in fresh data ("You're at Level 5, 200/500
+    //     XP"), not silence or a guess. This mirrors exactly how
+    //     get_current_time already works server-side — same real
+    //     mechanism, just resolved in the browser because the data
+    //     (localStorage, repo map fetch) only exists there.
     if (data.clientAction && _onClientAction) {
-      _onClientAction(data.clientAction, data.clientArgs);
+      const toolResult = await _onClientAction(data.clientAction, data.clientArgs);
+      if (typeof toolResult === "string" && toolResult) {
+        const followUpMessages = [
+          ...messages,
+          { role: "assistant", content: data.reply || "" },
+          { role: "user", content: `[Real tool result for ${data.clientAction}]: ${toolResult}\n\nNow answer Joel's actual question using this real data.` },
+        ];
+        try {
+          const res2 = await fetch("/api/chat", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ messages: followUpMessages, max_tokens: CONFIG.MAX_TOKENS }),
+          });
+          const data2 = await res2.json();
+          if (res2.ok && data2.reply) {
+            data.reply = data2.reply; // real, grounded reply replaces the original tool-call stub
+          }
+        } catch (e) {
+          console.warn("[Flow] Tool follow-up round-trip failed:", e.message);
+          // Fall through and show whatever data.reply already was — a
+          // real network failure here shouldn't crash the whole turn.
+        }
+      }
     }
 
     // Check for a self-tool proposal BEFORE displaying the reply normally
@@ -387,6 +425,33 @@ export async function sendToAI(text) {
     }
     const data = await res.json();
     if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
+
+    // Same real clientAction handling as sendMessage above — this path
+    // (voice/search-triggered messages) was calling /api/chat with the
+    // same tools offered, but never actually dispatched a resulting
+    // clientAction at all. A genuine pre-existing gap: a tool call made
+    // via this path would previously do nothing.
+    if (data.clientAction && _onClientAction) {
+      const toolResult = await _onClientAction(data.clientAction, data.clientArgs);
+      if (typeof toolResult === "string" && toolResult) {
+        const followUpMessages = [
+          ...messages,
+          { role: "assistant", content: data.reply || "" },
+          { role: "user", content: `[Real tool result for ${data.clientAction}]: ${toolResult}\n\nNow answer Joel's actual question using this real data.` },
+        ];
+        try {
+          const res2 = await fetch("/api/chat", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ messages: followUpMessages, max_tokens: CONFIG.MAX_TOKENS }),
+          });
+          const data2 = await res2.json();
+          if (res2.ok && data2.reply) data.reply = data2.reply;
+        } catch (e) {
+          console.warn("[Flow] Tool follow-up round-trip failed:", e.message);
+        }
+      }
+    }
 
     _chat.hideTyping();
 
