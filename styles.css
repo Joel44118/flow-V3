@@ -94,12 +94,13 @@ body::after {
   content: "";
   position: fixed;
   inset: 0;
-  padding: 2px;
+  padding: 4px;
   background: conic-gradient(
     from var(--titlebar-rotation, 0deg),
     transparent 0%,
-    rgba(var(--titlebar-glow-rgb), 0.9) 8%,
-    transparent 20%,
+    rgba(var(--titlebar-glow-rgb), 1) 8%,
+    rgba(var(--titlebar-glow-rgb), 0.5) 14%,
+    transparent 24%,
     transparent 100%
   );
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
@@ -108,6 +109,8 @@ body::after {
   pointer-events: none;
   animation: titlebar-light-rotate 3s linear infinite;
   z-index: 999; /* above content, below any modal/popup overlays that use higher z-index */
+  filter: drop-shadow(0 0 10px rgba(var(--titlebar-glow-rgb), 0.9))
+          drop-shadow(0 0 22px rgba(var(--titlebar-glow-rgb), 0.6));
 }
 
 @keyframes titlebar-light-rotate {
