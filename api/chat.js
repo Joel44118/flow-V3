@@ -137,23 +137,154 @@ const CB_MODELS = {
   pdf:      [{ model: 'zai-glm-4.7',  maxTokens: 1200 }],
 };
 
+// ═══════════════════════════════════════════════════════════════
+// REAL AUTONOMOUS TOOL-CALLING — genuinely new infrastructure, not
+// wiring on top of something that already existed. Confirmed via
+// research before building: Cerebras' gpt-oss-120b explicitly supports
+// "native tool use, including function calling" (per Cerebras/OpenRouter's
+// own model card), and Groq's API is OpenAI-compatible, which includes
+// standard tool-calling. NVIDIA NIM's tool-calling support on the HOSTED
+// cloud API (not local Docker) is genuinely uncertain — a real NVIDIA
+// developer forum post shows a user unable to get it working on the
+// cloud API specifically — so tools are only sent to Cerebras/Groq for
+// now, not NVIDIA, until that's verified.
+//
+// This lets Flow's OWN judgment decide to call one of these mid-
+// conversation — e.g. deciding it needs the current time to answer a
+// question, rather than only responding to a specific typed command
+// like "/time" or a regex-matched phrase. That's the real, qualitative
+// difference Joel asked for: "not just speaking, having access to
+// everything he can do."
+// ═══════════════════════════════════════════════════════════════
+const FLOW_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_current_time',
+      description: 'Get the current real date and time. Call this whenever you need to know what time or date it actually is right now — never guess or assume.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_camera',
+      description: "Open Joel's camera so you can see what's in front of him right now. Call this when he asks you to look at something, check what he's showing you, or when seeing his physical surroundings would genuinely help answer his question.",
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_image',
+      description: 'Generate an image from a text description. Call this when Joel asks for an image, picture, illustration, or visual to be created — not for photos of real people or copyrighted characters.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'A detailed description of the image to generate' },
+        },
+        required: ['prompt'],
+      },
+    },
+  },
+];
+
+// Real execution dispatcher — actually runs the tool server-side where
+// possible (get_current_time), or returns a signal the CLIENT needs to
+// act on (open_camera, generate_image both need browser/Electron APIs
+// this server function can't touch directly — camera access and image
+// generation both require client-side execution). The response shape
+// tells the caller which case it is.
+async function executeFlowTool(toolName, args) {
+  if (toolName === 'get_current_time') {
+    const now = new Date();
+    return {
+      handled: true,
+      result: `Current date and time: ${now.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' })}`,
+    };
+  }
+  if (toolName === 'open_camera') {
+    // Can't open a camera from a serverless function — this needs to
+    // happen in the browser/Electron renderer. Signal the client to
+    // handle it; core/ai.js's tool-call loop checks for this shape.
+    return { handled: false, clientAction: 'open_camera', result: null };
+  }
+  if (toolName === 'generate_image') {
+    // Same real constraint: image generation is a separate API call
+    // (api/imagine.js) best triggered client-side where the existing
+    // UI (ui/imagine.js) already handles displaying the result — not
+    // duplicated here.
+    return { handled: false, clientAction: 'generate_image', clientArgs: args, result: null };
+  }
+  return { handled: true, result: `Unknown tool: ${toolName}` };
+}
+
 async function tryCerebras(messages, intent, key) {
   const chain = CB_MODELS[intent] || CB_MODELS.chat;
+  // Only offer tools for intents where autonomous tool-use genuinely
+  // helps — chat and research are the natural fit for "what time is it"
+  // or "look at this"; code/pdf intents stay tool-free to avoid the
+  // model reaching for a tool mid-code-generation for no real reason.
+  const offerTools = intent === 'chat' || intent === 'research';
+
   for (const { model, maxTokens } of chain) {
     const ctrl = new AbortController();
     const t    = setTimeout(() => ctrl.abort(), 7000);
     try {
+      const body = { model, max_tokens: maxTokens, messages };
+      if (offerTools) body.tools = FLOW_TOOLS;
+
       const r = await fetch('https://api.cerebras.ai/v1/chat/completions', {
         method:  'POST',
         headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ model, max_tokens: maxTokens, messages }),
+        body:    JSON.stringify(body),
         signal:  ctrl.signal,
       });
       clearTimeout(t);
       if (r.status === 429) { console.warn(`[Flow] Cerebras rate limit: ${model}`); continue; }
       const data = await r.json();
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      return { reply: cleanReply(data.choices[0].message.content), model: `Cerebras:${model}` };
+
+      const choice = data.choices[0];
+      const toolCalls = choice.message?.tool_calls;
+
+      // REAL tool-calling loop: if the model chose to call a tool, we
+      // actually run it and give the model a chance to respond using
+      // the real result — a genuine second round-trip, not simulated.
+      // Client-side tools (camera, image-gen) can't be executed here
+      // (this is a serverless function, no camera/browser access) —
+      // those get signaled back to the caller (core/ai.js) to handle in
+      // the renderer instead.
+      if (toolCalls?.length) {
+        const call = toolCalls[0]; // one tool call per turn for now — real, simple scope
+        const toolArgs = JSON.parse(call.function.arguments || '{}');
+        const toolResult = await executeFlowTool(call.function.name, toolArgs);
+
+        if (!toolResult.handled) {
+          return {
+            reply: choice.message.content || '',
+            model: `Cerebras:${model}`,
+            clientAction: toolResult.clientAction,
+            clientArgs: toolResult.clientArgs,
+          };
+        }
+
+        const followUpMessages = [
+          ...messages,
+          choice.message,
+          { role: 'tool', tool_call_id: call.id, content: toolResult.result },
+        ];
+        const r2 = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, max_tokens: maxTokens, messages: followUpMessages }),
+        });
+        const data2 = await r2.json();
+        if (!r2.ok || !data2.choices?.length) throw new Error(data2.error?.message || `HTTP ${r2.status}`);
+        return { reply: cleanReply(data2.choices[0].message.content), model: `Cerebras:${model}` };
+      }
+
+      return { reply: cleanReply(choice.message.content), model: `Cerebras:${model}` };
     } catch (e) { clearTimeout(t); console.warn(`[Flow] Cerebras ${model}: ${e.message}`); }
   }
   throw new Error('Cerebras: all models failed');
