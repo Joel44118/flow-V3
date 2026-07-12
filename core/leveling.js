@@ -47,6 +47,11 @@ const XP_VALUES = {
                       // than Joel deliberately flagging something as wrong, so it
                       // should never be worth as much, even though it's real.
   project:    150,  // a genuinely new project created
+  selfTool:   60,   // Flow successfully self-extended: proposed a tool AND Joel
+                     // approved it. Calibrated between knowledge (25) and project
+                     // (150) — a genuine new permanent capability, requiring Joel's
+                     // explicit approval (a real deliberate signal, like correction),
+                     // but not as significant as an entire new project.
 };
 
 function xpForLevel(level) {
@@ -178,4 +183,12 @@ export function awardCasualLearningXp(summary) {
 // not an edit to an existing one).
 export function awardProjectXp(projectName) {
   _awardXp(XP_VALUES.project, `New project: ${projectName}`);
+}
+
+// Call ONLY from the self-tools approval flow (ui/chat.js, when Joel
+// clicks Approve and approveTool() actually succeeds) — never for a
+// mere proposal. This is a real, permanent new capability Flow now has,
+// gated behind Joel's explicit deliberate approval.
+export function awardSelfToolXp(toolName) {
+  _awardXp(XP_VALUES.selfTool, `Self-extended: ${toolName}`);
 }
