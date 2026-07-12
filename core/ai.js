@@ -251,9 +251,19 @@ export async function sendMessage(overrideText, opts = {}) {
     }
 
     const data = await res.json();
-    if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
+    // REAL BUG FIXED: a successful tool-call response legitimately has an
+    // EMPTY reply string by design (api/chat.js returns `reply:
+    // choice.message.content || ''` when the model calls a client-side
+    // tool and says nothing else) — this guard used to throw
+    // "Server error 200" on that exact case, before the clientAction
+    // handling below ever ran. Confirmed via real testing: "what's your
+    // level" and "did anything change" both hit this, since those tool
+    // calls produce genuinely empty first-pass replies. Only throw when
+    // there's truly nothing usable — no reply AND no clientAction to
+    // follow up on.
+    if (!res.ok || (!data.reply && !data.clientAction)) throw new Error(data.error || `Server error ${res.status}`);
 
-    console.log("[Flow] ←", data.reply.slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
+    console.log("[Flow] ←", (data.reply || "(tool call, no initial text)").slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
     _chat.hideTyping();
 
     // REAL AUTONOMOUS TOOL-USE: if the model's own judgment chose to
@@ -424,7 +434,10 @@ export async function sendToAI(text) {
       throw new Error(`Server returned a non-JSON error (status ${res.status}).`);
     }
     const data = await res.json();
-    if (!res.ok || !data.reply) throw new Error(data.error || `Server error ${res.status}`);
+    // Same real bug fix as sendMessage above — empty reply + a
+    // clientAction is a legitimate successful tool-call response, not an
+    // error.
+    if (!res.ok || (!data.reply && !data.clientAction)) throw new Error(data.error || `Server error ${res.status}`);
 
     // Same real clientAction handling as sendMessage above — this path
     // (voice/search-triggered messages) was calling /api/chat with the
