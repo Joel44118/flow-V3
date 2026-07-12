@@ -8,7 +8,7 @@ import { Memory }        from "./core/memory.js";
 import { Weather }       from "./core/weather.js";
 import { Alarms }        from "./core/alarms.js";
 import { Speech }        from "./core/speech.js";
-import { sendMessage, sendToAI, setUI } from "./core/ai.js";
+import { sendMessage, sendToAI, setUI, setClientActionHandler } from "./core/ai.js";
 import { initSlash, getSlashState, clearSlash } from "./ui/slash.js";
 import { activateAgent, deactivateAgent, getActiveAgent, onAgentChange, AGENTS } from "./core/agent.js";
 import { startRecording, stopRecordingAndTranscribe, cancelRecording } from "./core/whisper.js";
@@ -267,6 +267,23 @@ setUI(Chat, Orb);
 window.__flowOrb = Orb; // used by speech.js cancel/pause to reset orb state
 setNotepad(Notepad);
 setSpeakFn((t) => Speech.speak(t));
+
+// REAL AUTONOMOUS TOOL-USE dispatcher — actually performs the action
+// when Flow's own judgment (via real tool-calling in api/chat.js) decides
+// to use the camera or generate an image, rather than only responding to
+// a specific typed command. Uses the exact same Camera.start() and
+// generateImage() functions already wired to the manual buttons, so
+// behavior is identical whether Joel clicks a button or Flow decides to
+// use it autonomously.
+setClientActionHandler((action, args) => {
+  if (action === "open_camera") {
+    Chat.add("📷 Opening the camera to take a look...", "bot");
+    Camera.start();
+  } else if (action === "generate_image" && args?.prompt) {
+    Chat.add(`🎨 Generating an image: "${args.prompt}"...`, "bot");
+    generateImage(args.prompt).catch((e) => Chat.addError(`Image generation failed: ${e.message}`));
+  }
+});
 
 const visionObj = { Camera, ScreenVision, YOLO, Gesture };
 initVision(Chat, Orb, sendMessage);
