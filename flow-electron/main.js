@@ -110,6 +110,32 @@ function createWindow() {
     .then(() => { mainWin.loadURL('https://flow-v3-mu.vercel.app'); })
     .catch(() => { mainWin.loadURL('https://flow-v3-mu.vercel.app'); });
 
+  // REAL FIX for the blank-tab-at-boot bug: previously there was no
+  // did-fail-load handler at all. Confirmed root cause — Flow loads from
+  // the live internet (loadURL, not local files), and when the OS
+  // auto-starts Flow at boot (setupAutoStart, further down), the
+  // network (Wi-Fi/DNS) may genuinely not be ready yet. With no retry
+  // logic, that one failed load attempt meant a blank window forever,
+  // since nothing ever tried again. This retries with a real backoff
+  // (2s, 4s, 6s) up to 3 times, which covers the realistic window for
+  // network coming up after boot without retrying forever if something
+  // is actually, persistently wrong (e.g. no internet at all).
+  let loadRetries = 0;
+  const MAX_LOAD_RETRIES = 3;
+  mainWin.webContents.on('did-fail-load', (_e, errorCode, errorDescription) => {
+    if (errorCode === -3) return; // ERR_ABORTED — happens on normal navigation, not a real failure
+    if (loadRetries >= MAX_LOAD_RETRIES) {
+      console.error(`[Flow] Page load failed ${MAX_LOAD_RETRIES} times (${errorDescription}) — giving up. Check internet connection.`);
+      return;
+    }
+    loadRetries++;
+    const delay = 2000 * loadRetries; // 2s, 4s, 6s backoff
+    console.warn(`[Flow] Page load failed (${errorDescription}) — retrying in ${delay}ms (attempt ${loadRetries}/${MAX_LOAD_RETRIES})`);
+    setTimeout(() => {
+      if (mainWin && !mainWin.isDestroyed()) mainWin.loadURL('https://flow-v3-mu.vercel.app');
+    }, delay);
+  });
+
   mainWin.webContents.session.setPermissionRequestHandler(
     (_wc, perm, cb) =>
       cb(['media','microphone','camera','notifications','geolocation'].includes(perm))
