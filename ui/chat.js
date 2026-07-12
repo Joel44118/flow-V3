@@ -5,6 +5,7 @@ import { Memory }                  from "../core/memory.js";
 import { hasCode, renderWithCode } from "./codeblock.js";
 import { Speech }                  from "../core/speech.js";
 import { approveTool }             from "../core/selftools.js";
+import { awardSelfToolXp }         from "../core/leveling.js";
 
 const colLeft  = () => document.getElementById("col-left");
 const colRight = () => document.getElementById("col-right");
@@ -293,6 +294,10 @@ export const Chat = {
         statusMsg.textContent = `✅ "${proposal.name}" saved — Flow can use it from now on.`;
         approveBtn.disabled = true;
         rejectBtn.disabled  = true;
+        // Award XP only here — genuine success, Joel's explicit
+        // approval, matches leveling.js's own doc comment for this
+        // function exactly (never award for a mere proposal).
+        awardSelfToolXp(proposal.name);
       } else {
         statusMsg.textContent = `⚠️ ${result.error}`;
       }
