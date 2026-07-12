@@ -61,6 +61,52 @@ body {
   z-index:20;
   -webkit-app-region: drag; /* whole bar drags the window in Electron; no-op in browser */
   user-select: none; -webkit-user-select: none; /* stops accidental text selection when dragging the window by the title bar (e.g. selecting "FLOW" or the build stamp mid-drag) */
+  /* Real, live-synced defaults — overwritten by Orb.setState() via
+     document.documentElement.style.setProperty(), so these starting
+     values only apply before the first setState() call ever fires. */
+  --titlebar-glow-c1: #38bdf8;
+  --titlebar-glow-c2: #0369a1;
+  --titlebar-glow-rgb: 56,189,248;
+}
+
+/* ── Sleek rotating light effect around the title bar, synced to the
+   orb's real state colors (via the CSS custom properties Orb.setState()
+   sets in ui/orb.js — same palette the orb itself uses, so this can
+   never visually drift out of sync with what the orb is actually doing).
+   Implemented as a ::before pseudo-element using conic-gradient, which
+   is the standard, performant CSS way to fake a "rotating light" without
+   JS-driven animation — the rotation itself is a pure CSS @keyframes
+   loop, only the COLOR is dynamically controlled by Orb.setState(). ── */
+#top-bar::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  padding: 1px;
+  border-radius: 0;
+  background: conic-gradient(
+    from var(--titlebar-rotation, 0deg),
+    transparent 0%,
+    rgba(var(--titlebar-glow-rgb), 0.9) 8%,
+    transparent 20%,
+    transparent 100%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: titlebar-light-rotate 3s linear infinite;
+  z-index: -1;
+}
+
+@keyframes titlebar-light-rotate {
+  from { --titlebar-rotation: 0deg; }
+  to   { --titlebar-rotation: 360deg; }
+}
+
+@property --titlebar-rotation {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
 }
 
 /* ── Level bar (v2) — moved from a full-width top strip to a compact
