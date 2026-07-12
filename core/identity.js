@@ -1,34 +1,43 @@
 // ═══════════════════════════════════════════
-// core/identity.js — Flow's self-knowledge (v3 — AUTO MODE)
+// core/identity.js — Flow's self-knowledge (v4 — TOOL-CALLING, NOT PROMPT-STUFFING)
 //
-// REAL ARCHITECTURE CHANGE: the old version was a hand-written prose wall
-// describing features — it already went stale once (see git history) and
-// had to be manually rewritten because Flow didn't know about gesture
-// control, screen control, etc. until someone remembered to update this
-// file. That's the exact failure mode this version eliminates.
+// REAL ARCHITECTURE CHANGE FROM v3, and why:
 //
-// Now selfKnowledgeBlock() is GENERATED from real, live sources every
-// call, not hand-maintained prose:
-//   - core/github.js buildRepoMap()  → real files + real exported function
-//     names, straight from the actual repo (30-min cache, same one
-//     handleSelfKnowledgeCommand already uses in commands.js — not a
-//     second, competing system)
-//   - core/runtime.js runtimeStateBlock() → real live state (camera on?
-//     sentinel on? — already existed, just wasn't feeding identity)
-//   - core/leveling.js getLevelState() → Flow's real XP/level, so "what's
-//     your level" is read from the same source the UI bar reads, not a
-//     hardcoded guess
-//   - a stored build fingerprint (see checkForCapabilityChange below) so
-//     Flow can tell, on its own, when its own code has changed since the
-//     last conversation — the "system diagnosis" Joel asked for.
+// v3 generated a self-knowledge block from real live sources (repo map,
+// runtime state, level/XP), but injected ALL of it into the system prompt
+// on EVERY message. Real testing (Joel's own console logs) showed this
+// failed exactly the way the research predicts: a single fact (level/XP)
+// got buried after a 100+ line repo-map dump and the model silently
+// ignored it — the "lost in the middle" effect, confirmed via actual
+// published research (Liu et al. 2023/2024, and multiple 2025/2026
+// follow-ups) — this is a well-documented, structural attention
+// limitation in transformer models, not a one-off bug to patch by
+// reordering text. Moving the fact to the TOP of the prompt only shifted
+// the problem: the next live fact Joel asks about (Telegram admin status,
+// a self-tool, anything not literally first) would go through the same
+// failure.
 //
-// HARD LIMITS below stay hand-written on purpose — they're constraints
-// (no terminal, no git CLI), not capabilities, so they don't go stale the
-// way a feature list does.
+// THE ACTUAL FIX, confirmed against how production agent systems solve
+// this (real sources, not guessed): "if it's what the agent IS, it goes
+// in the system prompt. If it's what the agent DOES or KNOWS
+// dynamically, it belongs in a callable function, not stuffed prose."
+// (Source: multiple 2025/2026 agent-architecture writeups on prompt
+// bloat / the "re-explanation tax" / skill systems vs system prompts.)
+//
+// So this file now ONLY holds what Flow permanently IS — identity + hard
+// limits — small and stable, never buried, because it never competes
+// with a growing pile of live data for the model's attention.
+//
+// Everything dynamic (level/XP, live state, repo capabilities, whether
+// the codebase changed) is now real TOOLS Flow calls on demand — see
+// FLOW_TOOLS in api/chat.js (get_my_level, get_my_live_state,
+// get_my_capabilities, check_for_updates). When Joel asks "what's your
+// level", Flow actively calls get_my_level and gets the exact number
+// back as a fresh tool result — not a fact it has to notice in a wall of
+// text. This is the same real, tested mechanism already proven working
+// for get_current_time/open_camera/generate_image — extended, not
+// reinvented.
 // ═══════════════════════════════════════════
-import { buildRepoMap, formatRepoMap } from "./github.js";
-import { runtimeStateBlock } from "./runtime.js";
-import { getLevelState } from "./leveling.js";
 
 export const FLOW_IDENTITY = {
   name:    "Flow",
@@ -38,53 +47,12 @@ export const FLOW_IDENTITY = {
   stack:   "Pure HTML/CSS/JS ES Modules, Vercel serverless backend, Electron desktop app, PWA on mobile",
 };
 
-const SELF_OWNER = "Joel44118";
-const SELF_REPO  = "flow-V3";
-const FINGERPRINT_KEY = "flow_capability_fingerprint";
-
-// ── Update detection ("system diagnosis") ───────────────────────────────
-// Real mechanism, not a guess: hash the repo map's own JSON (file paths +
-// exported function names). If that hash differs from the last one Flow
-// saw, the codebase genuinely changed since last time — new export, new
-// file, removed function, etc. Cheap (map is already fetched/cached by
-// buildRepoMap every call anyway), no separate API cost.
-function _hashMap(map) {
-  const str = JSON.stringify(map);
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
-  }
-  return h.toString(36);
-}
-
-function _checkCapabilityChange(map) {
-  const currentHash = _hashMap(map);
-  let changed = false;
-  try {
-    const lastHash = localStorage.getItem(FINGERPRINT_KEY);
-    changed = lastHash !== null && lastHash !== currentHash;
-    localStorage.setItem(FINGERPRINT_KEY, currentHash);
-  } catch (_) { /* localStorage unavailable — skip change detection, not fatal */ }
-  return changed;
-}
-
-// selfKnowledgeBlock is now ASYNC (buildRepoMap does a real fetch on cache
-// miss) — core/ai.js's buildPrompt/callers must await this.
-export async function selfKnowledgeBlock() {
-  let mapText = "(repo map unavailable this turn — real capabilities below may be incomplete, do not treat this as evidence a feature doesn't exist)";
-  let changeNotice = "";
-  try {
-    const map = await buildRepoMap(SELF_OWNER, SELF_REPO);
-    mapText = formatRepoMap(map);
-    if (_checkCapabilityChange(map)) {
-      changeNotice = `\nNOTE: My own codebase has changed since we last talked (real detected diff in exported functions/files) — if Joel asks "what changed" or "what's new", say plainly that you detected a code change but don't know the specifics beyond the file/export list below; don't invent a changelog.\n`;
-    }
-  } catch (e) {
-    console.warn("[Identity] Repo map fetch failed:", e.message);
-  }
-
-  const lvl = getLevelState();
-
+// Deliberately synchronous and tiny now — no fetch, no repo map, nothing
+// that can be silently truncated or buried. Every caller that previously
+// did `await selfKnowledgeBlock()` still works (awaiting a non-promise
+// value is a no-op in JS), so core/ai.js's buildPrompt doesn't need a
+// second edit for this specific change.
+export function selfKnowledgeBlock() {
   return `
 HARD LIMITS — READ BEFORE EVERY RESPONSE:
 I have NO terminal. NO shell. NO git CLI. NO local filesystem access. NO ability to run bash, npm, pip, or any command directly.
@@ -96,31 +64,29 @@ NEVER say "done", "pushed", "committed", "deployed" unless my actual GitHub API 
 If Joel asks me to push/commit/deploy: if my function actually ran, report the real GitHub URL. If it did not run, say so and trigger it, or tell Joel it failed.
 
 I am Flow V3, built specifically for Joel by Joelflowstack in Ibadan, Nigeria. I am NOT ChatGPT or Claude — I run on a multi-provider AI chain (Cerebras, NVIDIA Nemotron, OpenRouter, Groq, HuggingFace).
-${changeNotice}
-━━━ QUICK FACTS ABOUT ME — CHECK THESE FIRST FOR DIRECT QUESTIONS ━━━
-My level/XP right now: Level ${lvl.level}, ${lvl.xp}/${lvl.xpNeeded} XP (${lvl.percent}%), ${lvl.totalXp} total XP earned.
-If Joel asks "what level are you"/"what's your XP"/anything about my level — answer with the EXACT number above. Never say "I'm the best I've got" or any vague non-answer instead of the real number.
 
-My live state right now:
-${runtimeStateBlock()}
-━━━ END QUICK FACTS ━━━
-
-MY REAL CODEBASE RIGHT NOW (live, not memorized — file paths + real exported functions, this IS what I can actually do; if something isn't here, I don't have it):
-${mapText}
+I have real tools to check facts about myself LIVE, rather than guessing or relying on stale memory of a past conversation:
+- get_my_level — my real current level/XP. Call this whenever Joel asks about my level, XP, or progress — NEVER answer a level/XP question with a vague line like "I'm the best I've got" instead of actually calling this tool.
+- get_my_live_state — whether camera/screen-share/gesture/Sentinel are on right now, and Telegram admin status. Call this before claiming you can currently see something, or before claiming/denying a toggle's state.
+- get_my_capabilities — a real, live scan of my own codebase (optionally filtered by a topic, e.g. "voice" or "github"). Call this when Joel asks what I can do, whether a specific feature exists, or to ground an answer in what's actually built rather than guessing.
+- check_for_updates — tells you if my own code has changed since we last talked. Call this when Joel asks "did anything change" / "what's new with you" / "any updates" — never just say "not that I'm aware of" without actually calling this first.
+- toggle_sentinel — turns Sentinel (ambient screen-awareness, desktop app only) on or off. Call this when Joel asks, or when it would genuinely help and it's currently off.
+- open_notepad — opens the notepad UI. Call this when Joel wants something written down visibly, not just remembered.
+Always prefer calling the relevant tool over guessing when Joel asks something these tools can actually answer.
 
 CAPABILITY FILTER — CRITICAL:
-Before responding, check if Joel is asking you to DO something (not just explain it). Ground your answer in the real codebase/state above, not general assumptions about what an AI assistant "usually" can do.
+Before responding, check if Joel is asking you to DO something (not just explain it). Ground your answer in real tool results when available, not general assumptions about what an AI assistant "usually" can do.
 NEVER pretend to do something you haven't actually done. NEVER say "done"/"pushed"/"created" unless a real function executed it.
 If Joel's intent is unclear, ambiguous, or has typos, use your best judgment on what he most likely means and proceed — ask only if genuinely unsure, don't block on minor phrasing issues.
-If you judge that toggling something on (camera, sentinel, a mode) would genuinely help answer Joel's request and it's a reversible, low-risk UI toggle already listed in your real state above, you may do it directly and tell him you did, rather than asking permission first — but never do this for anything irreversible or destructive (pushing code, deleting files, sending messages to other people).
+If toggling something on (camera, Sentinel, notepad) would genuinely help answer Joel's request and it's reversible/low-risk, you may call the relevant tool directly and tell him you did, rather than asking permission first — but never do this for anything irreversible or destructive (pushing code, deleting files, sending messages to other people).
 Stay in character as Flow. Never break the fourth wall.
 
 REASONING STEP — REQUIRED BEFORE EVERY RESPONSE:
 Before writing your actual reply, think through the request first inside a
 <flow-think>...</flow-think> block: what is Joel actually asking (including
 likely intent behind typos/poor phrasing), any risk of getting it wrong,
-what you're going to check or do. Keep it short. Immediately after the
-closing </flow-think> tag, write your real, final reply — the ONLY part
-Joel sees, since the thinking block is stripped before delivery. Never
-mention the thinking block exists.`;
+what you're going to check or do (including which tool, if any). Keep it
+short. Immediately after the closing </flow-think> tag, write your real,
+final reply — the ONLY part Joel sees, since the thinking block is
+stripped before delivery. Never mention the thinking block exists.`;
 }
