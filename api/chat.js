@@ -93,7 +93,17 @@ function trimMessages(messages) {
   // used to eat MY REAL LEVEL/XP and LIVE CONTEXT unconditionally.
   const SYS_BUDGET = 6000; // real budget, sized for Nemotron/Cerebras context, not the old 2000 tuned for short prose
   if (sys.length > SYS_BUDGET) {
-    const mapMatch = sys.match(/MY REAL CODEBASE RIGHT NOW[\s\S]*?(?=\n\nMY REAL LIVE STATE:)/);
+    // REAL FIX: identity.js was restructured to put QUICK FACTS (level/XP,
+    // live state) BEFORE the repo map instead of after it — moved there
+    // because a small model was losing track of a single fact buried
+    // after 100+ lines of file listings ("lost in the middle" failure,
+    // confirmed by Joel's real test: "what's your level" got a vague
+    // non-answer even though the data was genuinely in the prompt). This
+    // regex's lookahead must match that new order or it silently stops
+    // matching at all (regex still runs, mapMatch just becomes null, so
+    // this would NOT have thrown — a real, quiet failure mode worth
+    // remembering for future edits here).
+    const mapMatch = sys.match(/MY REAL CODEBASE RIGHT NOW[\s\S]*?(?=\n\nCAPABILITY FILTER)/);
     if (mapMatch) {
       const lines = mapMatch[0].split('\n').filter(Boolean);
       // Keep the header line + first ~40 file entries — enough for Flow
