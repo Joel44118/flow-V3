@@ -261,6 +261,14 @@ export const Orb = {
       globeMode   = false;
       globeTarget = 0;
     }
+    // Sync the title-bar rotating light effect to the SAME real colors
+    // used above (STATES palette) — reading from document root CSS
+    // custom properties rather than a duplicated color map, so the two
+    // effects can never silently drift out of sync with each other.
+    const palette = COLORS[s] || COLORS.idle;
+    document.documentElement.style.setProperty("--titlebar-glow-c1", palette.c1);
+    document.documentElement.style.setProperty("--titlebar-glow-c2", palette.c2);
+    document.documentElement.style.setProperty("--titlebar-glow-rgb", palette.g);
   },
   setGlobe(on) {
     globeMode   = on;
