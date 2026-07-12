@@ -26,7 +26,12 @@ import { getToolsPromptContext, parseToolProposal } from "./selftools.js";
 // UI refs injected at init (avoids circular imports)
 let _chat = null;
 let _orb  = null;
+let _onClientAction = null;
 export function setUI(chat, orb) { _chat = chat; _orb = orb; }
+// Registers a callback for real autonomous tool-use client actions
+// (camera, image generation) that Flow's own judgment decided to
+// trigger — see the clientAction handling in sendMessage below.
+export function setClientActionHandler(fn) { _onClientAction = fn; }
 
 // Restore persisted agent on boot
 restoreAgent();
@@ -263,6 +268,19 @@ export async function sendMessage(overrideText, opts = {}) {
 
     console.log("[Flow] ←", data.reply.slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
     _chat.hideTyping();
+
+    // REAL AUTONOMOUS TOOL-USE: if the model's own judgment chose to
+    // call a client-side tool (camera, image generation), api/chat.js
+    // signals that via clientAction rather than pretending to have done
+    // it server-side (which is structurally impossible — a serverless
+    // function has no camera or browser access). Dispatched via a
+    // callback (_onClientAction) that app.js registers, rather than
+    // importing ui/imagine.js or ui/vision.js directly here — core/ai.js
+    // importing UI modules would be a backwards architectural
+    // dependency (UI should depend on core, not the reverse).
+    if (data.clientAction && _onClientAction) {
+      _onClientAction(data.clientAction, data.clientArgs);
+    }
 
     // Check for a self-tool proposal BEFORE displaying the reply normally
     // — if Flow proposed a new tool, show the approval UI instead of the
