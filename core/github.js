@@ -43,6 +43,89 @@ export async function getFiles(owner, repo, paths) {
   return r.json();
 }
 
+// ── Repo map — lightweight, Cursor-style codebase awareness ──────────────
+// Real industry pattern, confirmed via research: instead of trying to
+// hold an entire codebase in context at once (doesn't scale, and isn't
+// even how Cursor — the industry's own reference implementation — does
+// it), maintain a compact MAP of what exists (file paths + a one-line
+// summary of exported function/class names), and pull full file content
+// only for files that are actually relevant to a given request.
+// Deliberately NOT using embeddings/vector search here — that's the
+// bigger piece explicitly deferred to build alongside real vector
+// memory (per Joel's own decision, twice, earlier this session). This
+// is the honest, achievable-now version: a plain regex scan for
+// exported function/class names, genuinely sufficient at this repo's
+// size (~128 files) without needing a real AST parser like Acorn, which
+// would be overkill just to list function names.
+const REPO_MAP_CACHE_KEY = "flow_repo_map_cache";
+const REPO_MAP_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes — real code does change, don't cache forever
+
+function _extractExports(content) {
+  const names = new Set();
+  // Covers the common real patterns actually used across this codebase,
+  // confirmed by looking at real files this session (core/ai.js,
+  // core/commands.js, core/github.js, etc.): export function X,
+  // export async function X, export const X = , export default.
+  const patterns = [
+    /export\s+(?:async\s+)?function\s+(\w+)/g,
+    /export\s+const\s+(\w+)\s*=/g,
+    /export\s+class\s+(\w+)/g,
+  ];
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(content)) !== null) names.add(m[1]);
+  }
+  if (/export\s+default\s+/.test(content)) names.add("(default export)");
+  return [...names];
+}
+
+export async function buildRepoMap(owner, repo, { forceRefresh = false } = {}) {
+  const cacheKey = `${REPO_MAP_CACHE_KEY}_${owner}_${repo}`;
+  if (!forceRefresh) {
+    try {
+      const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
+      if (cached && (Date.now() - cached.builtAt) < REPO_MAP_CACHE_TTL_MS) {
+        return cached.map;
+      }
+    } catch (_) { /* corrupt cache, rebuild */ }
+  }
+
+  const tree = await getRepoTree(owner, repo);
+  const jsFiles = tree.files.filter((f) => /\.(js|jsx|mjs|cjs)$/i.test(f.path));
+
+  // Real, honest cost note: this fetches every JS file's content once to
+  // extract function names — a real cost for a large repo, but at ~128
+  // files this is genuinely fine, and the 30-minute cache above means it
+  // only happens this often, not on every single request.
+  const map = [];
+  for (const f of jsFiles) {
+    try {
+      const file = await getFile(owner, repo, f.path);
+      const exportNames = _extractExports(file.content || "");
+      map.push({ path: f.path, exports: exportNames, sizeBytes: f.size });
+    } catch (e) {
+      // Don't let one bad file fetch break the whole map — just note it
+      // has unknown exports and move on.
+      map.push({ path: f.path, exports: [], sizeBytes: f.size, error: e.message });
+    }
+  }
+
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify({ map, builtAt: Date.now() }));
+  } catch (_) { /* localStorage full or unavailable — cache is a nice-to-have, not required */ }
+
+  return map;
+}
+
+// Formats a repo map into a compact text block suitable for injecting
+// into an AI prompt — much smaller than sending full file contents, but
+// still tells the model what exists and where, per file.
+export function formatRepoMap(map) {
+  return map
+    .map((f) => `${f.path}${f.exports.length ? ` — exports: ${f.exports.join(", ")}` : ""}`)
+    .join("\n");
+}
+
 // ── Search repos ──────────────────────────────────────────────────────────
 export async function searchRepos(query) {
   const r = await fetch(`${BASE}?mode=search&query=${encodeURIComponent(query)}`);
