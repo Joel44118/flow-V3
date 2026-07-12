@@ -1,13 +1,13 @@
 {
   "version": 2,
   "functions": {
-    "api/chat.js":      { "maxDuration": 10 },
+    "api/chat.js":      { "maxDuration": 60 },
     "api/vision.js":    { "maxDuration": 15 },
     "api/imagine.js":   { "maxDuration": 10 },
     "api/search.js":    { "maxDuration": 10 },
     "api/rag.js":       { "maxDuration": 60 },
     "api/memory.js":    { "maxDuration": 10 },
-    "api/github.js":    { "maxDuration": 10 },
+    "api/github.js":    { "maxDuration": 60 },
     "api/intel.js":     { "maxDuration": 10 },
     "api/mediapipe.js": { "maxDuration": 10 },
     "api/tts.js":       { "maxDuration": 10 },
