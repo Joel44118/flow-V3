@@ -559,6 +559,39 @@ if (window.__flowElectron?.onMainLog) {
   });
 }
 
+// ── Sentinel title-bar button (Electron only) ────────────────────────────
+// Real fix: the backend (IPC handlers in main.js, preload.js bridge) and
+// the tray-menu toggle already existed, but no button was ever added to
+// the title bar itself — confirmed by searching the whole HTML for it
+// and finding nothing. window.__flowElectron.sentinel only exists inside
+// the Electron build, so this whole block safely no-ops on the plain
+// web app.
+const sentinelBtn = document.getElementById("sentinel-toggle-btn");
+if (sentinelBtn && window.__flowElectron?.sentinel) {
+  // Reflect the real current state on load, rather than assuming off —
+  // Sentinel's state persists across app restarts via main.js, so the
+  // button needs to check, not guess.
+  window.__flowElectron.sentinel.status().then((status) => {
+    sentinelBtn.classList.toggle("active", !!status?.enabled);
+    if (status && !status.available) {
+      sentinelBtn.title = "Sentinel unavailable on this system (active-win failed to load)";
+      sentinelBtn.style.opacity = "0.25";
+      sentinelBtn.disabled = true;
+    }
+  }).catch(() => {});
+
+  sentinelBtn.addEventListener("click", async () => {
+    const isActive = sentinelBtn.classList.contains("active");
+    window.__flowElectron.sentinel.toggle(!isActive);
+    sentinelBtn.classList.toggle("active", !isActive);
+  });
+} else if (sentinelBtn) {
+  // Plain web app — Sentinel is Electron-only (needs desktopCapturer +
+  // active-win, neither available in a browser tab). Hide the button
+  // entirely rather than show a control that can never do anything.
+  sentinelBtn.style.display = "none";
+}
+
 // ── Vision popup ──────────────────────────────────────────────────────────
 const visionToggle = document.getElementById("vision-toggle-btn");
 const visionPopup  = document.getElementById("vision-popup");
