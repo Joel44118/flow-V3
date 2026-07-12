@@ -61,25 +61,52 @@ function detectIntent(messages) {
 
 function trimMessages(messages) {
   const system  = messages.find(m => m.role === 'system');
-  // Was slice(-8) — silently undercutting CONFIG.HISTORY_LIMIT's own
-  // documented value of 12 full exchanges. At 8 raw messages (4
-  // exchanges), anything established earlier in a conversation —
-  // roleplay setup, character details, an ongoing scenario — falls out
-  // of the window fast, which is the direct, confirmed cause of Flow
-  // dropping out of roleplay after just one or two exchanges. 24 raw
-  // messages = 12 full exchanges, matching what the config already
-  // claimed this was set to.
   const history = messages.filter(m => m.role !== 'system').slice(-24);
   if (!system) return trimUserMessages(history);
   let sys = system.content;
-  // Trim heavy sections to keep context tight
+
+  // Trim heavy, genuinely optional sections first (unchanged — these
+  // section names are still real and current).
   sys = sys.replace(/KNOWLEDGE BASE[\s\S]*?(?=\nLIVE CONTEXT:|\nAGENT|\nSKILL|$)/s, '');
-  sys = sys.replace(/WHAT I \(FLOW\) CAN DO[\s\S]*?(?=\nI am Flow|\nLIVE CONTEXT:|$)/s, '');
-  sys = sys.replace(/HARD LIMITS[\s\S]*?(?=\nWHAT I|\nI am Flow|\nLIVE CONTEXT:|$)/s, '');
   sys = sys.replace(/RAG KNOWLEDGE[\s\S]*?(?=\nLIVE CONTEXT:|\nAGENT|\nSKILL|$)/s, '');
   sys = sys.replace(/PROJECT CONTEXT[\s\S]*?(?=\nLIVE CONTEXT:|$)/s, '');
   sys = sys.replace(/EXTRACTED MEMORY[\s\S]*?(?=\nLIVE CONTEXT:|$)/s, '');
-  if (sys.length > 2000) sys = sys.slice(0, 2000) + '\n[trimmed]';
+
+  // REAL BUG FIXED (found via console log showing level/change-detection
+  // never reaching the model): the two deletions that used to sit here —
+  // "WHAT I (FLOW) CAN DO" and "HARD LIMITS" — targeted section markers
+  // from the OLD hand-written identity.js. The new identity.js's
+  // selfKnowledgeBlock() puts the real repo map, live level/XP, and the
+  // capability-change notice directly inside/after "HARD LIMITS" with NO
+  // "WHAT I"/"I am Flow" markers between them anymore, so that old regex
+  // silently deleted all of it every single call — never a rendering
+  // bug, an over-broad regex eating real live data before it ever
+  // reached the model. Removed entirely; HARD LIMITS is short and fixed
+  // now, no longer worth trimming.
+
+  // Blind 2000-char slice ALSO cut off the repo map / level / change
+  // notice (they sit near the end of the block) even when the regexes
+  // above didn't. Replaced with a structure-aware trim: if still over
+  // budget after the safe deletions, compress the repo map specifically
+  // (it's the one section that legitimately scales with codebase size)
+  // rather than blindly truncating the end of the whole prompt, which
+  // used to eat MY REAL LEVEL/XP and LIVE CONTEXT unconditionally.
+  const SYS_BUDGET = 6000; // real budget, sized for Nemotron/Cerebras context, not the old 2000 tuned for short prose
+  if (sys.length > SYS_BUDGET) {
+    const mapMatch = sys.match(/MY REAL CODEBASE RIGHT NOW[\s\S]*?(?=\n\nMY REAL LIVE STATE:)/);
+    if (mapMatch) {
+      const lines = mapMatch[0].split('\n').filter(Boolean);
+      // Keep the header line + first ~40 file entries — enough for Flow
+      // to answer "what can you do" concretely without blowing the
+      // budget; handleSelfKnowledgeCommand in commands.js still fetches
+      // the FULL map separately for deep "analyze your own repo" asks,
+      // so nothing is lost for that specific real use case.
+      const compact = lines.slice(0, 41).join('\n') + (lines.length > 41 ? `\n...and ${lines.length - 41} more files (ask "what can you do" or "analyze your repo" for the full list)` : '');
+      sys = sys.replace(mapMatch[0], compact);
+    }
+  }
+  if (sys.length > SYS_BUDGET) sys = sys.slice(0, SYS_BUDGET) + '\n[trimmed]';
+
   return [{ role: 'system', content: sys }, ...trimUserMessages(history)];
 }
 
