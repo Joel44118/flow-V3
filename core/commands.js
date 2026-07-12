@@ -167,6 +167,19 @@ export async function parseVisionCommand(text) {
 export async function parseSearchGoalCommand(text) {
   const t = text.toLowerCase().trim();
 
+  // ── Self-knowledge — broad, natural trigger for "what can you actually
+  // do" questions, checked BEFORE the narrower _devRx below. This is the
+  // real fix for a confirmed gap: phrasing like "analyze the whole repo
+  // and know your abilities" never matched _devRx's narrower pattern
+  // (which requires action verbs like develop/build/add plus a specific
+  // project-name pattern) — meaning Flow silently did nothing at all for
+  // exactly this kind of request, confirmed by real testing.
+  const _selfKnowledgeRx = /\b(what can you (actually |really )?do|your (own |real )?(abilities|capabilities|features)|analyz(e|ing) (the whole |your own |the )?repo|know (your|his) (own )?abilities|read (your|his) (own )?(code|codebase|repo)|what are you (capable of|able to do))\b/i;
+  if (_selfKnowledgeRx.test(t)) {
+    await handleSelfKnowledgeCommand(text);
+    return null;
+  }
+
   // ── Push structure from conversation history ───────────────────
   // ── Repo-aware development ────────────────────────────────────────────
   // "develop the flowpay app", "add a login page to flowpay",
@@ -666,7 +679,62 @@ async function _repoAwareDevelop(owner, repo, userRequest, chatAdd, searchSend, 
   }
 }
 
-// ── Repo creation — called directly from app.js /repo slash command ───────
+// ── Self-knowledge — "what can you actually do" via the real codebase ────
+// Genuinely different from _repoAwareDevelop above: that function reads a
+// SMALL slice of the repo (max 6 files, 800 chars each — the same old
+// tiny-context limit from before this session's large-model upgrades)
+// and proposes NEW code to add. This function reads the REAL repo map
+// (all files + their exported functions, built this session) and
+// answers questions about Flow's OWN EXISTING capabilities — no code
+// proposal, just an honest, grounded answer about what's actually built.
+// Defaults to Joel44118/flow-V3 since that's Flow's own project and the
+// obvious default for "know your own abilities" — confirmed as the
+// consistent hardcoded default used elsewhere in this file already.
+export async function handleSelfKnowledgeCommand(userRequest) {
+  const owner = "Joel44118";
+  const repo  = "flow-V3";
+
+  _chatAdd?.("🔍 Reading my own codebase to answer that properly...", "bot");
+
+  let map;
+  try {
+    map = await buildRepoMap(owner, repo);
+  } catch (e) {
+    _chatAdd?.(`Couldn't read my own repo: ${e.message}`, "bot");
+    return;
+  }
+
+  const mapText = formatRepoMap(map);
+  const SELF_KNOWLEDGE_SYSTEM = `You are Flow, answering a question about your OWN actual capabilities, grounded in your real codebase — not a marketing description, not guessing, an honest account of what's actually built.
+You'll be given a map of your real repo: every file and its exported functions. Use this to answer specifically and concretely — name real files and real function names where relevant, don't speak in vague generalities.
+If something Joel asks about doesn't appear to exist in the map, say so plainly rather than inventing that it exists.
+Keep the answer focused on what was actually asked — don't dump the entire file list unless specifically asked for it.`;
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: SELF_KNOWLEDGE_SYSTEM },
+          { role: "user", content: `My real repo map:\n${mapText}\n\nJoel's question: ${userRequest}` },
+        ],
+        force_intent: "research",
+      }),
+    });
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      throw new Error(res.status === 504 ? "Request timed out — try again." : `Server error ${res.status}`);
+    }
+    const data = await res.json();
+    if (!res.ok || !data.reply) throw new Error(data.error || "AI request failed");
+    _chatAdd?.(data.reply, "bot");
+  } catch (e) {
+    _chatAdd?.(`Couldn't answer that: ${e.message}`, "bot");
+  }
+}
+
+
 export async function handleRepoCommand(rawInput) {
   const parts    = rawInput.trim().split(/\s+/);
   const repoName = parts[0].replace(/[^\w._-]/g, "");
