@@ -200,7 +200,12 @@ async function executeFlowTool(toolName, args) {
     const now = new Date();
     return {
       handled: true,
-      result: `Current date and time: ${now.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' })}`,
+      // REAL FIX: no timeZone was specified, so this used the SERVER's
+      // timezone (Vercel functions run in UTC) instead of Joel's real
+      // timezone — confirmed by his real report of the time being 1hr
+      // off, consistent with UTC vs WAT (UTC+1). Africa/Lagos is the
+      // correct IANA timezone identifier for WAT.
+      result: `Current date and time: ${now.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Africa/Lagos' })}`,
     };
   }
   if (toolName === 'open_camera') {
