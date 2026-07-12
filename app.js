@@ -38,6 +38,8 @@ import { Projects } from "./core/projects.js";
 import { initAuth, resetPin, enrollFace, resetFace, hasFaceEnrolled } from "./ui/auth.js";
 import { initNotifications } from "./ui/notifications.js";
 import { initLeveling, getLevelState } from "./core/leveling.js";
+import { buildRepoMap, formatRepoMap } from "./core/github.js";
+import { runtimeStateBlock } from "./core/runtime.js";
 import { initSentinel, parseReplayCommand } from "./ui/sentinel.js";
 import { initFeedback } from "./core/feedback.js";
 import { initProjects, handleProjectCommand } from "./ui/projects.js";
@@ -270,18 +272,97 @@ setSpeakFn((t) => Speech.speak(t));
 
 // REAL AUTONOMOUS TOOL-USE dispatcher — actually performs the action
 // when Flow's own judgment (via real tool-calling in api/chat.js) decides
-// to use the camera or generate an image, rather than only responding to
-// a specific typed command. Uses the exact same Camera.start() and
-// generateImage() functions already wired to the manual buttons, so
-// behavior is identical whether Joel clicks a button or Flow decides to
-// use it autonomously.
-setClientActionHandler((action, args) => {
+// to use a tool, rather than only responding to a specific typed command.
+// Uses the exact same real functions already wired to manual UI (Camera,
+// generateImage, Notepad, Sentinel toggle), so behavior is identical
+// whether Joel clicks something or Flow decides to use it autonomously.
+//
+// ASYNC + RETURN VALUE, by design: action tools (open_camera,
+// generate_image, toggle_sentinel, open_notepad) return nothing — they
+// DO the thing and print their own confirmation in chat. Info tools
+// (get_my_level, get_my_live_state, get_my_capabilities,
+// check_for_updates) return a real string — core/ai.js uses that return
+// value to do a genuine second round-trip so Flow's reply is grounded in
+// the real fetched data, not silence.
+const CAPABILITY_FINGERPRINT_KEY = "flow_capability_fingerprint";
+function _hashCapabilityMap(map) {
+  const str = JSON.stringify(map);
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
+  return h.toString(36);
+}
+
+setClientActionHandler(async (action, args) => {
   if (action === "open_camera") {
     Chat.add("📷 Opening the camera to take a look...", "bot");
     Camera.start();
-  } else if (action === "generate_image" && args?.prompt) {
+    return;
+  }
+  if (action === "generate_image" && args?.prompt) {
     Chat.add(`🎨 Generating an image: "${args.prompt}"...`, "bot");
     generateImage(args.prompt).catch((e) => Chat.addError(`Image generation failed: ${e.message}`));
+    return;
+  }
+  if (action === "toggle_sentinel") {
+    const bridge = window.__flowElectron?.sentinel;
+    if (!bridge) { Chat.add("Sentinel is only available in the desktop app, not here — can't turn it on from the browser.", "bot"); return; }
+    try {
+      const { enabled } = await bridge.status();
+      const next = !enabled;
+      bridge.toggle(next);
+      bridge.learnToggle(next);
+      Chat.add(next ? "👁 Turning Sentinel on." : "Turning Sentinel off.", "bot");
+    } catch (e) {
+      Chat.addError(`Couldn't toggle Sentinel: ${e.message}`);
+    }
+    return;
+  }
+  if (action === "open_notepad") {
+    Notepad.open();
+    Chat.add("📝 Notepad's open.", "bot");
+    return;
+  }
+  if (action === "get_my_level") {
+    const lvl = getLevelState();
+    return `Level ${lvl.level}, ${lvl.xp}/${lvl.xpNeeded} XP (${lvl.percent}%), ${lvl.totalXp} total XP earned.`;
+  }
+  if (action === "get_my_live_state") {
+    return runtimeStateBlock();
+  }
+  if (action === "get_my_capabilities") {
+    try {
+      const map = await buildRepoMap("Joel44118", "flow-V3");
+      let filtered = map;
+      if (args?.topic) {
+        const topic = args.topic.toLowerCase();
+        filtered = map.filter(f =>
+          f.path.toLowerCase().includes(topic) ||
+          f.exports.some(e => e.toLowerCase().includes(topic))
+        );
+        if (!filtered.length) return `No files or exports matched "${args.topic}" in my real codebase — tell Joel plainly that this specific thing doesn't appear to exist, don't guess.`;
+      }
+      // Compact on purpose — this is a tool RESULT fed back to the model
+      // for one specific answer, not a permanent prompt fixture, so it's
+      // fine for it to be as long as genuinely needed for THIS answer
+      // without risking burying anything else (there's nothing else in
+      // this message for it to bury).
+      return formatRepoMap(filtered.slice(0, 60));
+    } catch (e) {
+      return `Repo map fetch failed (${e.message}) — tell Joel you couldn't check your own codebase right now rather than guessing what's there.`;
+    }
+  }
+  if (action === "check_for_updates") {
+    try {
+      const map = await buildRepoMap("Joel44118", "flow-V3");
+      const currentHash = _hashCapabilityMap(map);
+      const lastHash = localStorage.getItem(CAPABILITY_FINGERPRINT_KEY);
+      localStorage.setItem(CAPABILITY_FINGERPRINT_KEY, currentHash);
+      if (lastHash === null) return "This is the first time checking — no prior fingerprint to compare against, so treat this as a fresh baseline, not a 'no changes' answer.";
+      if (lastHash !== currentHash) return "Yes — a real diff was detected in exported functions/files since the last check. Don't invent specifics beyond that; if Joel wants details, call get_my_capabilities.";
+      return "No real change detected — the codebase fingerprint matches the last check.";
+    } catch (e) {
+      return `Couldn't check for updates (${e.message}) — tell Joel the check failed rather than guessing either way.`;
+    }
   }
 });
 
