@@ -72,50 +72,14 @@ function trimMessages(messages) {
   sys = sys.replace(/PROJECT CONTEXT[\s\S]*?(?=\nLIVE CONTEXT:|$)/s, '');
   sys = sys.replace(/EXTRACTED MEMORY[\s\S]*?(?=\nLIVE CONTEXT:|$)/s, '');
 
-  // REAL BUG FIXED (found via console log showing level/change-detection
-  // never reaching the model): the two deletions that used to sit here —
-  // "WHAT I (FLOW) CAN DO" and "HARD LIMITS" — targeted section markers
-  // from the OLD hand-written identity.js. The new identity.js's
-  // selfKnowledgeBlock() puts the real repo map, live level/XP, and the
-  // capability-change notice directly inside/after "HARD LIMITS" with NO
-  // "WHAT I"/"I am Flow" markers between them anymore, so that old regex
-  // silently deleted all of it every single call — never a rendering
-  // bug, an over-broad regex eating real live data before it ever
-  // reached the model. Removed entirely; HARD LIMITS is short and fixed
-  // now, no longer worth trimming.
-
-  // Blind 2000-char slice ALSO cut off the repo map / level / change
-  // notice (they sit near the end of the block) even when the regexes
-  // above didn't. Replaced with a structure-aware trim: if still over
-  // budget after the safe deletions, compress the repo map specifically
-  // (it's the one section that legitimately scales with codebase size)
-  // rather than blindly truncating the end of the whole prompt, which
-  // used to eat MY REAL LEVEL/XP and LIVE CONTEXT unconditionally.
-  const SYS_BUDGET = 6000; // real budget, sized for Nemotron/Cerebras context, not the old 2000 tuned for short prose
-  if (sys.length > SYS_BUDGET) {
-    // REAL FIX: identity.js was restructured to put QUICK FACTS (level/XP,
-    // live state) BEFORE the repo map instead of after it — moved there
-    // because a small model was losing track of a single fact buried
-    // after 100+ lines of file listings ("lost in the middle" failure,
-    // confirmed by Joel's real test: "what's your level" got a vague
-    // non-answer even though the data was genuinely in the prompt). This
-    // regex's lookahead must match that new order or it silently stops
-    // matching at all (regex still runs, mapMatch just becomes null, so
-    // this would NOT have thrown — a real, quiet failure mode worth
-    // remembering for future edits here).
-    const mapMatch = sys.match(/MY REAL CODEBASE RIGHT NOW[\s\S]*?(?=\n\nCAPABILITY FILTER)/);
-    if (mapMatch) {
-      const lines = mapMatch[0].split('\n').filter(Boolean);
-      // Keep the header line + first ~40 file entries — enough for Flow
-      // to answer "what can you do" concretely without blowing the
-      // budget; handleSelfKnowledgeCommand in commands.js still fetches
-      // the FULL map separately for deep "analyze your own repo" asks,
-      // so nothing is lost for that specific real use case.
-      const compact = lines.slice(0, 41).join('\n') + (lines.length > 41 ? `\n...and ${lines.length - 41} more files (ask "what can you do" or "analyze your repo" for the full list)` : '');
-      sys = sys.replace(mapMatch[0], compact);
-    }
-  }
-  if (sys.length > SYS_BUDGET) sys = sys.slice(0, SYS_BUDGET) + '\n[trimmed]';
+  // REAL ARCHITECTURE CHANGE: identity.js v4 removed the repo map / level
+  // / live-state / change-notice from the static system prompt entirely —
+  // that data now lives behind real tool calls (get_my_level,
+  // get_my_capabilities, etc. — see FLOW_TOOLS below) instead of being
+  // stuffed into every message. The old SYS_BUDGET/repo-map-compaction
+  // logic that used to live here is gone: the prompt is small and stable
+  // now (identity + hard limits only), so there's nothing left that
+  // scales with codebase size for this function to protect against.
 
   return [{ role: 'system', content: sys }, ...trimUserMessages(history)];
 }
@@ -224,6 +188,72 @@ const FLOW_TOOLS = [
       },
     },
   },
+  // REAL ARCHITECTURE CHANGE: these 4 tools replace the old approach of
+  // stuffing level/state/repo-map/change-detection into the system
+  // prompt on every message (core/identity.js v3). That approach failed
+  // real testing — a fact buried after a 100+ line repo map got silently
+  // ignored by the model (confirmed "lost in the middle" effect, real
+  // published research, not a guess). Tools fix this structurally: Flow
+  // actively CALLS the one it needs, gets a small, fresh, un-buried
+  // result back, instead of hoping a fact survives being surrounded by
+  // everything else. All four are client-side (same reason as
+  // open_camera/generate_image above) — the actual data (localStorage,
+  // browser fetch to /api/github, runtime state) only exists in the
+  // browser/Electron renderer, never on this serverless function.
+  {
+    type: 'function',
+    function: {
+      name: 'get_my_level',
+      description: "Get Flow's real current level, XP, and progress. Call this whenever Joel asks about level, XP, or progress — never guess or give a vague non-answer.",
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_my_live_state',
+      description: "Get Flow's real current state right now: is the camera on, screen-share on, gesture control active, Sentinel on, any confirmed Telegram admin chats. Call this before claiming to currently see/hear/watch something, or before answering whether a toggle is on or off.",
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_my_capabilities',
+      description: "Get a real, live list of Flow's own codebase — files and their exported functions — straight from the actual repo, not memorized. Call this when Joel asks what Flow can do, whether a specific feature exists, or to ground an answer in what's actually built. Optionally filter by a topic keyword to avoid an overwhelming full dump.",
+      parameters: {
+        type: 'object',
+        properties: {
+          topic: { type: 'string', description: 'Optional keyword to filter results, e.g. "voice", "github", "telegram", "image". Omit for a general/compact overview.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_for_updates',
+      description: 'Check whether Flow\'s own codebase has changed since the last conversation (a real diff against a stored fingerprint, not a guess). Call this whenever Joel asks "did anything change", "what\'s new with you", or similar — never answer "not that I\'m aware of" without calling this first.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'toggle_sentinel',
+      description: "Turn Flow's Sentinel (ambient screen-awareness in the Electron desktop app) on or off. Call this when Joel asks to turn Sentinel on/off, or when you judge it would genuinely help (e.g. he mentions wanting ambient awareness while away from his desk) and it's currently off.",
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_notepad',
+      description: 'Open the notepad UI. Call this when Joel wants to jot something down or asks you to write something visible, not just remember it in conversation.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
 ];
 
 // Real execution dispatcher — actually runs the tool server-side where
@@ -257,6 +287,24 @@ async function executeFlowTool(toolName, args) {
     // UI (ui/imagine.js) already handles displaying the result — not
     // duplicated here.
     return { handled: false, clientAction: 'generate_image', clientArgs: args, result: null };
+  }
+  if (toolName === 'get_my_level') {
+    return { handled: false, clientAction: 'get_my_level', result: null };
+  }
+  if (toolName === 'get_my_live_state') {
+    return { handled: false, clientAction: 'get_my_live_state', result: null };
+  }
+  if (toolName === 'get_my_capabilities') {
+    return { handled: false, clientAction: 'get_my_capabilities', clientArgs: args, result: null };
+  }
+  if (toolName === 'check_for_updates') {
+    return { handled: false, clientAction: 'check_for_updates', result: null };
+  }
+  if (toolName === 'toggle_sentinel') {
+    return { handled: false, clientAction: 'toggle_sentinel', result: null };
+  }
+  if (toolName === 'open_notepad') {
+    return { handled: false, clientAction: 'open_notepad', result: null };
   }
   return { handled: true, result: `Unknown tool: ${toolName}` };
 }
