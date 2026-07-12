@@ -253,7 +253,7 @@ export async function sendMessage(overrideText, opts = {}) {
     const contentType = res.headers.get("content-type") || "";
     if (!contentType.includes("application/json")) {
       if (res.status === 504) {
-        throw new Error("The request timed out (504) — this can happen with large repo-analysis or code-editing requests. Try again, or narrow the request to fewer files.");
+        throw new Error("The request timed out (504) — the model took too long to respond. This is less likely now that the server timeout has been raised to 60s, but can still happen on a slow provider response. Try again.");
       }
       throw new Error(`Server returned a non-JSON error (status ${res.status}).`);
     }
