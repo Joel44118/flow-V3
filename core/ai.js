@@ -20,7 +20,6 @@ import { getAgentContext, restoreAgent } from "./agent.js";
 import { getFeedbackContext } from "./feedback.js";
 import { awardCasualLearningXp } from "./leveling.js";
 import { getPersonaPromptBlock, recordJoelMessage } from "./persona.js";
-import { runtimeStateBlock } from "./runtime.js";
 import { getToolsPromptContext, parseToolProposal } from "./selftools.js";
 
 // UI refs injected at init (avoids circular imports)
@@ -36,7 +35,7 @@ export function setClientActionHandler(fn) { _onClientAction = fn; }
 // Restore persisted agent on boot
 restoreAgent();
 
-function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbackCtx, personaBlock) {
+async function buildPrompt(weather, ragContext, skillContext, extractedMemory, feedbackCtx, personaBlock) {
   const p = Memory.getProfile();
   const ragBlock = ragContext
     ? `\nKNOWLEDGE BASE (relevant to this query — Joel specifically saved this content for you to use; you MUST draw on it directly rather than answering generically, and should reference specific details from it, not just acknowledge it exists):\n${ragContext}\n`
@@ -96,7 +95,7 @@ HARD LIMITS section above forbids.
 
   return `${CONFIG.PERSONALITY}${personaBlock || ""}
 
-${selfKnowledgeBlock()}
+${await selfKnowledgeBlock()}
 ${selfToolsBlock}
 ${feedbackBlock}${ragBlock}${agentBlock}${skillBlock}${extractedBlock}${projectsBlock}
 LIVE CONTEXT:
@@ -109,27 +108,14 @@ Facts about Joel: ${Memory.factsString()}
 Note: ${Storage.get("notes","").slice(0,120) || "none"}
 Goals today: ${goalsSummary()}
 
-FLOW'S ACTUAL CURRENT STATE — read this, not just the capability list above:
-${runtimeStateBlock()}
-
-CAPABILITY FILTER — CRITICAL:
-Before responding, check if Joel is asking you to DO something (not just explain it).
-If it is something Flow CAN do (listed in WHAT I CAN DO above), respond as Flow doing it.
-If it is something Flow CANNOT do, say exactly what you can't do and offer the closest thing you CAN do.
-NEVER pretend to do something you haven't actually done. NEVER say "done" or "pushed" or "created" unless Flow's code actually executed it.
-Example: if asked to "push files to GitHub" — do NOT say "pushed!" — the push happens through Flow's GitHub functions, not through text.
-Your CURRENT STATE above is real, checked truth — not a guess. If the camera is OFF, do not act like you can see Joel. If it's ON, you genuinely can, right now, and should act like it without being reminded. If you have no confirmed Telegram admin rights listed, do not claim you're an admin anywhere — say you're not sure and offer to check, rather than assume.
-Stay in character as Flow. Never break the fourth wall.
-
-REASONING STEP — REQUIRED BEFORE EVERY RESPONSE:
-Before writing your actual reply, think through the request first inside a
-<flow-think>...</flow-think> block: what is Joel actually asking, what's the
-right approach, any risk of getting it wrong, and what you're going to check
-or do. Keep this block short — a few lines, not an essay. Immediately after
-the closing </flow-think> tag, write your real, final reply as normal — this
-is the ONLY part Joel or anyone else will ever see, since the thinking block
-is stripped out before delivery. Never mention the thinking block exists,
-never reference it in the reply, never skip it.`;
+PROACTIVE UI SUGGESTIONS — be genuinely useful, not just reactive:
+You have real, live visibility into your own UI state (see MY REAL LIVE STATE above). Use it to actively suggest actions when it clearly fits the moment — don't wait to always be asked:
+- If Joel mentions being away from his desk, wants an alert on something, or seems to want ambient awareness, and Sentinel is currently OFF: offer "Want me to turn on Sentinel?" rather than just answering generically.
+- If Joel dictates a thought or asks you to "remember this for later" in a way that suggests he wants it visibly written down, not just stored in memory: offer "Should I put that in the notepad for you?" (the notepad is always available — this isn't a toggle, just a helpful nudge).
+- If Joel references needing to see something visual (a document, his screen, a product): offer camera/screen-share if currently off, e.g. "Want me to turn on the camera so I can see that?"
+- If a self-tool, agent mode, or other real toggle in your live state would obviously help the current request and is low-risk/reversible: suggest it by name, don't just describe what it would do in the abstract.
+- Never suggest a toggle that's already ON — check MY REAL LIVE STATE first. Never suggest something not listed there.
+- Suggestions should read as one natural, brief offer woven into your reply — not a bullet list of every possible toggle every time. Read the moment; if nothing genuinely fits, don't force one.`;
 }
 
 // ── Self-judged casual learning ──────────────────────────────────────────
@@ -238,8 +224,9 @@ export async function sendMessage(overrideText, opts = {}) {
     const extractedMemory = getExtractedMemoryContext();
     recordJoelMessage(window.location.origin, text); // fire-and-forget — feeds the style profile, never blocks
 
+    const systemPrompt = await buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext(), personaBlock);
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext(), personaBlock) },
+      { role: "system", content: systemPrompt },
       ...Memory.forAPI(),
     ];
 
@@ -379,8 +366,9 @@ export async function sendToAI(text) {
     const extractedMemory = getExtractedMemoryContext();
     recordJoelMessage(window.location.origin, text); // fire-and-forget — feeds the style profile, never blocks
 
+    const systemPrompt2 = await buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext(), personaBlock);
     const messages = [
-      { role: "system", content: buildPrompt(weather, ragContext, skillContext, extractedMemory, getFeedbackContext(), personaBlock) },
+      { role: "system", content: systemPrompt2 },
       ...Memory.forAPI(),
       { role: "user", content: text },
     ];
