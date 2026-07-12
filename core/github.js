@@ -93,21 +93,40 @@ export async function buildRepoMap(owner, repo, { forceRefresh = false } = {}) {
   const tree = await getRepoTree(owner, repo);
   const jsFiles = tree.files.filter((f) => /\.(js|jsx|mjs|cjs)$/i.test(f.path));
 
-  // Real, honest cost note: this fetches every JS file's content once to
-  // extract function names — a real cost for a large repo, but at ~128
-  // files this is genuinely fine, and the 30-minute cache above means it
-  // only happens this often, not on every single request.
+  // REAL FIX for the timeout risk flagged earlier, with a second real
+  // discovery made while building this fix: getFiles' underlying API
+  // endpoint (api/github.js, mode=files) hard-caps at 20 files per call
+  // (confirmed by reading the actual route handler — `.slice(0, 20)`).
+  // Passing all ~128 files in one call would have silently only
+  // processed the first 20, leaving the rest with no export data at
+  // all — a real, separate bug that would have shipped unnoticed if not
+  // checked. Chunking into batches of 20, run in parallel via
+  // Promise.all, so this is still far fewer sequential round-trips than
+  // one-by-one (128 → ~7 batches) while actually covering every file.
+  const CHUNK_SIZE = 20;
+  const chunks = [];
+  for (let i = 0; i < jsFiles.length; i += CHUNK_SIZE) {
+    chunks.push(jsFiles.slice(i, i + CHUNK_SIZE));
+  }
+
   const map = [];
-  for (const f of jsFiles) {
-    try {
-      const file = await getFile(owner, repo, f.path);
-      const exportNames = _extractExports(file.content || "");
-      map.push({ path: f.path, exports: exportNames, sizeBytes: f.size });
-    } catch (e) {
-      // Don't let one bad file fetch break the whole map — just note it
-      // has unknown exports and move on.
-      map.push({ path: f.path, exports: [], sizeBytes: f.size, error: e.message });
+  try {
+    const bySizeInfo = new Map(jsFiles.map((f) => [f.path, f.size]));
+    const results = await Promise.all(
+      chunks.map((chunk) => getFiles(owner, repo, chunk.map((f) => f.path)))
+    );
+    for (const { files } of results) {
+      for (const file of files) {
+        const exportNames = _extractExports(file.content || "");
+        map.push({ path: file.path, exports: exportNames, sizeBytes: bySizeInfo.get(file.path) });
+      }
     }
+  } catch (e) {
+    // If a batch fetch fails entirely, fall back to at least returning
+    // file paths with no export info — a degraded but still useful map,
+    // rather than nothing at all.
+    console.warn("[RepoMap] Batch fetch failed, falling back to paths only:", e.message);
+    for (const f of jsFiles) map.push({ path: f.path, exports: [], sizeBytes: f.size });
   }
 
   try {
