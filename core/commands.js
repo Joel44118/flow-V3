@@ -7,7 +7,7 @@ import { Storage }         from "./storage.js";
 import { CONFIG }          from "./config.js";
 import { webSearch, deepResearch, smartSearch, formatResults, businessResearch, inspectUrl } from "./websearch.js";
 import { saveGoals, getTodayGoals, completeGoal, getStats, formatGoalsForAI } from "./goals.js";
-import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults, createRepo, createOrUpdateFile, scaffoldRepo, createBranch, deleteFile, createPR, listBranches } from "./github.js";
+import { parseGithubUrl, getRepoTree, getFile, getFiles, searchRepos, pickRelevantFiles, formatRepoSummary, formatSearchResults, createRepo, createOrUpdateFile, scaffoldRepo, createBranch, deleteFile, createPR, listBranches, buildRepoMap, formatRepoMap } from "./github.js";
 import { parseAgentCommand, activateAgent, deactivateAgent, getActiveAgent, AGENTS } from "./agent.js";
 
 // Sanitize file content before pushing — removes control chars that break JSON
@@ -851,6 +851,22 @@ export async function handleEditCommand(rawInput) {
   }
 
   const originalContent = currentFile.content || "";
+
+  // Real codebase-awareness feature: fetch a lightweight repo map (file
+  // paths + exported function names, cached for 30 min) so the AI knows
+  // what OTHER functions/files exist in the codebase — e.g. avoiding
+  // proposing a new helper that duplicates something that already
+  // exists elsewhere, or correctly referencing an existing export by its
+  // real name instead of guessing. This is genuinely optional context —
+  // wrapped in try/catch so a failure here never blocks the actual edit.
+  let repoMapContext = "";
+  try {
+    const map = await buildRepoMap(owner, repo);
+    repoMapContext = `\n\nOther files in this codebase (for awareness only — you're only editing ${filePath}, but this helps you avoid duplicating existing functions or reference them correctly):\n${formatRepoMap(map)}`;
+  } catch (e) {
+    console.warn("[Edit] Repo map build failed (non-fatal):", e.message);
+  }
+
   _chatAdd?.(`Got it (${originalContent.length} chars). Asking the AI to make the change...`, "bot");
 
   const EDIT_SYSTEM = `You are editing a REAL, EXISTING file. You will be given its exact current content and a description of a change to make.
@@ -867,7 +883,7 @@ Keep the same overall structure, imports, and style as the original unless the c
           { role: "system", content: EDIT_SYSTEM },
           {
             role: "user",
-            content: `File: ${filePath}\n\nCurrent content:\n${originalContent}\n\nRequested change: ${changeDescription}${extraContext}`,
+            content: `File: ${filePath}\n\nCurrent content:\n${originalContent}\n\nRequested change: ${changeDescription}${extraContext}${repoMapContext}`,
           },
         ],
         force_intent: "code",
