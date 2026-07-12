@@ -32,6 +32,7 @@ const SKILLS = [
   { cmd:"/repo",     icon:"📦", label:"Create Repo",      desc:"Create a new GitHub repository",                            ph:"my-project  A short description",                               group:"Code" },
   { cmd:"/scaffold", icon:"🏗️",  label:"Scaffold Repo",   desc:"AI generates + pushes full project structure into a repo",   ph:"Joel44118/my-project  Express REST API with JWT auth",          group:"Code" },
   { cmd:"/push",     icon:"⬆️",  label:"Push File",        desc:"Push a single file into any GitHub repo",                    ph:"Joel44118/my-project src/index.js",                             group:"Code" },
+  { cmd:"/edit",     icon:"✏️",  label:"Edit File (Diff)",  desc:"Real diff-based edit — fetches the real file, shows a diff, pushes only after approval", ph:"Joel44118/flow-V3 core/ai.js: fix the token limit bug", group:"Code" },
   { cmd:"/code",         icon:"💻", label:"Write Code",       desc:"Write or fix code in any language",                 ph:"a JavaScript debounce function",                    group:"Code"         },
   { cmd:"/project", icon:"📁", label:"Projects",       desc:"View, create and manage your project workspaces",   ph:"Flow V3  or  show my projects  or  add project MyApp", group:"Productivity" },
   { cmd:"/alarm",        icon:"⏰", label:"Set Alarm",        desc:"Set a timed reminder",                              ph:"meeting at 3pm",                                    group:"Productivity" },
