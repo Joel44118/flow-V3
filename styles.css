@@ -23,6 +23,7 @@
 html { height:100%; }
 body {
   overflow:hidden;
+  position:relative;
   background:radial-gradient(ellipse at 30% 20%, #0d1b3e 0%, #060a1a 60%, #0a0514 100%);
   font-family:var(--fb); color:#fff;
   width:100vw; height:100vh;
@@ -61,28 +62,39 @@ body {
   z-index:20;
   -webkit-app-region: drag; /* whole bar drags the window in Electron; no-op in browser */
   user-select: none; -webkit-user-select: none; /* stops accidental text selection when dragging the window by the title bar (e.g. selecting "FLOW" or the build stamp mid-drag) */
-  /* Real, live-synced defaults — overwritten by Orb.setState() via
-     document.documentElement.style.setProperty(), so these starting
-     values only apply before the first setState() call ever fires. */
+}
+
+/* REAL BUG FIX, confirmed: these were previously declared directly
+   inside #top-bar's own selector, which meant they ALWAYS won over
+   whatever Orb.setState() set via JS on <html> — a same-element CSS
+   declaration beats an inherited one regardless of which was set later
+   or "should" take priority. This is exactly why the glow color never
+   actually changed with orb state despite the JS logic itself being
+   correct. Declaring the defaults on :root instead means JS-set values
+   on documentElement (same element as :root) now genuinely take effect,
+   since there's no more competing same-specificity declaration
+   shadowing them. */
+:root {
   --titlebar-glow-c1: #38bdf8;
   --titlebar-glow-c2: #0369a1;
   --titlebar-glow-rgb: 56,189,248;
 }
 
-/* ── Sleek rotating light effect around the title bar, synced to the
-   orb's real state colors (via the CSS custom properties Orb.setState()
-   sets in ui/orb.js — same palette the orb itself uses, so this can
-   never visually drift out of sync with what the orb is actually doing).
-   Implemented as a ::before pseudo-element using conic-gradient, which
-   is the standard, performant CSS way to fake a "rotating light" without
-   JS-driven animation — the rotation itself is a pure CSS @keyframes
-   loop, only the COLOR is dynamically controlled by Orb.setState(). ── */
-#top-bar::before {
+/* ── Sleek rotating light effect around the WHOLE APP WINDOW (not just
+   the title bar — moved here per Joel's explicit clarification), synced
+   to the orb's real state colors (via the CSS custom properties
+   Orb.setState() sets in ui/orb.js on :root — same palette the orb
+   itself uses, so this can never visually drift out of sync with what
+   the orb is actually doing). Implemented as a body::after pseudo-
+   element using conic-gradient, the standard, performant CSS way to
+   fake a "rotating light" without JS-driven animation — the rotation is
+   a pure CSS @keyframes loop, only the COLOR is dynamically controlled
+   by Orb.setState(). ── */
+body::after {
   content: "";
-  position: absolute;
-  inset: -1px;
-  padding: 1px;
-  border-radius: 0;
+  position: fixed;
+  inset: 0;
+  padding: 2px;
   background: conic-gradient(
     from var(--titlebar-rotation, 0deg),
     transparent 0%,
@@ -95,7 +107,7 @@ body {
   mask-composite: exclude;
   pointer-events: none;
   animation: titlebar-light-rotate 3s linear infinite;
-  z-index: -1;
+  z-index: 999; /* above content, below any modal/popup overlays that use higher z-index */
 }
 
 @keyframes titlebar-light-rotate {
@@ -234,6 +246,18 @@ body {
      window instead of opening the dropdown. Same fix, extended here. */
   -webkit-app-region: no-drag;
 }
+#sentinel-toggle-btn {
+  /* Same class of fix as #notif-wrap above — any new interactive
+     element added to #top-bar needs this exception explicitly, it does
+     not happen automatically just by being a <button>. */
+  -webkit-app-region: no-drag;
+  background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.14);
+  border-radius:8px; width:32px; height:32px; display:flex; align-items:center;
+  justify-content:center; font-size:15px; cursor:pointer; padding:0; margin-left:8px;
+  opacity:0.5; transition:background .15s, opacity .15s;
+}
+#sentinel-toggle-btn:hover { background:rgba(255,255,255,0.14); }
+#sentinel-toggle-btn.active { opacity:1; background:rgba(168,85,247,0.2); border-color:rgba(168,85,247,0.5); }
 #win-controls button {
   width:12px; height:12px; border-radius:50%; border:none; cursor:pointer;
   padding:0; position:relative; transition:filter .15s, transform .15s;
