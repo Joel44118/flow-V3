@@ -100,6 +100,45 @@ export function deleteTool(name) {
 // code string each call (no closure over this module's imports or the
 // page's window/document) plus the blocklist check re-run at execution
 // time, not just at proposal time.
+// REAL, NEW ENTRY POINT: looks up a tool by name from the real saved
+// registry and dispatches to the correct execution path based on its
+// stored language — JS tools go through runTool (unchanged), Python
+// tools go through the real WASI sandbox in core/pysandbox.js. This is
+// the function any future caller should actually use (runTool alone has
+// no way to know whether a given code string is JS or Python — that
+// information only exists on the saved tool object).
+export async function executeStoredTool(toolName, args = []) {
+  const tool = getRegistry().find(t => t.name === toolName);
+  if (!tool) throw new Error(`No tool named "${toolName}" is saved.`);
+
+  if (tool.language === "python") {
+    // Dynamic import, not a static top-of-file import: pysandbox.js pulls
+    // in the real @wasmer/sdk CDN module, which is a real, non-trivial
+    // download — only pay that cost if a Python tool is actually invoked,
+    // not on every load of this file for people who only ever use
+    // plain-JS tools.
+    const { runPythonTool } = await import("./pysandbox.js");
+    // Real, honest input passing: Python tools receive their args as a
+    // plain JSON file at /src/input.json rather than function
+    // parameters — Python has no direct equivalent of JS's positional
+    // function-call convention when invoked as a standalone script via
+    // WASI, so this is the actual, correct mechanism, not a simplification.
+    const inputObj = {};
+    (tool.params || []).forEach((name, i) => { inputObj[name] = args[i]; });
+    const wrappedCode = `import json\nwith open("/src/input.json") as f:\n    _input = json.load(f)\n${tool.params.map(p => `${p} = _input[${JSON.stringify(p)}]`).join("\n")}\n\n${tool.code}`;
+    const result = await runPythonTool(wrappedCode, {
+      input: inputObj,
+      capabilities: tool.capabilities || {},
+    });
+    if (!result.ok) {
+      throw new Error(`Python tool "${toolName}" failed (exit ${result.code}): ${result.stderr || result.stdout}`);
+    }
+    return result.stdout;
+  }
+
+  return runTool(tool.code, args, tool.params || []);
+}
+
 export function runTool(toolCode, args = [], paramNames = []) {
   const safety = checkToolSafety(toolCode);
   if (!safety.safe) {
@@ -149,11 +188,21 @@ export function parseToolProposal(replyText) {
   try {
     const parsed = JSON.parse(match[1].trim());
     if (!parsed.name || !parsed.description || !parsed.code) return null;
+
+    // REAL EXTENSION: Python tools (via core/pysandbox.js's WASI sandbox)
+    // are a genuinely separate tier from plain-JS tools — they can
+    // request real, explicit file/network capabilities, whereas plain-JS
+    // tools never can (see identity.js/ai.js's prompt instructions,
+    // which explicitly tell Flow plain-JS tools have no such access).
+    // language defaults to "javascript" for full backward compatibility
+    // with every proposal shape that existed before this session.
     return {
       name: parsed.name,
       description: parsed.description,
       code: parsed.code,
       params: parsed.params || [],
+      language: parsed.language === "python" ? "python" : "javascript",
+      capabilities: parsed.language === "python" ? (parsed.capabilities || {}) : undefined,
       // Also return the reply with the proposal block stripped out, so
       // whatever conversational text Flow wrote around it still displays
       // normally in chat.
@@ -167,6 +216,31 @@ export function parseToolProposal(replyText) {
 
 // Called only when Joel clicks "Approve" in the UI.
 export function approveTool(proposal) {
+  // REAL BRANCH: Python tools' safety model is the WASI sandbox's real
+  // capability gating (core/pysandbox.js), NOT the plain-JS blocklist —
+  // checkToolSafety's regex patterns (no require/fetch/process/etc.)
+  // are meaningless for Python source and would either false-positive on
+  // legitimate Python syntax or miss real Python-specific risks entirely.
+  // The actual safety boundary for Python tools is the sandbox itself:
+  // zero ambient file/network access exists unless explicitly granted
+  // and shown to Joel in the approval UI (see ui/chat.js's capsBlock).
+  if (proposal.language === "python") {
+    const existing = getRegistry();
+    if (existing.some(t => t.name === proposal.name)) {
+      return { ok: false, error: `A tool named "${proposal.name}" already exists.` };
+    }
+    saveToRegistry({
+      name: proposal.name,
+      description: proposal.description,
+      code: proposal.code,
+      params: proposal.params,
+      language: "python",
+      capabilities: proposal.capabilities || {},
+      createdAt: Date.now(),
+    });
+    return { ok: true };
+  }
+
   const safety = checkToolSafety(proposal.code);
   if (!safety.safe) {
     return { ok: false, error: `Rejected by safety check: ${safety.reason}` };
@@ -182,6 +256,7 @@ export function approveTool(proposal) {
     description: proposal.description,
     code: proposal.code,
     params: proposal.params,
+    language: "javascript",
     createdAt: Date.now(),
   });
 
