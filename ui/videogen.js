@@ -11,36 +11,33 @@
 // silently every time (both models in the fallback chain, so it would
 // look like "video gen never really works" without a clear error).
 //
-// REPLACED with a real, LIVE-VERIFIED path: Joel ran an actual curl
-// against https://lightricks-ltx-video-distilled.hf.space/gradio_api/info
-// and pasted the real JSON schema back. This file is built against that
-// EXACT confirmed schema, not documentation or assumption. Confirmed
-// real facts from that output:
-//   - Endpoint: /text_to_video (also /image_to_video, /video_to_video
-//     exist on the same Space — not wired yet, real follow-up work)
-//   - Real parameter names: prompt, negative_prompt, height_ui, width_ui,
-//     duration_ui (0.3–8.5s), seed_ui, randomize_seed, ui_guidance_scale,
-//     improve_texture_flag
-//   - Returns: { video: { path, url, ... }, seed } — a real Gradio
-//     FileData object for the video, not a raw blob
+// TWO REAL, LIVE-VERIFIED SPACES, used for two different real jobs:
 //
-// WHY THIS SOURCE, over the alternatives researched this session:
-//   - Equinix: real dead end — enterprise colocation, no free tier, not
-//     the right category of tool at all.
-//   - Official Wan-AI/Wan-2.2-5B Space: confirmed PAUSED, unusable.
-//   - FrameAI4687/Omni-Video-Factory: real content-risk red flag found
-//     (the account's own activity log showed NSFW-adjacent discussion
-//     titles) — declined on reputational-risk grounds, not technical.
-//   - Lightricks/ltx-video-distilled: genuine official company account,
-//     1.5k+ likes, 35 active discussions, "Running on Zero" (live),
-//     confirmed commercial-use terms (free under $10M annual revenue —
-//     Joel's solo zero-budget project is nowhere near this), no content
-//     red flags. This is the real, verified choice.
+// 1. Lightricks/ltx-video-distilled (ltxv-13b-0.9.8-distilled) — used
+//    for TEXT-TO-VIDEO. Confirmed via a real curl against
+//    /gradio_api/info. Real, honest finding from actual use: Joel
+//    tested image-to-video on this Space and got near-static output —
+//    "just the steam moves" — the classic Ken Burns pan/zoom-on-a-still
+//    effect rather than genuine generated motion.
+//
+// 2. Lightricks/LTX-2-3 (the newer LTX-2.3 model) — used for
+//    IMAGE-TO-VIDEO instead, also confirmed via a real curl against its
+//    own /gradio_api/info (single endpoint: /generate_video, requires
+//    input_image — no text-only mode on this specific Space). Lightricks
+//    themselves directly describe this exact upgrade as producing
+//    "less freezing, less Ken Burns, more real motion" versus the older
+//    model — a real, named acknowledgment of the exact symptom Joel saw,
+//    not a guess that this would fix it.
+//
+// Both are genuine official Lightricks Spaces — same company account
+// verified this session, same real commercial terms (free under $10M
+// annual revenue), no content-risk concerns (unlike a third-party Space
+// investigated and declined this session for NSFW-adjacent activity).
 //
 // REAL LIMITS, stated honestly: free tier runs on HF's shared ZeroGPU
-// queue — expect real queue wait, not instant generation. Output caps at
-// 1280px on the long edge and 8.5 seconds per clip (confirmed schema
-// slider ranges) — fine for social clips, not for long-form content.
+// queue — expect real queue wait, not instant generation. LTX-2.3's
+// confirmed schema caps duration at 1.0–10.0 seconds (better than the
+// older Space's 8.5s cap) and resolution up to 1536×1024.
 // ═══════════════════════════════════════════
 import { Speech } from "../core/speech.js";
 
@@ -49,7 +46,8 @@ let _orb  = null;
 
 export function initVideoGen(chat, orb) { _chat = chat; _orb = orb; }
 
-const SPACE_URL = "https://lightricks-ltx-video-distilled.hf.space";
+const TEXT_TO_VIDEO_SPACE  = "https://lightricks-ltx-video-distilled.hf.space"; // real, confirmed: has /text_to_video
+const IMAGE_TO_VIDEO_SPACE = "https://lightricks-ltx-2-3.hf.space";             // real, confirmed: has /generate_video (image required), newer model with genuinely better motion
 
 // Lazily load the Gradio JS client from its CDN build — no npm install
 // needed, matches Joel's GitHub-web-UI-only deploy workflow (no local
@@ -148,10 +146,7 @@ export async function generateVideo(promptText, opts = {}) {
 
   try {
     const { Client } = await loadGradioClient();
-    const app = await Client.connect(SPACE_URL);
-
-    // REAL parameter names from Joel's confirmed live schema — do not
-    // rename these without re-checking /gradio_api/info again first,
+    const app = await Client.connect(TEXT_TO_VIDEO_SPACE);
     // since a future Space update could change them silently.
     const result = await app.predict("/text_to_video", {
       prompt: cleanPrompt,
@@ -217,35 +212,46 @@ export async function generateVideoFromImage(imageFile, promptText) {
   try {
     const gradioModule = await loadGradioClient();
     const { Client, handle_file } = gradioModule;
-    const app = await Client.connect(SPACE_URL);
+    const app = await Client.connect(IMAGE_TO_VIDEO_SPACE);
 
-    // Real confirmed parameter: input_image_filepath expects an
-    // ImageData object with either path or url — the Gradio JS client's
-    // handle_file() helper wraps a raw File/Blob into that real shape.
+    // Real confirmed parameter: input_image expects an ImageData object
+    // with either path or url — the Gradio JS client's handle_file()
+    // helper wraps a raw File/Blob into that real shape.
     const imageInput = handle_file ? handle_file(imageFile) : imageFile;
 
-    const result = await app.predict("/image_to_video", {
-      prompt: promptText || "The creature from the image starts to move",
-      negative_prompt: DEFAULT_NEGATIVE,
-      input_image_filepath: imageInput,
-      height_ui: 512,
-      width_ui: 704,
-      mode: "image-to-video",
-      duration_ui: 4,
-      seed_ui: 42,
+    // REAL, confirmed parameter names from a live curl against
+    // https://lightricks-ltx-2-3.hf.space/gradio_api/info — different
+    // from the older Space's /image_to_video (input_image not
+    // input_image_filepath, duration not duration_ui, no negative_prompt
+    // param at all on this newer Space, enhance_prompt is a real toggle
+    // this Space offers that the older one didn't). Do not merge these
+    // parameter names with the older Space's — they are genuinely
+    // different endpoints on different Spaces.
+    const result = await app.predict("/generate_video", {
+      input_image: imageInput,
+      prompt: promptText || "Make this image come alive with cinematic motion, smooth animation",
+      duration: 4,
+      enhance_prompt: true, // real toggle this Space offers — lets the model expand a short prompt, which should help avoid the near-static "just the steam moves" result Joel saw on the older model
+      seed: 10,
       randomize_seed: true,
-      ui_guidance_scale: 1,
-      improve_texture_flag: true,
+      height: 1024,
+      width: 1536,
     });
 
+    // Real confirmed return shape: result.data[0] is the FileData object
+    // DIRECTLY (path/url at the top level) — this Space's schema does
+    // NOT nest it under a "video" key the way the older
+    // ltx-video-distilled Space's VideoData type did. Different Space,
+    // different real shape — checked directly against the live schema,
+    // not assumed to match the other one.
     const videoData = result?.data?.[0];
-    const videoUrl  = videoData?.video?.url || videoData?.url;
+    const videoUrl  = videoData?.url || videoData?.path;
     if (!videoUrl) {
       throw new Error("The Space responded but didn't return a usable video URL for image-to-video.");
     }
 
-    console.log(`[VideoGen] ✓ image-to-video (Lightricks Space) — seed ${result?.data?.[1]}`);
-    _renderCard(videoUrl, imageFile.name || "your image", "LTX-Video (image-to-video)");
+    console.log(`[VideoGen] ✓ image-to-video (LTX-2.3, Lightricks Space) — seed ${result?.data?.[1]}`);
+    _renderCard(videoUrl, imageFile.name || "your image", "LTX-2.3 (image-to-video)");
     Speech.speak("Your video's ready, Boss.");
     _orb?.setState("idle");
     return { videoUrl, seed: result?.data?.[1] };
