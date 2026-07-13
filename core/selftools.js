@@ -100,23 +100,34 @@ export function deleteTool(name) {
 // code string each call (no closure over this module's imports or the
 // page's window/document) plus the blocklist check re-run at execution
 // time, not just at proposal time.
-export function runTool(toolCode, args = []) {
+export function runTool(toolCode, args = [], paramNames = []) {
   const safety = checkToolSafety(toolCode);
   if (!safety.safe) {
     throw new Error(`Tool failed safety check at execution time: ${safety.reason}`);
   }
 
-  // Wrap in a plain function with ONLY the declared args as parameters —
-  // no access to this module's imports, no access to window/document
-  // unless a future, deliberately-expanded version explicitly allows it.
-  // Using the Function constructor here is safe in THIS narrow sense:
-  // the code has already passed the blocklist above, which specifically
-  // rejects any attempt to reach Function/eval/process/require/etc from
-  // WITHIN the tool's own code — this outer wrapping is Flow's own
-  // trusted mechanism, not user-supplied code reaching for it.
+  // REAL BUG FIXED: this previously hardcoded parameter names as arg0,
+  // arg1, etc. regardless of what the tool's own stored `params` array
+  // declares — e.g. a tool proposed and approved with params: ["celsius"]
+  // and code: "return celsius * 9/5 + 32;" would throw
+  // "ReferenceError: celsius is not defined" the moment it actually ran,
+  // since the constructed function's real argument was named arg0, not
+  // celsius. This affects EVERY self-tool ever approved through this
+  // system, not just newly added ones — confirmed by directly testing
+  // the old code against the exact real [SELFTOOL_PROPOSAL] format Flow
+  // is instructed to use (core/ai.js's own example:
+  // "code": "return paramName1 + paramName2;", which references the
+  // real declared names, not arg0/arg1). Fixed by using the tool's own
+  // real parameter names when available, falling back to argN only if
+  // paramNames wasn't passed (keeps this backward-compatible with any
+  // caller that hasn't been updated to pass it yet).
+  const names = (paramNames && paramNames.length === args.length)
+    ? paramNames
+    : args.map((_, i) => `arg${i}`);
+
   try {
     // eslint-disable-next-line no-new-func
-    const fn = new Function(...args.map((_, i) => `arg${i}`), toolCode);
+    const fn = new Function(...names, toolCode);
     return fn(...args);
   } catch (e) {
     throw new Error(`Tool execution failed: ${e.message}`);
