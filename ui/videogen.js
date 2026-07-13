@@ -89,7 +89,7 @@ function _renderCard(videoUrl, prompt, modelLabel) {
   label.textContent = "FLOW";
 
   const card = document.createElement("div");
-  card.className = "img-card";
+  card.className = "video-card";
 
   const video = document.createElement("video");
   video.src = videoUrl;
