@@ -4,7 +4,7 @@
 
 const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCapturer, powerMonitor, globalShortcut } = require('electron');
 const path = require('path');
-const { startWakeWordEngine, stopWakeWordEngine } = require('./wakeword-engine');
+const { startWakeWordEngine, stopWakeWordEngine, setRendererLogSink } = require('./wakeword-engine');
 
 // ── Main-process log forwarding to renderer DevTools ─────────────────────
 // REAL FIX: a packaged .exe has no terminal window, so console.log calls
@@ -902,6 +902,16 @@ function startWakeWord() {
   // electron-builder's own docs before fixing, not guessed.
   const resourcesPath  = process.resourcesPath;
   const soxBinaryPath  = path.join(resourcesPath, 'sox', 'sox.exe');
+
+  // REAL FIX: forwards every wake-word log line (model loading, SoX
+  // status, detection scores, errors) to the renderer via IPC, so it
+  // finally shows up in DevTools (F12) — previously these only reached a
+  // real terminal window, which genuinely does not exist in a packaged
+  // .exe, meaning wake-word activity was always invisible to Joel no
+  // matter how many times he checked the console.
+  setRendererLogSink((channel, payload) => {
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(channel, payload);
+  });
 
   startWakeWordEngine({
     resourcesPath,
