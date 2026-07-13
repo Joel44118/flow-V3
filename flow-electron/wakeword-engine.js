@@ -56,6 +56,32 @@ let lastFireAt     = 0;
 let running        = false;
 
 let _onWake = null;
+let _rendererLogSink = null; // real IPC forwarding target — set via setRendererLogSink below
+
+// REAL BUG FIXED: every console.log/warn/error call in this file used to
+// go ONLY to the main process's own stdout — which is a real terminal
+// window when running unpacked via `npm start`, but genuinely does NOT
+// exist for a packaged .exe at all. That means Ctrl+Shift+I/F12 DevTools
+// (which shows the RENDERER process's console) was ALWAYS silent for
+// wake-word activity, regardless of whether the engine was working,
+// failing, or never starting — confirmed directly in this file's own
+// prior comments, and confirmed by Joel's real test: calling "Hey Flow"
+// repeatedly produced zero lines in DevTools, which we now know means
+// nothing at all about whether wake-word was actually running, since it
+// was never wired to log there. This function forwards every real log
+// line to the renderer via IPC (same pattern already used for
+// onWakeDetected), so it finally shows up somewhere Joel can actually see
+// it in the packaged app.
+function setRendererLogSink(webContentsSendFn) {
+  _rendererLogSink = webContentsSendFn;
+}
+function _log(level, ...args) {
+  const line = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+  console[level](...args); // keep the original terminal output too, for dev-mode debugging
+  if (_rendererLogSink) {
+    try { _rendererLogSink('wakeword-log', { level, line, ts: Date.now() }); } catch (_) { /* renderer gone, ignore */ }
+  }
+}
 
 // ── Model loading ───────────────────────────────────────────────────────
 // All three .onnx files ship inside the app's resources folder (added via
@@ -70,7 +96,7 @@ async function loadModels(resourcesPath) {
   embModel  = await ort.InferenceSession.create(embPath);
   wakeModel = await ort.InferenceSession.create(wakePath);
 
-  console.log('[WakeWord] All 3 models loaded:', melModel.inputNames, embModel.inputNames, wakeModel.inputNames);
+  _log('log', '[WakeWord] All 3 models loaded:', melModel.inputNames, embModel.inputNames, wakeModel.inputNames);
 }
 
 // ── Pipeline: raw PCM frame → melspectrogram → embedding ────────────────
@@ -119,7 +145,7 @@ async function runWakeClassifier() {
   const now = Date.now();
   if (score >= DETECT_THRESHOLD && (now - lastFireAt) > COOLDOWN_MS) {
     lastFireAt = now;
-    console.log(`[WakeWord] "Wake up Flow" detected — score ${score.toFixed(3)}`);
+    _log('log', `[WakeWord] "Wake up Flow" detected — score ${score.toFixed(3)}`);
     _onWake?.(score);
   }
 }
@@ -152,7 +178,7 @@ function startSoxCapture(soxBinaryPath) {
       const int16Frame = new Int16Array(
         frameBytes.buffer, frameBytes.byteOffset, FRAME_SAMPLES
       );
-      processFrame(int16Frame).catch((e) => console.error('[WakeWord] frame processing error:', e.message));
+      processFrame(int16Frame).catch((e) => _log('error', '[WakeWord] frame processing error:', e.message));
     }
   });
 
@@ -161,18 +187,18 @@ function startSoxCapture(soxBinaryPath) {
     // treat this as a real problem if the process actually exits non-zero
     // (handled in the 'close' listener below), so this stays a quiet log,
     // not a false alarm on every startup line.
-    console.log('[WakeWord][sox]', d.toString().trim());
+    _log('log', '[WakeWord][sox]', d.toString().trim());
   });
 
   soxProcess.on('close', (code) => {
     running = false;
     if (code !== 0) {
-      console.error(`[WakeWord] SoX exited unexpectedly (code ${code}) — wake-word listening has stopped. Click-to-record mic button still works normally.`);
+      _log('error', `[WakeWord] SoX exited unexpectedly (code ${code}) — wake-word listening has stopped. Click-to-record mic button still works normally.`);
     }
   });
 
   soxProcess.on('error', (e) => {
-    console.error('[WakeWord] Failed to start SoX:', e.message, '— wake-word listening is off. Click-to-record mic button still works normally.');
+    _log('error', '[WakeWord] Failed to start SoX:', e.message, '— wake-word listening is off. Click-to-record mic button still works normally.');
   });
 }
 
@@ -185,10 +211,10 @@ async function startWakeWordEngine({ resourcesPath, soxBinaryPath, onWakeDetecte
     await loadModels(resourcesPath);
     startSoxCapture(soxBinaryPath);
     running = true;
-    console.log('[WakeWord] Engine started — listening locally for "Wake up Flow", no network dependency.');
+    _log('log', '[WakeWord] Engine started — listening locally for "Wake up Flow", no network dependency.');
     return true;
   } catch (e) {
-    console.error('[WakeWord] Failed to start engine:', e.message);
+    _log('error', '[WakeWord] Failed to start engine:', e.message);
     running = false;
     return false;
   }
@@ -202,4 +228,4 @@ function stopWakeWordEngine() {
   running = false;
 }
 
-module.exports = { startWakeWordEngine, stopWakeWordEngine };
+module.exports = { startWakeWordEngine, stopWakeWordEngine, setRendererLogSink };
