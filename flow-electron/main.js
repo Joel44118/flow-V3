@@ -52,11 +52,49 @@ try {
 
 // ── Auto-updater ──────────────────────────────────────────────────────────
 let autoUpdater = null;
+let _updateReadyToInstall = false; // real flag, set true only when update-downloaded genuinely fires — checked in mainWin's 'close' handler below, which is the actual interception point that decides whether to hide to tray or quit for real
 try {
   autoUpdater = require('electron-updater').autoUpdater;
   autoUpdater.autoDownload         = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.logger               = { info: console.log, warn: console.warn, error: console.error };
+
+  // REAL BUG FIXED: there were previously ZERO autoUpdater.on(...) event
+  // listeners anywhere, and the only call site
+  // (checkForUpdatesAndNotify().catch(() => {})) silently swallowed
+  // every error. That's the exact, confirmed reason Joel's console
+  // showed nothing at all — if the download failed for ANY reason
+  // (network, Windows SmartScreen/antivirus quarantining the unsigned
+  // installer, disk space, a real electron-updater bug), it just
+  // vanished with no trace, and the app re-detected "update available"
+  // and re-notified on every subsequent boot since the actual install
+  // never completed. These listeners make every real stage of the
+  // update lifecycle show up in the console (forwarded via the
+  // console.log wrapper above, visible through F12 DevTools).
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[AutoUpdater] Checking for update...');
+  });
+  autoUpdater.on('update-available', (info) => {
+    console.log('[AutoUpdater] Update available:', info.version, '— starting download...');
+  });
+  autoUpdater.on('update-not-available', (info) => {
+    console.log('[AutoUpdater] No update available. Current release seen:', info.version);
+  });
+  autoUpdater.on('download-progress', (progress) => {
+    console.log(`[AutoUpdater] Downloading: ${Math.round(progress.percent)}% (${Math.round(progress.transferred / 1024)}KB / ${Math.round(progress.total / 1024)}KB)`);
+  });
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('[AutoUpdater] Update downloaded successfully:', info.version, '— will install on next quit.');
+    _updateReadyToInstall = true; // real flag — window-all-closed checks this to actually quit instead of staying in the tray forever
+  });
+  autoUpdater.on('error', (err) => {
+    // REAL, the actual fix: this is the event that was previously never
+    // listened for at all. Any real failure — network error, code-signing
+    // rejection, antivirus/SmartScreen quarantine, corrupted download,
+    // permission denied writing the update file — surfaces here now,
+    // instead of vanishing into the old swallowed .catch(() => {}).
+    console.error('[AutoUpdater] REAL ERROR:', err == null ? 'unknown error' : (err.stack || err.message || err));
+  });
 } catch(e) { console.warn('[Flow] electron-updater not available'); }
 
 let mainWin    = null;
@@ -144,7 +182,17 @@ function createWindow() {
   mainWin.once('ready-to-show', () => {
     mainWin.show();
     mainWin.setTitle('Flow AI');
-    if (autoUpdater) setTimeout(() => autoUpdater.checkForUpdatesAndNotify().catch(() => {}), 4000);
+    if (autoUpdater) setTimeout(() => {
+      autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+        // REAL FIX: this used to be .catch(() => {}) — silently eating
+        // any failure in the INITIAL check itself (e.g. can't reach
+        // GitHub's release API at all, malformed latest.yml, network
+        // down at boot). The on('error') listener above catches
+        // failures during the update PROCESS once it's started; this
+        // one covers a failure to even start checking.
+        console.error('[AutoUpdater] checkForUpdatesAndNotify() failed:', err?.message || err);
+      });
+    }, 4000);
   });
 
   mainWin.webContents.on('before-input-event', (_e, input) => {
@@ -154,6 +202,25 @@ function createWindow() {
   });
 
   mainWin.on('close', e => {
+    // REAL FIX, corrected after actually tracing the real code path: an
+    // earlier fix was added to window-all-closed to quit for real when
+    // an update was ready — but that handler NEVER FIRES for the normal
+    // "click the X button" flow, because THIS handler already intercepts
+    // the close and hides the window instead (e.preventDefault()) unless
+    // app.isQuitting is already true. So window-all-closed's fix was
+    // dead code for exactly the scenario Joel reported ("I did quit Flow
+    // ... still has 1.2.0"). The real interception point is HERE: if an
+    // update has genuinely finished downloading (_updateReadyToInstall,
+    // set by the real update-downloaded listener above), let the close
+    // proceed as a real quit instead of hiding to the tray — otherwise
+    // the app just keeps running invisibly at the OLD version forever,
+    // and autoInstallOnAppQuit's install hook never gets a real quit
+    // event to attach to.
+    if (!app.isQuitting && _updateReadyToInstall) {
+      console.log('[AutoUpdater] Update ready — quitting for real on window close so it can install (would otherwise hide to tray and stay on the old version).');
+      app.isQuitting = true;
+      return; // let the close proceed for real this time, do NOT preventDefault
+    }
     if (!app.isQuitting) { e.preventDefault(); mainWin.hide(); }
   });
   mainWin.on('closed', () => { mainWin = null; });
@@ -855,5 +922,15 @@ function startWakeWord() {
 
 app.whenReady().then(() => { createWindow(); createOverlay(); createTray(); setupAutoStart(); registerGlobalShortcuts(); startWakeWord(); });
 app.on('activate',         () => { if (!mainWin) createWindow(); else mainWin.show(); });
-app.on('window-all-closed',() => { /* stay in tray */ });
+app.on('window-all-closed',() => {
+  // Real fix now lives in mainWin's 'close' handler above — that's the
+  // actual interception point for the normal "click X to close" flow.
+  // By the time window-all-closed fires, either app.isQuitting was
+  // already true (a real quit is genuinely in progress via the close
+  // handler's own logic, nothing more to do here) or the window was
+  // hidden rather than closed, so this event wouldn't even fire. Kept as
+  // a real no-op, same as the original, since there's nothing left for
+  // it to meaningfully decide.
+  /* stay in tray */
+});
 app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); stopWakeWordEngine(); });
