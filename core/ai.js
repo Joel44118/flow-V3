@@ -32,6 +32,46 @@ export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 // trigger — see the clientAction handling in sendMessage below.
 export function setClientActionHandler(fn) { _onClientAction = fn; }
 
+// REAL BUG FIXED: identity.js's REASONING STEP instructs the model to
+// think inside a <flow-think>...</flow-think> block before its real
+// reply, with an explicit note that this block "is stripped before
+// delivery." That stripping code never actually existed anywhere —
+// confirmed by grepping the whole codebase for "flow-think" and finding
+// only the instruction, no removal logic. So the model's raw internal
+// reasoning (intent analysis, style notes, planning) was leaking
+// straight into chat, into Speech.speak (read aloud), and into
+// Memory.add (stored and fed back into future context) every single
+// time the model actually followed the instruction. This strips it for
+// real, applied immediately after the reply is received, before
+// anything else (tool-proposal parsing, display, speech, memory) touches
+// it. Case-insensitive and tolerant of the model wrapping the tag in
+// stray whitespace/newlines — real model output isn't always
+// byte-perfect to the instructed format.
+function stripFlowThink(text) {
+  if (!text) return text;
+  let cleaned = text.replace(/<flow-think>[\s\S]*?<\/flow-think>/gi, "").trim();
+
+  // SECOND LAYER, real and necessary: Joel's actual pasted leak did not
+  // show literal <flow-think> tags — meaning the model sometimes skips
+  // the tag entirely and just narrates its reasoning in plain prose
+  // instead ("Okay, Joel just said X, I need to respond..."). No regex
+  // can perfectly detect free-form reasoning, so this is a narrow,
+  // conservative heuristic: if the reply starts with an unmistakable
+  // planning preamble (naming itself in third person while analyzing
+  // the user's message) followed by a paragraph break, cut everything
+  // up to and including that break. Deliberately narrow patterns only —
+  // false positives here (stripping real conversational text) are worse
+  // than an occasional missed leak, so this does NOT try to catch every
+  // possible phrasing.
+  const preambleMatch = cleaned.match(/^(okay|alright|so|first),?\s+joel\s+(just\s+)?(said|asked|wants|is\s+asking)[\s\S]*?\n\n/i);
+  if (preambleMatch) {
+    console.warn("[Flow] Untagged reasoning preamble detected and stripped — model skipped the <flow-think> tag; consider reinforcing the instruction if this recurs often.");
+    cleaned = cleaned.slice(preambleMatch[0].length).trim();
+  }
+
+  return cleaned;
+}
+
 // Restore persisted agent on boot
 restoreAgent();
 
@@ -251,6 +291,7 @@ export async function sendMessage(overrideText, opts = {}) {
     }
 
     const data = await res.json();
+    data.reply = stripFlowThink(data.reply); // REAL FIX — see stripFlowThink above
     // REAL BUG FIXED: a successful tool-call response legitimately has an
     // EMPTY reply string by design (api/chat.js returns `reply:
     // choice.message.content || ''` when the model calls a client-side
@@ -307,7 +348,7 @@ export async function sendMessage(overrideText, opts = {}) {
           });
           const data2 = await res2.json();
           if (res2.ok && data2.reply) {
-            data.reply = data2.reply; // real, grounded reply replaces the original tool-call stub
+            data.reply = stripFlowThink(data2.reply); // real, grounded reply replaces the original tool-call stub
           }
         } catch (e) {
           console.warn("[Flow] Tool follow-up round-trip failed:", e.message);
@@ -434,6 +475,7 @@ export async function sendToAI(text) {
       throw new Error(`Server returned a non-JSON error (status ${res.status}).`);
     }
     const data = await res.json();
+    data.reply = stripFlowThink(data.reply); // REAL FIX — same leak as sendMessage
     // Same real bug fix as sendMessage above — empty reply + a
     // clientAction is a legitimate successful tool-call response, not an
     // error.
@@ -459,7 +501,7 @@ export async function sendToAI(text) {
             body:    JSON.stringify({ messages: followUpMessages, max_tokens: CONFIG.MAX_TOKENS }),
           });
           const data2 = await res2.json();
-          if (res2.ok && data2.reply) data.reply = data2.reply;
+          if (res2.ok && data2.reply) data.reply = stripFlowThink(data2.reply);
         } catch (e) {
           console.warn("[Flow] Tool follow-up round-trip failed:", e.message);
         }
