@@ -5,6 +5,7 @@ import { Memory }                  from "../core/memory.js";
 import { hasCode, renderWithCode } from "./codeblock.js";
 import { Speech }                  from "../core/speech.js";
 import { approveTool }             from "../core/selftools.js";
+import { describeCapabilities }    from "../core/pysandbox.js";
 import { awardSelfToolXp }         from "../core/leveling.js";
 
 const colLeft  = () => document.getElementById("col-left");
@@ -272,7 +273,27 @@ export const Chat = {
     const codeBlock = document.createElement("pre");
     codeBlock.className = "tool-proposal-code";
     codeBlock.style.cssText = "background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;overflow-x:auto;font-size:12px;white-space:pre-wrap;";
-    codeBlock.textContent = `function ${proposal.name}(${proposal.params.join(", ")}) {\n  ${proposal.code}\n}`;
+    if (proposal.language === "python") {
+      codeBlock.textContent = proposal.code; // Python tools store real, complete source — not a JS-style body fragment
+    } else {
+      codeBlock.textContent = `function ${proposal.name}(${proposal.params.join(", ")}) {\n  ${proposal.code}\n}`;
+    }
+
+    // REAL SAFETY UI, not cosmetic: Python tools can request real file/
+    // network capabilities via core/pysandbox.js's capability-gated
+    // sandbox. This is what actually replaces "trust the blocklist" with
+    // "trust an explicit, visible grant" — Joel sees precisely what a
+    // tool can touch, in plain language, before it ever runs. Plain-JS
+    // tools have no capabilities object at all (they're pure computation,
+    // no file/network access exists for them period), so this block is
+    // skipped entirely for those — nothing new to show.
+    let capsBlock = null;
+    if (proposal.language === "python") {
+      capsBlock = document.createElement("pre");
+      capsBlock.className = "tool-proposal-capabilities";
+      capsBlock.style.cssText = "background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.35);padding:10px;border-radius:8px;font-size:12px;white-space:pre-wrap;margin-top:8px;";
+      capsBlock.textContent = "REAL ACCESS THIS TOOL IS REQUESTING:\n" + describeCapabilities(proposal.capabilities || {});
+    }
 
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display:flex;gap:8px;margin-top:10px;";
@@ -313,6 +334,7 @@ export const Chat = {
 
     bubble.appendChild(desc);
     bubble.appendChild(codeBlock);
+    if (capsBlock) bubble.appendChild(capsBlock);
     bubble.appendChild(btnRow);
 
     wrap.appendChild(label);
