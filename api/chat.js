@@ -212,7 +212,7 @@ const FLOW_TOOLS = [
     type: 'function',
     function: {
       name: 'get_my_live_state',
-      description: "Get Flow's real current state right now: is the camera on, screen-share on, gesture control active, Sentinel on, any confirmed Telegram admin chats. Call this before claiming to currently see/hear/watch something, or before answering whether a toggle is on or off.",
+      description: "Get Flow's real current state right now: is the camera on, screen-share on, gesture control active, Sentinel on, any confirmed Telegram admin chats. Call this ONLY when Joel is asking a genuine status question ('is sentinel on?', 'can you see me right now?') — NOT when he gives a direct on/off command ('turn sentinel off'), which should call the toggle tool directly instead.",
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
@@ -242,7 +242,7 @@ const FLOW_TOOLS = [
     type: 'function',
     function: {
       name: 'toggle_sentinel',
-      description: "Turn Flow's Sentinel (ambient screen-awareness in the Electron desktop app) on or off. Call this when Joel asks to turn Sentinel on/off, or when you judge it would genuinely help (e.g. he mentions wanting ambient awareness while away from his desk) and it's currently off.",
+      description: "Turn Flow's Sentinel (ambient screen-awareness in the Electron desktop app) on or off. Call THIS tool directly when Joel gives a direct instruction like 'turn sentinel off' — do NOT call get_my_live_state first to check the current status; toggle_sentinel handles that internally and reports the real result. Checking status first before a direct command only adds a pointless extra step and a rambling reply.",
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
