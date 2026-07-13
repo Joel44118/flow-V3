@@ -600,6 +600,20 @@ micBtn.addEventListener("click", async () => {
 // regular web app, so it's safe to leave in shared app.js without an
 // extra environment check beyond this one guard.
 if (window.__flowElectron?.wakeword) {
+  // REAL FIX: prints every real wake-word log line into THIS console
+  // (DevTools, F12) — previously these only reached a terminal window
+  // that genuinely doesn't exist in the packaged app, so Joel's repeated
+  // "Hey Flow" tests showing nothing in DevTools meant nothing at all
+  // about whether wake-word was actually running; it was never wired to
+  // log here in the first place. Prefixed distinctly so it's easy to
+  // filter/spot among everything else in the console.
+  window.__flowElectron.wakeword.onLog?.(({ level, line, ts }) => {
+    const prefix = `[WakeWord @ ${new Date(ts).toLocaleTimeString()}]`;
+    if (level === "error") console.error(prefix, line);
+    else if (level === "warn") console.warn(prefix, line);
+    else console.log(prefix, line);
+  });
+
   window.__flowElectron.wakeword.onDetected(async () => {
     // Ignore if already mid-recording (e.g. Joel clicked the mic manually
     // right before saying the wake word) — avoids double-triggering the
