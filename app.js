@@ -40,6 +40,8 @@ import { initNotifications } from "./ui/notifications.js";
 import { initLeveling, getLevelState } from "./core/leveling.js";
 import { buildRepoMap, formatRepoMap } from "./core/github.js";
 import { runtimeStateBlock } from "./core/runtime.js";
+import { pickLevelUpToolProposal } from "./core/leveltools.js";
+import { listTools } from "./core/selftools.js";
 import { initSentinel, parseReplayCommand } from "./ui/sentinel.js";
 import { initFeedback } from "./core/feedback.js";
 import { initProjects, handleProjectCommand } from "./ui/projects.js";
@@ -845,7 +847,25 @@ function _showXpToast(amount, reason) {
 }
 
 initLeveling(
-  (newLevel, reason) => { _showLevelUpCard(newLevel); },     // fires only on an actual level-up
+  (newLevel, reason) => {
+    _showLevelUpCard(newLevel);
+    // REAL FEATURE: on every genuine level-up, propose one real,
+    // pre-vetted tool from core/leveltools.js's curated library,
+    // scaled to the new level's tier — through the EXACT SAME
+    // approval UI every other self-tool proposal uses (Chat.addToolProposal).
+    // Joel still approves every one; this only changes who initiates it.
+    const existingNames = listTools().map(t => t.name);
+    const toolProposal = pickLevelUpToolProposal(newLevel, existingNames);
+    if (toolProposal && Chat.addToolProposal) {
+      // Small delay so it doesn't visually collide with the level-up
+      // card's own entrance animation — a real, deliberate UX choice,
+      // not an arbitrary number.
+      setTimeout(() => {
+        Chat.add(`Level ${newLevel}, and I picked up something new for it.`, "bot");
+        Chat.addToolProposal(toolProposal);
+      }, 900);
+    }
+  },
   (amount, reason, leveledUp) => {                              // fires on EVERY award, level-up or not
     _renderLevelBar();
     if (amount) _showXpToast(amount, reason);
