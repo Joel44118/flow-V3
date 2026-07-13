@@ -37,6 +37,14 @@ contextBridge.exposeInMainWorld('__flowElectron', {
   // no new transcription logic needed here.
   wakeword: {
     onDetected: (cb) => ipcRenderer.on('wakeword-detected', () => cb()),
+    // REAL FIX: wake-word logs (model loading, SoX status, detection
+    // scores, errors) previously only reached a terminal window that
+    // genuinely doesn't exist in a packaged .exe — meaning Joel's F12
+    // DevTools console was ALWAYS silent about wake-word activity,
+    // regardless of whether it was working or broken. This forwards
+    // every real log line through so app.js can print it where Joel can
+    // actually see it.
+    onLog: (cb) => ipcRenderer.on('wakeword-log', (_e, entry) => cb(entry)),
   },
 
   // Real fix: this IPC handler (validate_js_syntax) was added to main.js
