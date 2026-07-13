@@ -39,6 +39,25 @@ jobs:
         working-directory: flow-electron
         run: npm install --ignore-scripts
 
+      # REAL FIX for "active-win not found — Sentinel disabled" on every
+      # installed build: active-win ships native bindings that need a
+      # rebuild step to work correctly against Electron's Node ABI (not
+      # the system Node ABI actions/setup-node provides). The plain
+      # `npm install --ignore-scripts` above deliberately skips ALL
+      # postinstall scripts for security — correct policy for the rest
+      # of the dependency tree, but it silently left active-win's native
+      # module unrebuilt every single time, which is exactly why
+      # Sentinel's `require('active-win')` was failing at runtime with
+      # no visible error until this session's testing surfaced it.
+      # `electron-builder install-app-deps` is a targeted, known-safe
+      # rebuild command (not arbitrary postinstall scripts from
+      # untrusted packages) — it doesn't reopen the ignore-scripts
+      # security posture, it specifically rebuilds native deps against
+      # the Electron version already pinned in devDependencies.
+      - name: Rebuild native dependencies for Electron
+        working-directory: flow-electron
+        run: npx electron-builder install-app-deps
+
       - name: Build installer
         working-directory: flow-electron
         run: npx electron-builder --win --x64 --publish always
