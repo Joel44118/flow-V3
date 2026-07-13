@@ -417,7 +417,22 @@ export async function sendMessage(overrideText, opts = {}) {
       }
     }
 
-    const displayText = proposal ? proposal.cleanedReply : finalReply;
+    let displayText = proposal ? proposal.cleanedReply : finalReply;
+
+    // REAL BUG FIXED: two separate silent-failure paths (a genuine
+    // network error in the tool follow-up round-trip caught by its own
+    // try/catch, OR the follow-up succeeding at the HTTP level but the
+    // model itself returning an empty reply on that second call) both
+    // left data.reply — and therefore displayText — as an empty string,
+    // with no error thrown anywhere. That produced exactly the symptom
+    // Joel reported: asking about updates/capabilities sometimes got
+    // NO response at all, not even an error. Never let an empty
+    // displayText reach chat/speech silently — if everything genuinely
+    // failed, say so honestly instead of showing nothing.
+    if (!displayText || !displayText.trim()) {
+      displayText = "Something went wrong getting a real answer to that — the tool call didn't come back with usable data. Try asking again?";
+      console.warn("[Flow] displayText was empty after all processing — this is the silent no-response bug, now surfaced instead of hidden.");
+    }
 
     const _wrap = _chat.add(displayText, "bot");
     if (proposal && _chat.addToolProposal) {
@@ -511,7 +526,14 @@ export async function sendToAI(text) {
     _chat.hideTyping();
 
     const proposal = parseToolProposal(data.reply);
-    const displayText = proposal ? proposal.cleanedReply : data.reply;
+    let displayText = proposal ? proposal.cleanedReply : data.reply;
+
+    // Same real fix as sendMessage above — never let an empty reply
+    // reach chat/speech silently.
+    if (!displayText || !displayText.trim()) {
+      displayText = "Something went wrong getting a real answer to that — try asking again?";
+      console.warn("[Flow] sendToAI: displayText was empty after all processing.");
+    }
 
     const _wrap = _chat.add(displayText, "bot");
     if (proposal && _chat.addToolProposal) {
