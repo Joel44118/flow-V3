@@ -40,7 +40,7 @@ import { initNotifications } from "./ui/notifications.js";
 import { initLeveling, getLevelState } from "./core/leveling.js";
 import { buildRepoMap, formatRepoMap } from "./core/github.js";
 import { runtimeStateBlock } from "./core/runtime.js";
-import { pickLevelUpToolProposal } from "./core/leveltools.js";
+import { pickLevelUpToolProposal, generateLevelUpToolProposal } from "./core/leveltools.js";
 import { listTools } from "./core/selftools.js";
 import { initSentinel, parseReplayCommand } from "./ui/sentinel.js";
 import { initFeedback } from "./core/feedback.js";
@@ -847,15 +847,21 @@ function _showXpToast(amount, reason) {
 }
 
 initLeveling(
-  (newLevel, reason) => {
+  async (newLevel, reason) => {
     _showLevelUpCard(newLevel);
-    // REAL FEATURE: on every genuine level-up, propose one real,
-    // pre-vetted tool from core/leveltools.js's curated library,
-    // scaled to the new level's tier — through the EXACT SAME
-    // approval UI every other self-tool proposal uses (Chat.addToolProposal).
-    // Joel still approves every one; this only changes who initiates it.
+    // REAL FEATURE: on every genuine level-up, propose one real tool —
+    // hand-curated tiers first (fast, no API call, reliable floor for
+    // early levels), and if those are exhausted (confirmed real gap:
+    // Tier 4 only had 2 tools for "level 21+", so anything past ~level
+    // 23 would silently get nothing without this), Flow GENERATES its
+    // own proposal scaled to the level, reusing the same real
+    // [SELFTOOL_PROPOSAL] mechanism. Either way, it goes through the
+    // exact same Approve/Reject UI as any other self-tool — no bypass.
     const existingNames = listTools().map(t => t.name);
-    const toolProposal = pickLevelUpToolProposal(newLevel, existingNames);
+    let toolProposal = pickLevelUpToolProposal(newLevel, existingNames);
+    if (!toolProposal) {
+      toolProposal = await generateLevelUpToolProposal(newLevel, existingNames);
+    }
     if (toolProposal && Chat.addToolProposal) {
       // Small delay so it doesn't visually collide with the level-up
       // card's own entrance animation — a real, deliberate UX choice,
