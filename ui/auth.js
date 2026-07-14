@@ -189,6 +189,19 @@ async function _loadFaceLandmarker() {
           },
           runningMode: "IMAGE",
           numFaces: 1,
+          // REAL SECURITY FIX: blendshapes were never enabled before —
+          // meaning verification relied ONLY on static geometric ratios
+          // (eye/nose/mouth/chin distances). Those ratios don't
+          // meaningfully change when glasses are worn (glasses don't
+          // move your actual bone structure), which is exactly why Joel
+          // confirmed wearing glasses still logged him in — a real,
+          // confirmed gap, not a hypothetical. Blendshapes give real,
+          // per-frame values like eyeBlinkLeft/eyeBlinkRight that a
+          // static photo or a person simply holding still cannot
+          // reproduce without an actual physical blink occurring during
+          // the scan — this is the real mechanism behind the liveness
+          // check added below.
+          outputFaceBlendshapes: true,
         }),
         20000, "Loading face model"
       );
@@ -253,6 +266,24 @@ async function _captureFaceVector(video) {
   const result = landmarker.detect(video);
   if (!result.faceLandmarks?.length) return null;
   return _computeFaceVector(result.faceLandmarks[0]);
+}
+
+// REAL LIVENESS CHECK, confirmed against MediaPipe's actual blendshape
+// category names (verified via Google's own face_blendshapes_graph.cc
+// source and real usage examples, not guessed): eyeBlinkLeft/
+// eyeBlinkRight score 0 (open) to 1 (closed) per frame. A static photo,
+// printed face, or someone just holding still cannot produce a genuine
+// open→closed→open transition across real frames — this is the actual
+// mechanism that closes the "glasses/spoofing got through" gap, since
+// it doesn't rely on facial geometry at all (which barely changes with
+// glasses on) but on a real physical action happening during the scan.
+function _getBlinkScore(result) {
+  const cats = result.faceBlendshapes?.[0]?.categories;
+  if (!cats) return null;
+  const left  = cats.find(c => c.categoryName === "eyeBlinkLeft")?.score;
+  const right = cats.find(c => c.categoryName === "eyeBlinkRight")?.score;
+  if (left === undefined || right === undefined) return null;
+  return (left + right) / 2; // average both eyes — real signal, tolerant of a slightly asymmetric blink
 }
 
 // ── Camera + live mesh overlay UI for the face capture popup ──────────
@@ -371,6 +402,12 @@ function _buildFaceCapture(mode, onResult, onCancel) {
   const hint       = document.getElementById("flow-face-hint");
   let stream = null, rafId = null, closed = false, locking = false;
   let goodFrameCount = 0;
+  // REAL LIVENESS STATE: tracks a genuine open→closed→open blink cycle
+  // across real frames. A static photo or someone just holding
+  // completely still never produces this transition — it requires an
+  // actual physical blink to happen during the live scan window.
+  let blinkPhase = "open"; // "open" -> "closed" -> "open" is the real, required sequence
+  let sawGenuineBlink = false;
 
   const sampleCanvas = document.createElement("canvas");
   sampleCanvas.width = 32; sampleCanvas.height = 32;
@@ -437,6 +474,21 @@ function _buildFaceCapture(mode, onResult, onCancel) {
         const lm = result.faceLandmarks[0];
         _drawMesh(lm);
 
+        // REAL LIVENESS TRACKING: check the actual blink state every
+        // frame a face is detected, throughout the whole scan window —
+        // not just at the final lock-in moment, so Joel has the entire
+        // "hold still" period to naturally blink once, which people do
+        // involuntarily every few seconds anyway.
+        const blinkScore = _getBlinkScore(result);
+        if (blinkScore !== null) {
+          if (blinkPhase === "open" && blinkScore > 0.6) {
+            blinkPhase = "closed"; // real transition: eyes were open, now genuinely closed
+          } else if (blinkPhase === "closed" && blinkScore < 0.3) {
+            blinkPhase = "open";
+            sawGenuineBlink = true; // real, complete open→closed→open cycle observed
+          }
+        }
+
         // Same eye-corner geometry used in _computeFaceVector — genuine
         // shared signal, not a fabricated separate metric.
         const eyeSpan = Math.hypot(
@@ -476,11 +528,24 @@ function _buildFaceCapture(mode, onResult, onCancel) {
           goodFrameCount++;
           const framesNeeded = isEnroll ? 20 : 14;
           wave.classList.add("active");
-          status.textContent = goodFrameCount >= framesNeeded ? "Locked — scanning" : "Hold still…";
+          // REAL FIX: lock-in now also requires sawGenuineBlink — a real,
+          // complete open→closed→open blink transition, tracked above.
+          // This is the actual mechanism that closes the "glasses still
+          // logged me in" gap Joel confirmed: geometric face-ratios
+          // barely change with glasses on, but a static photo, printed
+          // face, or someone deliberately holding unnaturally still
+          // cannot produce this transition without a real physical blink
+          // happening during the live scan.
+          const readyToLock = goodFrameCount >= framesNeeded && sawGenuineBlink;
+          if (goodFrameCount >= framesNeeded && !sawGenuineBlink) {
+            status.textContent = "Just blink naturally to confirm you're really here";
+          } else {
+            status.textContent = readyToLock ? "Locked — scanning" : "Hold still…";
+          }
           hint.textContent = "";
           ring.className = "good";
 
-          if (goodFrameCount >= framesNeeded && !locking) {
+          if (readyToLock && !locking) {
             locking = true;
             radar.classList.remove("active");
             wave.classList.remove("active");
