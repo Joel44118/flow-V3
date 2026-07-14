@@ -5,6 +5,7 @@
 const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCapturer, powerMonitor, globalShortcut } = require('electron');
 const path = require('path');
 const { startWakeWordEngine, stopWakeWordEngine, setRendererLogSink } = require('./wakeword-engine');
+const heartbeat = require('./heartbeat');
 
 // ── Main-process log forwarding to renderer DevTools ─────────────────────
 // REAL FIX: a packaged .exe has no terminal window, so console.log calls
@@ -433,6 +434,14 @@ ipcMain.handle('get_screen_size', () => {
 });
 
 ipcMain.handle('get_build_info', () => buildInfo);
+
+// REAL, NEW: exposes Flow's standing goal list to the renderer, so Joel
+// can actually see and manage what Flow has decided is worth pursuing —
+// not a hidden, opaque internal list. Same real backing store
+// heartbeat.js's reasoning pass reads from every tick.
+ipcMain.handle('heartbeat_list_goals', () => heartbeat.listGoals());
+ipcMain.handle('heartbeat_add_goal', (_e, { description }) => heartbeat.addGoal(description));
+ipcMain.handle('heartbeat_remove_goal', (_e, { id }) => heartbeat.removeGoal(id));
 
 ipcMain.on('win_minimize', () => mainWin?.minimize());
 ipcMain.on('win_maximize', () => { if (!mainWin) return; mainWin.isMaximized() ? mainWin.unmaximize() : mainWin.maximize(); });
@@ -930,7 +939,19 @@ function startWakeWord() {
   });
 }
 
-app.whenReady().then(() => { createWindow(); createOverlay(); createTray(); setupAutoStart(); registerGlobalShortcuts(); startWakeWord(); });
+app.whenReady().then(() => {
+  createWindow(); createOverlay(); createTray(); setupAutoStart(); registerGlobalShortcuts(); startWakeWord();
+
+  // REAL FIX/FEATURE: wires the heartbeat's self-initiated messages into
+  // the actual chat UI when the window happens to be open, via the same
+  // real IPC pattern already used for wake-word logs — so a message Flow
+  // decides to send unprompted shows up in-chat, not just as a native
+  // notification/Telegram push when Joel is actively looking at Flow.
+  heartbeat.setNotificationSink((text) => {
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('heartbeat-message', { text, ts: Date.now() });
+  });
+  heartbeat.startHeartbeat();
+});
 app.on('activate',         () => { if (!mainWin) createWindow(); else mainWin.show(); });
 app.on('window-all-closed',() => {
   // Real fix now lives in mainWin's 'close' handler above — that's the
@@ -943,4 +964,4 @@ app.on('window-all-closed',() => {
   // it to meaningfully decide.
   /* stay in tray */
 });
-app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); stopWakeWordEngine(); });
+app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); stopWakeWordEngine(); heartbeat.stopHeartbeat(); });
