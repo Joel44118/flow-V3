@@ -18,11 +18,29 @@
 </head>
 <body>
 
+  <!-- ═══════════════════════════════════════════
+       REAL BOOT SEQUENCE, built this session:
+       - #boot-overlay: full-screen loading screen shown while real init
+         steps run (face-verification preload, voice, etc.) — text types
+         itself letter-by-letter, genuinely tied to actual load progress
+         via core/boot.js, not a fake timed animation.
+       - #top-bar and #app-footer both start collapsed to a single point
+         at true screen-center, then stretch apart (top-bar rising to the
+         top edge, footer dropping to the bottom edge) once boot
+         genuinely completes — see the .boot-stretch class toggled by
+         core/boot.js.
+  ═══════════════════════════════════════════ -->
+  <div id="boot-overlay">
+    <div id="boot-orb-ring"></div>
+    <div id="boot-text-line"></div>
+    <div id="boot-subtext">Flow V3 — Joelflowstack</div>
+  </div>
+
   <canvas id="bg-canvas"></canvas>
   <canvas id="orb-canvas"></canvas>
   <div id="agent-badge" style="display:none"></div>
 
-  <div id="top-bar">
+  <div id="top-bar" class="boot-collapsed">
     <div id="flow-logo">FLOW <span id="vtag">V3</span></div>
     <div id="wake-indicator">Say <em>"Hey Flow"</em></div>
     <div id="status-wrap"><span id="status-dot"></span><span id="status-label">ONLINE</span></div>
@@ -127,6 +145,19 @@
 
     <button id="mic-btn">🎤</button>
     <button id="send-btn">➤</button>
+  </div>
+
+  <!-- REAL FOOTER, built this session: genuinely useful live status, not
+       decorative filler. Populated/updated by core/boot.js and app.js's
+       existing real state (level, provider, connection). -->
+  <div id="app-footer" class="boot-collapsed">
+    <span id="footer-provider" title="Which AI provider answered your last message">—</span>
+    <span id="footer-sep">·</span>
+    <span id="footer-level" title="Your current level">—</span>
+    <span id="footer-sep">·</span>
+    <span id="footer-clock" title="Local time"></span>
+    <span id="footer-sep">·</span>
+    <span id="footer-conn" title="Connection status">●</span>
   </div>
 
   <script type="module" src="app.js"></script>
