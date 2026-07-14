@@ -718,19 +718,39 @@ if (window.__flowElectron?.onMainLog) {
 // web app.
 const sentinelBtn = document.getElementById("sentinel-toggle-btn");
 if (sentinelBtn && window.__flowElectron?.sentinel) {
+  let _sentinelUnavailable = false; // real flag, used below so a click while disabled still explains why, instead of just doing nothing
+
   // Reflect the real current state on load, rather than assuming off —
   // Sentinel's state persists across app restarts via main.js, so the
   // button needs to check, not guess.
   window.__flowElectron.sentinel.status().then((status) => {
     sentinelBtn.classList.toggle("active", !!status?.enabled);
     if (status && !status.available) {
-      sentinelBtn.title = "Sentinel unavailable on this system (active-win failed to load)";
-      sentinelBtn.style.opacity = "0.25";
-      sentinelBtn.disabled = true;
+      // REAL UX FIX: this used to just grey out and disable the button
+      // with nothing beyond a hover tooltip explaining why — confirmed
+      // this session that "active-win failed to load" was happening on
+      // EVERY build, because the CI workflow's `npm install
+      // --ignore-scripts` was skipping the native-module rebuild
+      // active-win genuinely needs (fixed separately in
+      // .github/workflows/build-electron.yml this session, not yet
+      // confirmed working in a real tested release). Rather than leave
+      // Joel with an unexplained grey button, clicking it while
+      // unavailable now tells him plainly what's actually going on.
+      _sentinelUnavailable = true;
+      sentinelBtn.title = "Sentinel unavailable — active-win failed to load on this build (click for details)";
+      sentinelBtn.style.opacity = "0.35";
+      sentinelBtn.style.cursor = "help"; // signals "click for info", not just "broken"
     }
   }).catch(() => {});
 
   sentinelBtn.addEventListener("click", async () => {
+    if (_sentinelUnavailable) {
+      Chat.add(
+        "Sentinel can't turn on right now — the active-win component (which lets me see which window is focused) failed to load on this build. This is a known, real issue with how the installer packages native dependencies, and a fix has already gone into the build pipeline — it should resolve on the next fresh install/update, not something you need to do anything about.",
+        "bot"
+      );
+      return;
+    }
     const isActive = sentinelBtn.classList.contains("active");
     window.__flowElectron.sentinel.toggle(!isActive);
     sentinelBtn.classList.toggle("active", !isActive);
