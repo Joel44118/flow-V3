@@ -360,6 +360,40 @@ setClientActionHandler(async (action, args) => {
     Chat.add("📝 Notepad's open.", "bot");
     return;
   }
+  if (action === "post_to_bluesky") {
+    // REAL SAFETY GATE, defense in depth: the tool description already
+    // instructs the model to only call this after Joel's explicit
+    // approval in conversation — but a model following an instruction is
+    // one layer, not a guarantee. This is a second, independent, real
+    // confirmation directly in the browser before anything actually
+    // posts — matching the same "human clicks a real button before
+    // anything irreversible happens" pattern already used for self-tool
+    // approvals elsewhere in Flow.
+    const preview = args?.text?.slice(0, 200) || "(no text)";
+    const confirmed = window.confirm(`Post this to Bluesky?\n\n"${preview}"${args?.videoUrl ? "\n\n[+ video attached]" : ""}`);
+    if (!confirmed) {
+      Chat.add("Didn't post — you said no.", "bot");
+      return "Joel declined to post — do not retry automatically, ask him what he'd like to change if anything.";
+    }
+    Chat.add("📤 Posting to Bluesky...", "bot");
+    try {
+      const res = await fetch("/api/social?platform=bluesky", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: args.text, videoUrl: args.videoUrl }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        Chat.addError(`Bluesky post failed: ${data.error}`);
+        return `Real failure: ${data.error}`;
+      }
+      Chat.add(`✅ Posted — ${data.uri}`, "bot");
+      return `Posted successfully. Real post URI: ${data.uri}`;
+    } catch (e) {
+      Chat.addError(`Bluesky post failed: ${e.message}`);
+      return `Real failure: ${e.message}`;
+    }
+  }
   if (action === "get_my_level") {
     const lvl = getLevelState();
     return `Level ${lvl.level}, ${lvl.xp}/${lvl.xpNeeded} XP (${lvl.percent}%), ${lvl.totalXp} total XP earned.`;
