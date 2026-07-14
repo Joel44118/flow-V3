@@ -254,6 +254,21 @@ const FLOW_TOOLS = [
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'post_to_bluesky',
+      description: "Post real text (optionally with a video) to Joel's Bluesky account via the actual, live API — genuinely free, no card, confirmed working. Call this ONLY after Joel has explicitly approved posting this specific content — never post on your own judgment without a real, explicit go-ahead in this conversation, since this is a real, public, irreversible action.",
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'The exact post text Joel approved' },
+          videoUrl: { type: 'string', description: 'Optional: a real, fetchable URL to a video to attach (e.g. from a prior generate_video call)' },
+        },
+        required: ['text'],
+      },
+    },
+  },
 ];
 
 // Real execution dispatcher — actually runs the tool server-side where
@@ -305,6 +320,9 @@ async function executeFlowTool(toolName, args) {
   }
   if (toolName === 'open_notepad') {
     return { handled: false, clientAction: 'open_notepad', result: null };
+  }
+  if (toolName === 'post_to_bluesky') {
+    return { handled: false, clientAction: 'post_to_bluesky', clientArgs: args, result: null };
   }
   return { handled: true, result: `Unknown tool: ${toolName}` };
 }
