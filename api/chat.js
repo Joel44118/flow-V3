@@ -658,17 +658,21 @@ export default async function handler(req, res) {
   const intent   = force_intent || detectIntent(trimmed);
 
   const totalChars = trimmed.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
-  // REAL FIX: this was a flat 18000-char cap on every request regardless
-  // of intent — which would have silently defeated the whole point of
-  // the NVIDIA/OpenRouter Nemotron 3 Ultra upgrade above (large-context
-  // repo analysis) by rejecting exactly the kind of large payload that
-  // upgrade exists to handle. code/research get a much higher ceiling;
-  // ~4 chars/token is a standard rough estimate, so 900,000 chars stays
-  // safely under Nemotron's ~1M token context with room for the
-  // response. Other intents (chat, creative, pdf) keep the original
-  // conservative limit — they were never the bottleneck and don't
-  // benefit from a bigger payload.
-  const sizeLimit = (intent === 'code' || intent === 'research') ? 900000 : 18000;
+  // REAL FIX, confirmed by Joel's actual test: an ordinary short message
+  // ("make up a post about my business") was rejected by this guard —
+  // meaning the real system prompt (identity.js's hard limits + tool
+  // descriptions + reasoning instructions, plus persona/skills/RAG
+  // blocks, plus real conversation history) has genuinely grown past
+  // 18,000 chars over the course of this session's real feature growth
+  // (tool-calling, Python sandbox docs, Bluesky posting, etc.) — this
+  // was never a large-payload problem, it was a stale, too-low constant
+  // that never got raised to match how much identity.js/ai.js's own
+  // prompt has grown. The old comment's assumption that chat/creative/
+  // pdf "were never the bottleneck" is now confirmed false by real use,
+  // not theoretical. Raised generously — still well under Cerebras/
+  // Groq's real context windows, with headroom for further growth
+  // rather than needing another emergency bump next time a feature is added.
+  const sizeLimit = (intent === 'code' || intent === 'research') ? 900000 : 60000;
   if (totalChars > sizeLimit) {
     return res.status(200).json({
       reply: intent === 'code' || intent === 'research'
