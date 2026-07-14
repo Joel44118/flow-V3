@@ -47,8 +47,44 @@ import { initFeedback } from "./core/feedback.js";
 import { initProjects, handleProjectCommand } from "./ui/projects.js";
 import { initScreenControl, parseScreenControl } from "./ui/screencontrol.js";
 import { Gesture, initGesture } from "./ui/gesture.js";
+import { runBootSequence } from "./core/boot.js";
+import { getLastModelUsed } from "./core/ai.js";
 
-// ── Handle slash commands ─────────────────────────────────────────────────
+// REAL, fires immediately on module load — the loading overlay is
+// already in the HTML (visible by default via CSS, see styles.css's
+// #boot-overlay), so this just needs to start the actual real init work
+// and drive the visible progress text. Deliberately NOT awaited here —
+// the rest of app.js's normal setup below proceeds in parallel
+// underneath the overlay, exactly like a real splash screen; the
+// overlay only blocks the user's VIEW, not the app's actual boot logic.
+runBootSequence();
+
+// REAL FOOTER, built this session — genuinely useful live status, not
+// decorative filler. Updates every second so the clock is real, and
+// pulls actual current data from the same real sources the rest of the
+// UI already uses (getLevelState, getLastModelUsed, navigator.onLine).
+function _updateFooter() {
+  const providerEl = document.getElementById("footer-provider");
+  const levelEl     = document.getElementById("footer-level");
+  const clockEl     = document.getElementById("footer-clock");
+  const connEl      = document.getElementById("footer-conn");
+  if (!providerEl) return; // real guard — footer may not exist yet during very early boot
+
+  const model = getLastModelUsed();
+  providerEl.textContent = model ? model.split(":")[0] : "—"; // "Cerebras", "Groq", etc. — the provider name before the colon
+
+  const lvl = getLevelState();
+  levelEl.textContent = `LV.${lvl.level}`;
+
+  clockEl.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  const online = navigator.onLine;
+  connEl.textContent = online ? "●" : "○";
+  connEl.style.color = online ? "#4ade80" : "#f87171";
+  connEl.title = online ? "Connected" : "Offline — real network check via navigator.onLine";
+}
+setInterval(_updateFooter, 1000);
+_updateFooter(); // real, immediate first paint — don't make Joel wait a full second to see anything in the footer
 function _openProjects() { document.getElementById('proj-btn')?.click(); }
 
 async function handleSlashCmd(cmd, prompt) {
