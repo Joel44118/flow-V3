@@ -669,6 +669,20 @@ micBtn.addEventListener("click", async () => {
 // preload.js's contextBridge) — this whole block is a silent no-op in the
 // regular web app, so it's safe to leave in shared app.js without an
 // extra environment check beyond this one guard.
+if (window.__flowElectron?.heartbeat) {
+  // REAL FEATURE: this is the actual mechanism behind "Flow speaks up
+  // first" when the window is open — a self-initiated message from
+  // flow-electron/heartbeat.js's real, unprompted reasoning loop lands
+  // here and gets shown exactly like any other bot message, with a
+  // small visual marker so Joel can tell it wasn't a reply to anything
+  // he typed.
+  window.__flowElectron.heartbeat.onMessage(({ text }) => {
+    Chat.add(`💭 ${text}`, "bot");
+    Orb.setState("speaking");
+    Speech.speak(text, () => Orb.setState("idle"));
+  });
+}
+
 if (window.__flowElectron?.wakeword) {
   // REAL FIX: prints every real wake-word log line into THIS console
   // (DevTools, F12) — previously these only reached a terminal window
