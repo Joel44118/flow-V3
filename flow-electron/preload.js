@@ -12,6 +12,17 @@ contextBridge.exposeInMainWorld('__flowElectron', {
   maximize: () => ipcRenderer.send('win_maximize'),
   close:    () => ipcRenderer.send('win_close'),
 
+  // ── Flow Heartbeat — real, standing autonomy loop ───────────────────
+  // Lets the renderer see/manage Flow's own self-directed goal list
+  // (heartbeat.js's real, persisted store) and receive self-initiated
+  // messages Flow decides to send, unprompted, while the window is open.
+  heartbeat: {
+    listGoals:   ()      => ipcRenderer.invoke('heartbeat_list_goals'),
+    addGoal:     (description) => ipcRenderer.invoke('heartbeat_add_goal', { description }),
+    removeGoal:  (id)    => ipcRenderer.invoke('heartbeat_remove_goal', { id }),
+    onMessage:   (cb)    => ipcRenderer.on('heartbeat-message', (_e, entry) => cb(entry)),
+  },
+
   // ── Flow Sentinel ────────────────────────────────────────────────────
   // Ambient context awareness — Electron-only, requires OS-level access
   sentinel: {
