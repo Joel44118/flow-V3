@@ -62,7 +62,22 @@ body {
   z-index:20;
   -webkit-app-region: drag; /* whole bar drags the window in Electron; no-op in browser */
   user-select: none; -webkit-user-select: none; /* stops accidental text selection when dragging the window by the title bar (e.g. selecting "FLOW" or the build stamp mid-drag) */
+  /* REAL BOOT ANIMATION: transitions top/opacity so the collapsed→final
+     state change (toggled by core/boot.js removing .boot-collapsed)
+     reads as a smooth stretch, not a snap. */
+  transition: top 0.65s cubic-bezier(.16,.9,.3,1), opacity 0.5s ease;
 }
+/* Starting state: pinned flat at TRUE screen-center (50vh), invisible
+   content (opacity 0 on children via the wrapper, not the bar itself,
+   so its background gradient can still read as a thin center line) —
+   removed by core/boot.js once real init genuinely completes, which is
+   what triggers the transition above to animate it up to its real top:0
+   position. */
+#top-bar.boot-collapsed {
+  top: 50vh;
+  opacity: 0.35;
+}
+#top-bar.boot-collapsed > * { opacity: 0; }
 
 /* REAL BUG FIX, confirmed: these were previously declared directly
    inside #top-bar's own selector, which meant they ALWAYS won over
@@ -584,10 +599,82 @@ body::after {
     0 12px 40px rgba(0,0,0,0.45),
     0 0 0 0.5px rgba(255,255,255,0.07);
 }
-.input-panel:focus-within {
-  border-color:rgba(255,255,255,0.35);
-  box-shadow:0 1px 0 rgba(255,255,255,0.18) inset, 0 12px 40px rgba(0,0,0,0.5), 0 0 30px rgba(56,189,248,0.08);
+
+/* ── REAL FOOTER, built this session ─────────────────────────────────
+   Genuinely live status bar: last AI provider used, current level,
+   local clock, connection state — all real data from core/ai.js,
+   core/leveling.js, and navigator.onLine (see app.js's _updateFooter).
+   Thin and subtle by design — this is ambient status, not a second
+   toolbar competing for attention. Mirrors #top-bar's real boot-collapse
+   animation so both stretch apart from screen-center together. */
+#app-footer {
+  position: fixed; bottom: 0; left: 0; right: 0; height: 26px;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  background: linear-gradient(0deg, rgba(6,10,26,0.85) 0%, transparent 100%);
+  font-family: monospace; font-size: 10px; letter-spacing: 0.04em;
+  color: rgba(255,255,255,0.45);
+  z-index: 15; /* below the input panel (z-index:20) so it never competes for clicks */
+  pointer-events: none; user-select: none;
+  transition: bottom 0.65s cubic-bezier(.16,.9,.3,1), opacity 0.5s ease;
 }
+#footer-sep { opacity: 0.3; }
+#footer-provider { color: rgba(56,189,248,0.7); }
+#footer-level { color: rgba(167,139,250,0.7); }
+/* Same real collapsed-state pattern as #top-bar.boot-collapsed, mirrored
+   to the bottom edge — both elements start pinned flat at screen-center
+   and stretch apart in opposite directions simultaneously. */
+#app-footer.boot-collapsed {
+  bottom: 50vh;
+  opacity: 0.35;
+}
+#app-footer.boot-collapsed > * { opacity: 0; }
+
+/* ── REAL BOOT OVERLAY, built this session ───────────────────────────
+   Full-screen loading screen shown while core/boot.js's REAL init steps
+   run (face-verification preload, etc.). Text is typed letter-by-letter
+   by boot.js, genuinely tied to real load progress — this CSS only
+   handles the visual container and the typing cursor effect. */
+#boot-overlay {
+  position: fixed; inset: 0; z-index: 9998;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 18px;
+  background: radial-gradient(ellipse at center, #0a0f1f 0%, #04060d 100%);
+  transition: opacity 0.6s ease;
+}
+#boot-overlay.boot-done { opacity: 0; pointer-events: none; }
+
+#boot-orb-ring {
+  width: 64px; height: 64px; border-radius: 50%;
+  border: 2px solid rgba(56,189,248,0.25);
+  border-top-color: rgba(56,189,248,0.9);
+  animation: boot-ring-spin 1.1s linear infinite;
+}
+@keyframes boot-ring-spin { to { transform: rotate(360deg); } }
+
+#boot-text-line {
+  font-family: 'Orbitron', monospace; font-size: 14px; letter-spacing: 0.08em;
+  color: rgba(226,232,255,0.92);
+  min-height: 20px; /* real, prevents layout jump as text types in and out between steps */
+}
+/* Real typing-cursor effect — a blinking bar right after the text being
+   typed, removed once boot.js swaps in the next line. */
+#boot-text-line::after {
+  content: "▋";
+  margin-left: 2px;
+  color: rgba(56,189,248,0.8);
+  animation: boot-cursor-blink 0.9s step-end infinite;
+}
+@keyframes boot-cursor-blink { 50% { opacity: 0; } }
+
+#boot-subtext {
+  font-size: 10px; letter-spacing: 0.15em; color: rgba(255,255,255,0.3);
+  text-transform: uppercase;
+}
+@media (prefers-reduced-motion: reduce) {
+  #boot-orb-ring { animation: none; border-top-color: rgba(56,189,248,0.25); }
+  #boot-text-line::after { animation: none; }
+}
+
 .input-panel.slash-active {
   border-color:rgba(56,189,248,0.45) !important;
   box-shadow:0 1px 0 rgba(255,255,255,0.16) inset, 0 12px 40px rgba(0,0,0,0.5), 0 0 30px rgba(56,189,248,0.12) !important;
