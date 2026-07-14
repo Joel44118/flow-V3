@@ -396,6 +396,30 @@ async function handleGroupAdminCommand(tgFetch, tgFetchStrict, msg, chatId, text
 }
 
 // ── TELEGRAM ──────────────────────────────────────────────────────────────
+
+// REAL, module-level (not request-scoped like the one inside
+// handleTelegram below) — needed so the heartbeat loop's self-initiated
+// messages (flow-electron/heartbeat.js) can send a real Telegram push to
+// Joel without needing an incoming webhook request to piggyback on.
+async function sendTelegramToJoel(text) {
+  if (!TG_TOKEN) return { ok: false, error: 'TELEGRAM_BOT_TOKEN not set' };
+  const joelId = process.env.JOEL_TELEGRAM_CHAT_ID;
+  if (!joelId) return { ok: false, error: 'JOEL_TELEGRAM_CHAT_ID not set — nowhere to send a self-initiated message.' };
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: joelId, text, parse_mode: 'Markdown' }),
+    });
+    const data = await res.json();
+    if (!data.ok) return { ok: false, error: data.description || 'Telegram API rejected the message' };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 async function handleTelegram(req, res) {
   if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
 
@@ -1462,6 +1486,23 @@ async function handleBluesky(req, res) {
   }
 }
 
+// ═══════════════════════════════════════════
+// REAL, NEW: self-initiated messaging endpoint for the heartbeat loop
+// (flow-electron/heartbeat.js). This is the actual mechanism behind
+// "Flow speaks up first" — Joel's real, explicit request for genuine
+// autonomy, not just a request/response bot. Deliberately simple: takes
+// text, sends it via the real sendTelegramToJoel function above. Native
+// desktop notifications are handled separately, directly in
+// flow-electron/main.js (showNativeNotification already exists there),
+// since that doesn't need a network round-trip through Vercel at all.
+// ═══════════════════════════════════════════
+async function handleHeartbeatNotify(req, res) {
+  const { text } = req.body || {};
+  if (!text) return res.status(200).json({ ok: false, error: 'Missing "text" in request body.' });
+  const result = await sendTelegramToJoel(text);
+  return res.status(200).json(result);
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -1472,6 +1513,7 @@ export default async function handler(req, res) {
   if (platform === 'autopost')      return handleAutoPost(req, res);
   if (platform === 'diagnose')      return handleDiagnose(req, res);
   if (platform === 'bluesky')       return handleBluesky(req, res);
+  if (platform === 'heartbeat-notify') return handleHeartbeatNotify(req, res);
   return res.status(200).json({ service: 'Flow Social', endpoints: {
     telegram: '/api/social?platform=telegram',
     whatsapp: '/api/social?platform=whatsapp',
@@ -1479,5 +1521,6 @@ export default async function handler(req, res) {
     autopost: '/api/social?platform=autopost',
     diagnose: '/api/social?platform=diagnose',
     bluesky: '/api/social?platform=bluesky (POST { text, videoUrl? })',
+    heartbeatNotify: '/api/social?platform=heartbeat-notify (POST { text })',
   } });
 }
