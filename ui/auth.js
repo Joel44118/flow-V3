@@ -862,6 +862,18 @@ ${!isSetup ? `
 // ═══════════════════════════════════════════════════════════════════════
 const BYPASS_LOCK = false;
 
+// REAL FIX for "face verification always fails on the first try, works
+// on the second/third": _loadFaceLandmarker was only ever called lazily,
+// on the FIRST actual unlock attempt — meaning that attempt always ate a
+// real, slow cold load (CDN import + WASM + model download) while
+// simultaneously racing against the unlock flow's own timeout. Exporting
+// this so core/boot.js can call it during the boot loading screen
+// (where a delay is already expected and shown honestly), so by the
+// time Joel actually tries to unlock, the model is already warm.
+export async function preloadFaceModel() {
+  await _loadFaceLandmarker();
+}
+
 export async function initAuth() {
   if (BYPASS_LOCK) {
     console.warn("[Flow Auth] BYPASS_LOCK is ON — lock screen is skipped. Set it back to false in ui/auth.js once setup is done.");
