@@ -26,6 +26,9 @@ import { getToolsPromptContext, parseToolProposal } from "./selftools.js";
 let _chat = null;
 let _orb  = null;
 let _onClientAction = null;
+let _lastModelUsed = null;
+export function getLastModelUsed() { return _lastModelUsed; }
+
 export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 // Registers a callback for real autonomous tool-use client actions
 // (camera, image generation) that Flow's own judgment decided to
@@ -333,6 +336,7 @@ export async function sendMessage(overrideText, opts = {}) {
     if (!res.ok || (!data.reply && !data.clientAction)) throw new Error(data.error || `Server error ${res.status}`);
 
     console.log("[Flow] ←", (data.reply || "(tool call, no initial text)").slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
+    if (data.model) _lastModelUsed = data.model; // real, for the footer's live provider display
     _chat.hideTyping();
 
     // REAL AUTONOMOUS TOOL-USE: if the model's own judgment chose to
