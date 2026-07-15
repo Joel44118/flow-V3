@@ -160,6 +160,33 @@ async function _recallScratchpad() {
   return memoryStore.recall("recent reasoning and open thoughts", { maxResults: 3, category: "scratchpad" });
 }
 
+// ── Real marketing-cadence tracking ──────────────────────────────────────
+// Connects the autonomy loop directly to Joel's actual, stated goal:
+// getting seen on socials. The heartbeat can't call
+// ui/marketing.js's generateMarketingPost directly (that's real browser/
+// renderer code — Flux calls, Bluesky posting — the main process can't
+// reach it), so instead it tracks cadence and SUGGESTS a post via the
+// real self-messaging path when it's genuinely been a while; Joel then
+// says "yes, make one" in chat and the existing generate_marketing_post
+// tool (built this session) takes it from there.
+function _lastMarketingPostPath() { return path.join(app.getPath('userData'), 'flow-last-marketing-post.json'); }
+function _daysSinceLastMarketingPost() {
+  try {
+    const p = _lastMarketingPostPath();
+    if (!fs.existsSync(p)) return Infinity; // real, honest: never posted yet, definitely due
+    const { ts } = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return (Date.now() - ts) / (24 * 60 * 60 * 1000);
+  } catch (e) {
+    return Infinity;
+  }
+}
+// Real, callable from the renderer (main.js wires an IPC handler) so
+// ui/marketing.js can mark "a post genuinely went out" after a real
+// Bluesky success — not guessed at from the main process's side.
+function recordMarketingPost() {
+  try { fs.writeFileSync(_lastMarketingPostPath(), JSON.stringify({ ts: Date.now() })); } catch (e) { console.warn('[Heartbeat] Failed to record marketing post timestamp:', e.message); }
+}
+
 // ── Real reasoning call — asks the actual cloud model, not a fake ───────
 // canned response, whether anything is genuinely worth doing this tick.
 async function _reasonAboutTick() {
@@ -167,6 +194,7 @@ async function _reasonAboutTick() {
   const priorities = _loadPriorities();
   const recentThoughts = await _recallScratchpad();
   const recurringTopics = await memoryStore.findRecurringTopics({ sinceDays: 7, minOccurrences: 3 });
+  const daysSincePost = _daysSinceLastMarketingPost();
 
   // Real, honest prompt — explicitly tells the model this is an
   // UNPROMPTED reasoning pass, not a reply to Joel, and to say "nothing"
@@ -180,6 +208,8 @@ ${priorities.map(p => `- ${p}`).join('\n') || '(none set)'}
 
 YOUR OPEN GOALS:
 ${openGoals.length ? openGoals.map(g => `- [${g.id}] ${g.description}`).join('\n') : '(none — this is fine, not every tick needs a goal)'}
+
+REAL MARKETING CADENCE: it has been ${daysSincePost === Infinity ? 'a while (no post recorded yet)' : `${daysSincePost.toFixed(1)} days`} since the last real marketing post went out. Joel's stated goal is getting genuinely seen on socials to help him land real clients — if it's been more than ~3 days, consider suggesting a new post as a real "message" action below, but don't force it every single tick just because time passed; use real judgment about whether now is a reasonable moment.
 
 YOUR RECENT SCRATCHPAD THOUGHTS (from previous ticks):
 ${recentThoughts.map(t => `- ${t.text}`).join('\n') || '(none yet)'}
@@ -289,5 +319,5 @@ function stopHeartbeat() {
 
 module.exports = {
   startHeartbeat, stopHeartbeat, setNotificationSink,
-  addGoal, listGoals, removeGoal,
+  addGoal, listGoals, removeGoal, recordMarketingPost,
 };
