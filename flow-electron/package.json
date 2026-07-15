@@ -1,6 +1,6 @@
 {
   "name": "flow-ai",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "description": "Flow AI Desktop",
   "main": "main.js",
   "scripts": {
@@ -14,8 +14,11 @@
       "main.js",
       "preload.js",
       "wakeword-engine.js",
+      "heartbeat.js",
+      "memory-store.js",
       "icon.png",
-      "build-info.json"
+      "build-info.json",
+      "node_modules/**/*"
     ],
     "extraResources": [
       { "from": "resources/wakeword", "to": "wakeword" },
