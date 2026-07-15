@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     listGoals:   ()      => ipcRenderer.invoke('heartbeat_list_goals'),
     addGoal:     (description) => ipcRenderer.invoke('heartbeat_add_goal', { description }),
     removeGoal:  (id)    => ipcRenderer.invoke('heartbeat_remove_goal', { id }),
+    recordMarketingPost: () => ipcRenderer.invoke('heartbeat_record_marketing_post'),
     onMessage:   (cb)    => ipcRenderer.on('heartbeat-message', (_e, entry) => cb(entry)),
   },
 
