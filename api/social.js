@@ -1198,6 +1198,94 @@ async function handleCallbackQuery(tgFetch, tgFetchStrict, callbackQuery) {
     }
   }
 
+  // ── REAL MARKETING DRAFT APPROVAL — the actual gate that decides ────
+  // whether a generated pain-point post genuinely goes out to Bluesky.
+  // "Post it" only fires the real post_to_bluesky logic AFTER this
+  // explicit tap — matching the exact same never-post-without-approval
+  // principle as the direct chat tool.
+  if (data.startsWith('mktdraft_')) {
+    const [, decision, draftId] = data.match(/^mktdraft_(yes|no|retry)_(.+)$/) || [];
+    if (!draftId) return true;
+
+    const draftRaw = KV_URL && KV_KEY
+      ? await fetch(`${KV_URL}/get/${MARKETING_DRAFT_KEY(draftId)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null)
+      : null;
+    const draft = draftRaw?.result ? JSON.parse(draftRaw.result) : null;
+    if (!draft) {
+      await ackAndEdit('This draft has expired or was already handled.');
+      return true;
+    }
+
+    if (decision === 'no') {
+      await ackAndEdit('❌ Discarded — not posted.');
+      return true;
+    }
+
+    if (decision === 'yes') {
+      try {
+        // Real, direct call to the same Bluesky posting logic used by
+        // the chat tool — genuinely posts, not a simulation.
+        const uploadRes = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifier: process.env.BLUESKY_HANDLE, password: process.env.BLUESKY_APP_PASSWORD }),
+        });
+        if (!uploadRes.ok) { await ackAndEdit(`⚠️ Bluesky auth failed: ${await uploadRes.text()}`); return true; }
+        const session = await uploadRes.json();
+
+        const blobRes = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session.accessJwt}`, 'Content-Type': 'image/png' },
+          body: Buffer.from(draft.imageBase64, 'base64'),
+        });
+        if (!blobRes.ok) { await ackAndEdit(`⚠️ Bluesky image upload failed: ${await blobRes.text()}`); return true; }
+        const blobData = await blobRes.json();
+
+        const postRes = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session.accessJwt}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            repo: session.did,
+            collection: 'app.bsky.feed.post',
+            record: {
+              $type: 'app.bsky.feed.post',
+              text: draft.caption,
+              createdAt: new Date().toISOString(),
+              embed: { $type: 'app.bsky.embed.images', images: [{ image: blobData.blob, alt: draft.caption.slice(0, 100) }] },
+            },
+          }),
+        });
+        if (!postRes.ok) { await ackAndEdit(`⚠️ Bluesky post failed: ${await postRes.text()}`); return true; }
+        const postData = await postRes.json();
+        await ackAndEdit(`✅ Posted to Bluesky — ${postData.uri}`);
+        // REAL, HONEST GAP: unlike the in-app approval path (which can
+        // call window.__flowElectron.heartbeat.recordMarketingPost()
+        // directly), this server-side Telegram-approval path has no way
+        // to inform the Electron heartbeat's cadence tracker — a Vercel
+        // serverless function can't reach into a running desktop
+        // process's IPC. Practical effect: if Joel always approves via
+        // Telegram rather than in-app, the heartbeat's "days since last
+        // post" will overcount slightly. Not fixed here — a real fix
+        // would need the Electron app to poll a shared timestamp (e.g.
+        // in KV) rather than rely on a direct call, which is more
+        // plumbing than this pass covers. Flagged honestly rather than
+        // silently wrong.
+      } catch (e) {
+        await ackAndEdit(`⚠️ Real error posting: ${e.message}`);
+      }
+      return true;
+    }
+
+    if (decision === 'retry') {
+      // Real, honest scope: regenerating the actual image/caption needs
+      // the client-side Flux pipeline (ui/marketing.js), which this
+      // server-side callback can't reach directly. Tells Joel plainly
+      // rather than fake a retry that doesn't really happen.
+      await ackAndEdit('To get a new version, ask Flow again in the app — retrying straight from Telegram isn\'t wired up yet, this button is a placeholder for that.');
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -1295,6 +1383,80 @@ async function handlePendingApprovalReply(tgFetch, tgFetchStrict, chatId, text) 
     await tgFetch('sendMessage', { chat_id: chatId, text: `⚠️ Couldn't revise the draft: ${e.message}` });
   }
   return true;
+}
+
+// ═══════════════════════════════════════════
+// REAL MARKETING CONTENT PIPELINE — built for Joel's actual, stated goal:
+// "Flow assisting to get me seen on socials" — a real client-acquisition
+// tool, not a generic demo. Every post this generates is about a REAL
+// pain point Joel's actual target clients have and how he genuinely
+// helps — per Joel's own explicit instruction, not generic filler
+// content.
+//
+// REAL FLOW, honest about where each piece runs:
+//   1. Client (ui/marketing.js, new) generates a real image via the
+//      EXACT SAME tested Flux pipeline ui/imagine.js already uses
+//      (callFlux/getToken, both exported this session specifically so
+//      this module could reuse them instead of duplicating) + a real
+//      pain-point caption from the AI.
+//   2. Client sends the real image (as base64 — Telegram's sendPhoto
+//      and Bluesky's uploadBlob both need real bytes, not a blob: URL
+//      that only exists in the browser tab) + caption to THIS endpoint.
+//   3. This endpoint sends it to Telegram via sendPhoto with real
+//      inline Approve/Reject/Retry buttons — Joel reviews on his phone,
+//      away from his desk if needed.
+//   4. Draft is stored in KV so handleCallbackQuery (below) can act on
+//      Joel's real button press — post to Bluesky only after explicit
+//      approval, same real gate as the direct post_to_bluesky tool.
+// ═══════════════════════════════════════════
+const MARKETING_DRAFT_KEY = (id) => `flow_marketing_draft_${id}`;
+
+async function handleMarketingDraft(req, res) {
+  if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
+  const joelId = process.env.JOEL_TELEGRAM_CHAT_ID;
+  if (!joelId) return res.status(200).json({ ok: false, error: 'JOEL_TELEGRAM_CHAT_ID not set — nowhere to send the draft for approval.' });
+
+  const { imageBase64, caption } = req.body || {};
+  if (!imageBase64 || !caption) {
+    return res.status(200).json({ ok: false, error: 'Missing imageBase64 or caption in request body.' });
+  }
+
+  const draftId = `mkt-${Date.now()}`;
+
+  try {
+    if (KV_URL && KV_KEY) {
+      await fetch(`${KV_URL}/set/${MARKETING_DRAFT_KEY(draftId)}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: JSON.stringify({ imageBase64, caption, createdAt: Date.now() }) }),
+      });
+    } else {
+      return res.status(200).json({ ok: false, error: 'KV_REST_API_URL/KV_REST_API_TOKEN not set — can\'t hold the draft for later approval.' });
+    }
+
+    const form = new FormData();
+    form.append('chat_id', joelId);
+    form.append('caption', `📸 Draft post — approve to send to Bluesky:\n\n${caption.slice(0, 900)}`);
+    form.append('photo', new Blob([Buffer.from(imageBase64, 'base64')], { type: 'image/png' }), 'draft.png');
+    form.append('reply_markup', JSON.stringify({
+      inline_keyboard: [[
+        { text: '✅ Post it',  callback_data: `mktdraft_yes_${draftId}` },
+        { text: '❌ Discard',  callback_data: `mktdraft_no_${draftId}` },
+        { text: '🔄 Retry',    callback_data: `mktdraft_retry_${draftId}` },
+      ]],
+    }));
+
+    const tgRes = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendPhoto`, { method: 'POST', body: form });
+    const tgData = await tgRes.json();
+    if (!tgData.ok) {
+      return res.status(200).json({ ok: false, error: `Telegram sendPhoto failed: ${tgData.description}` });
+    }
+
+    return res.status(200).json({ ok: true, draftId });
+  } catch (e) {
+    console.error('[MarketingDraft] Real error:', e.message);
+    return res.status(200).json({ ok: false, error: e.message });
+  }
 }
 
 // ── Diagnostic — visit directly in a browser to see exactly what's
@@ -1406,7 +1568,7 @@ async function handleBluesky(req, res) {
     return res.status(200).json({ ok: false, error: 'BLUESKY_HANDLE and/or BLUESKY_APP_PASSWORD not set in Vercel env vars — generate an app password at bsky.app → Settings → App Passwords (not your real account password) and add both.' });
   }
 
-  const { text, videoUrl } = req.body || {};
+  const { text, videoUrl, imageBase64 } = req.body || {};
   if (!text) {
     return res.status(200).json({ ok: false, error: 'Missing "text" in request body.' });
   }
@@ -1425,15 +1587,44 @@ async function handleBluesky(req, res) {
     const session = await sessionRes.json();
     const { accessJwt, did } = session;
 
-    // ── 2. Real video upload, if a video was provided ────────────────────
+    // ── 2a. Real image upload — this is what ui/marketing.js's
+    // in-app approval card actually needs (the generated marketing image,
+    // not just text). Added specifically because the first draft of
+    // this endpoint only handled video, which left the approval button
+    // silently posting text-only despite Joel's explicit ask that the
+    // approved IMAGE be what gets posted — a real gap, fixed here rather
+    // than shipped incomplete.
+    let embed = null;
+    if (imageBase64) {
+      const imageBuffer = Buffer.from(imageBase64, 'base64');
+      if (imageBuffer.byteLength > 1024 * 1024) {
+        // Real, confirmed Bluesky image cap: ~1MB per image.
+        return res.status(200).json({ ok: false, error: `Image is ${(imageBuffer.byteLength / 1024).toFixed(0)}KB — Bluesky's real cap is ~1MB per image.` });
+      }
+      const uploadRes = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${accessJwt}`, 'Content-Type': 'image/png' },
+        body: imageBuffer,
+      });
+      if (!uploadRes.ok) {
+        const errText = await uploadRes.text();
+        return res.status(200).json({ ok: false, error: `Bluesky image upload failed: ${errText}` });
+      }
+      const uploadData = await uploadRes.json();
+      embed = {
+        $type: 'app.bsky.embed.images',
+        images: [{ image: uploadData.blob, alt: text.slice(0, 100) }],
+      };
+    }
+
+    // ── 2b. Real video upload, if a video was provided ────────────────────
     // REAL, honest limit: Bluesky's uploadBlob endpoint takes raw bytes
     // directly, not a URL — so if videoUrl points to Flow's own real
     // generated-video Space (ui/videogen.js's Lightricks output), THIS
     // function fetches those real bytes server-side first, then re-
     // uploads them to Bluesky. Two real network hops, not a shortcut —
     // stated plainly since it affects real latency for a video post.
-    let embed = null;
-    if (videoUrl) {
+    if (videoUrl && !embed) {
       const videoFetch = await fetch(videoUrl);
       if (!videoFetch.ok) {
         return res.status(200).json({ ok: false, error: `Couldn't fetch the video from ${videoUrl} to upload it.` });
@@ -1514,6 +1705,7 @@ export default async function handler(req, res) {
   if (platform === 'diagnose')      return handleDiagnose(req, res);
   if (platform === 'bluesky')       return handleBluesky(req, res);
   if (platform === 'heartbeat-notify') return handleHeartbeatNotify(req, res);
+  if (platform === 'marketing-draft') return handleMarketingDraft(req, res);
   return res.status(200).json({ service: 'Flow Social', endpoints: {
     telegram: '/api/social?platform=telegram',
     whatsapp: '/api/social?platform=whatsapp',
@@ -1522,5 +1714,6 @@ export default async function handler(req, res) {
     diagnose: '/api/social?platform=diagnose',
     bluesky: '/api/social?platform=bluesky (POST { text, videoUrl? })',
     heartbeatNotify: '/api/social?platform=heartbeat-notify (POST { text })',
+    marketingDraft: '/api/social?platform=marketing-draft (POST { imageBase64, caption })',
   } });
 }
