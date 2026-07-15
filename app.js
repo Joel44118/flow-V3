@@ -29,6 +29,7 @@ import { handleFiles, initFileUpload } from "./ui/fileupload.js";
 import { initStagedFiles, stageFiles, clearStaged, getStagedFiles, hasStagedFiles } from "./ui/stagedfiles.js";
 import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
 import { initVideoGen, generateVideo, generateVideoFromImage } from "./ui/videogen.js";
+import { initMarketing, generateMarketingPost } from "./ui/marketing.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -112,6 +113,16 @@ async function handleSlashCmd(cmd, prompt) {
       }
       if (!p) { Chat.add("What should the video show? e.g. waves crashing on a beach at sunset — or attach an image first to animate it instead.", "bot"); return; }
       await generateVideo(p);
+      break;
+    }
+    case "/post-marketing": {
+      // Real, on-demand content-marketing command — Joel's explicit
+      // request: "I should be able to prompt him to make one and post."
+      // Optional angle text lets Joel steer the specific pain point;
+      // omitted, Flow picks one on its own judgment (see
+      // ui/marketing.js's PAIN_POINT_SYSTEM_PROMPT for the real,
+      // required structure every generated post must follow).
+      await generateMarketingPost(p || undefined);
       break;
     }
     case "/scrape":
@@ -394,6 +405,18 @@ setClientActionHandler(async (action, args) => {
       return `Real failure: ${e.message}`;
     }
   }
+  if (action === "generate_marketing_post") {
+    // Real, deliberate: this doesn't post anything itself — it triggers
+    // the real generateMarketingPost pipeline, which shows Joel a real
+    // approval card (in-app AND via Telegram). Nothing gets posted until
+    // Joel explicitly approves through one of those two real channels.
+    try {
+      await generateMarketingPost(args?.angle);
+      return "A draft post (image + caption) was generated and shown to Joel for approval, both in-app and via Telegram. It has NOT been posted — tell Joel plainly that it's waiting on his review, don't claim it's live.";
+    } catch (e) {
+      return `Real failure generating the marketing post: ${e.message}`;
+    }
+  }
   if (action === "get_my_level") {
     const lvl = getLevelState();
     return `Level ${lvl.level}, ${lvl.xp}/${lvl.xpNeeded} XP (${lvl.percent}%), ${lvl.totalXp} total XP earned.`;
@@ -472,6 +495,7 @@ initSlash(_inputEl, (cmd) => handleSlashCmd(cmd, ""));
 initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
 initImagine(Chat, Orb);
 initVideoGen(Chat, Orb);
+initMarketing(Chat, Orb);
 initKnowledge(Chat);
 initProjects(Chat, (t) => sendToAI(t));
 
