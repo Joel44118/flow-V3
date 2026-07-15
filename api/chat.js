@@ -269,6 +269,30 @@ const FLOW_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'update_portfolio',
+      description: "Add a completed project to the live portfolio site (joelflowstack-portfolio, the public studio site \u2014 NOT this app). Call this ONLY after Joel explicitly asks you to add a specific finished project, and confirm the title/description with him first if anything is ambiguous \u2014 this makes a real, public, live commit to his site within about a minute. Never call this on your own judgment.",
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short project title, e.g. \"Acme Corp \u2014 3D Product Launch Site\"' },
+          description: { type: 'string', description: 'One to two sentences on what was built, written in the same confident, specific style as the rest of the portfolio \u2014 no filler, no hedging.' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Optional short tags, e.g. [\"3D Web\", \"AI Agent\"]' },
+        },
+        required: ['title', 'description'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_site_analytics',
+      description: 'Get real visit and bounce-rate data for the live portfolio site, joelflowstack-portfolio \u2014 actual numbers tracked from real visitor sessions, not an estimate. Call this whenever Joel asks about site traffic, visits, or bounce rate.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
 ];
 
 // Real execution dispatcher — actually runs the tool server-side where
@@ -323,6 +347,27 @@ async function executeFlowTool(toolName, args) {
   }
   if (toolName === 'post_to_bluesky') {
     return { handled: false, clientAction: 'post_to_bluesky', clientArgs: args, result: null };
+  }
+  // REAL NEW CAPABILITY: admin actions on the live portfolio site, handled
+  // entirely server-side (never in the client/Electron app) since they
+  // need ADMIN_SECRET/GITHUB_TOKEN, which must never reach a browser. Both
+  // call api/admin.js internally over HTTP rather than duplicating its
+  // GitHub-Contents-API logic here \u2014 same Vercel project, same env vars.
+  if (toolName === 'update_portfolio') {
+    try {
+      const result = await addProject({ title: args.title, description: args.description, tags: args.tags || [] });
+      return { handled: true, result: `Added "${args.title}" to the live portfolio site. It'll appear at joelflowstack-portfolio's Portfolio page within about a minute, once Vercel redeploys.` };
+    } catch (e) {
+      return { handled: true, result: `Failed to update the portfolio site: ${e.message}` };
+    }
+  }
+  if (toolName === 'get_site_analytics') {
+    try {
+      const data = await getAnalytics();
+      return { handled: true, result: `Real analytics data (by day) from the live portfolio site: ${JSON.stringify(data)}` };
+    } catch (e) {
+      return { handled: true, result: `Failed to fetch site analytics: ${e.message}` };
+    }
   }
   return { handled: true, result: `Unknown tool: ${toolName}` };
 }
@@ -630,12 +675,153 @@ async function tryNvidia(messages, intent, key) {
   }
 }
 
+// ------------------------------------------------------------------
+// Admin/CMS bridge into the portfolio site \u2014 folded into THIS file
+// (rather than a separate api/admin.js) because Vercel's Hobby plan
+// caps a project at 12 serverless functions, and this project was
+// already at that limit. Same GitHub-Contents-API mechanism, just one
+// endpoint (api/chat.js) instead of two, routed by req.body.action.
+//
+// ENV VARS REQUIRED (Vercel \u2192 Settings \u2192 Environment Variables):
+//   GITHUB_TOKEN \u2014 fine-grained PAT, scoped ONLY to joelflowstack-portfolio,
+//                  Contents: Read and write, nothing else.
+//   GITHUB_OWNER \u2014 "joelflowstack"
+//   GITHUB_REPO  \u2014 "joelflowstack-portfolio"
+//   ADMIN_SECRET \u2014 any random string; protects add_project/get_analytics.
+//                  track_event (public analytics beacon) doesn't need it.
+// ------------------------------------------------------------------
+const GH_API = 'https://api.github.com';
+
+function ghHeaders() {
+  return {
+    Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+  };
+}
+
+async function readJsonFile(path) {
+  const owner = process.env.GITHUB_OWNER;
+  const repo = process.env.GITHUB_REPO;
+  const r = await fetch(`${GH_API}/repos/${owner}/${repo}/contents/${path}`, { headers: ghHeaders() });
+  if (r.status === 404) return { data: null, sha: null };
+  if (!r.ok) throw new Error(`GitHub read failed: HTTP ${r.status}`);
+  const json = await r.json();
+  const decoded = Buffer.from(json.content, 'base64').toString('utf-8');
+  return { data: JSON.parse(decoded), sha: json.sha };
+}
+
+async function writeJsonFile(path, data, sha, message) {
+  const owner = process.env.GITHUB_OWNER;
+  const repo = process.env.GITHUB_REPO;
+  const body = {
+    message,
+    content: Buffer.from(JSON.stringify(data, null, 2), 'utf-8').toString('base64'),
+    branch: 'main',
+  };
+  if (sha) body.sha = sha;
+  const r = await fetch(`${GH_API}/repos/${owner}/${repo}/contents/${path}`, {
+    method: 'PUT',
+    headers: ghHeaders(),
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const errBody = await r.text();
+    throw new Error(`GitHub write failed: HTTP ${r.status} \u2014 ${errBody}`);
+  }
+  return r.json();
+}
+
+async function updateJsonFile(path, mutateFn, message) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { data, sha } = await readJsonFile(path);
+    const next = mutateFn(data);
+    try {
+      await writeJsonFile(path, next, sha, message);
+      return next;
+    } catch (e) {
+      if (attempt === 0 && /409|sha/i.test(e.message)) continue;
+      throw e;
+    }
+  }
+}
+
+async function addProject(project) {
+  const message = `Flow: add portfolio project "${project.title}"`;
+  return updateJsonFile('content/projects.json', (current) => {
+    const base = current || { schema_version: 1, projects: [] };
+    base.projects.unshift({
+      id: `p_${Date.now()}`,
+      title: project.title,
+      description: project.description,
+      tags: Array.isArray(project.tags) ? project.tags : [],
+      addedAt: new Date().toISOString(),
+    });
+    return base;
+  }, message);
+}
+
+async function trackEvent(event) {
+  const today = new Date().toISOString().slice(0, 10);
+  const message = `Flow: analytics update ${today}`;
+  return updateJsonFile('content/analytics.json', (current) => {
+    const base = current || { schema_version: 1, days: {} };
+    const day = base.days[today] || { visits: 0, bounces: 0, pages: {} };
+    if (event.type === 'pageview') {
+      day.visits += 1;
+      day.pages[event.page] = (day.pages[event.page] || 0) + 1;
+    } else if (event.type === 'bounce') {
+      day.bounces += 1;
+    }
+    base.days[today] = day;
+    return base;
+  }, message);
+}
+
+async function getAnalytics() {
+  const { data } = await readJsonFile('content/analytics.json');
+  return data || { schema_version: 1, days: {} };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')    return res.status(405).json({ error: 'POST only' });
+
+  // Admin/analytics actions short-circuit here, before any AI provider
+  // logic \u2014 these aren't chat completions, they're direct GitHub-backed
+  // reads/writes against the portfolio site's content/*.json files.
+  const adminAction = req.body?.action;
+  if (adminAction) {
+    try {
+      if (adminAction === 'track_event') {
+        const { event } = req.body;
+        if (!event?.type || !event?.page) return res.status(400).json({ error: 'event.type and event.page required' });
+        await trackEvent(event);
+        return res.status(200).json({ ok: true });
+      }
+      // Everything else is privileged \u2014 requires the shared secret.
+      if (!process.env.ADMIN_SECRET || req.body.secret !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      if (adminAction === 'add_project') {
+        const { project } = req.body;
+        if (!project?.title || !project?.description) return res.status(400).json({ error: 'project.title and project.description required' });
+        const result = await addProject(project);
+        return res.status(200).json({ ok: true, projects: result.projects });
+      }
+      if (adminAction === 'get_analytics') {
+        const data = await getAnalytics();
+        return res.status(200).json({ ok: true, analytics: data });
+      }
+      return res.status(400).json({ error: `Unknown action: ${adminAction}` });
+    } catch (e) {
+      console.error('[admin]', e.message);
+      return res.status(502).json({ error: e.message });
+    }
+  }
 
   const CB_KEY = process.env.CEREBRAS_API_KEY;
   const NV_KEY = process.env.NVIDIA_API_KEY;
