@@ -30,7 +30,7 @@ export function initImagine(chat, orb) { _chat = chat; _orb = orb; }
 // (same pattern as api/social.js and api/tts.js routing by query param) —
 // no new file added, since Vercel Hobby's 12-function limit is already at
 // capacity.
-async function getToken() {
+export async function getToken() {
   if (_hfToken) return _hfToken;
   const r    = await fetch("/api/mediapipe?action=token");
   const data = await r.json();
@@ -71,13 +71,13 @@ function isDesignRequest(text) {
 }
 
 // ── HuggingFace FLUX (photo/art mode) ───────────────────────────────────
-const FLUX_MODELS = [
+export const FLUX_MODELS = [
   { id: "black-forest-labs/FLUX.1-schnell",         steps: 4,  cfg: 0   },
   { id: "stabilityai/stable-diffusion-xl-base-1.0", steps: 20, cfg: 7.5 },
   { id: "runwayml/stable-diffusion-v1-5",           steps: 20, cfg: 7   },
 ];
 
-async function callFlux(modelId, prompt, width, height, steps, cfg, token) {
+export async function callFlux(modelId, prompt, width, height, steps, cfg, token) {
   const r = await fetch(`https://router.huggingface.co/hf-inference/models/${modelId}`, {
     method:  "POST",
     headers: {
