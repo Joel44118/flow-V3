@@ -1,6 +1,6 @@
 {
   "name": "flow-ai",
-  "version": "1.2.13",
+  "version": "1.2.14",
   "description": "Flow AI Desktop",
   "main": "main.js",
   "scripts": {
@@ -59,6 +59,7 @@
   "dependencies": {
     "electron-updater": "^6.1.8",
     "@jitsi/robotjs": "^0.6.12",
-    "active-win": "^9.0.0"
+    "active-win": "^9.0.0",
+    "onnxruntime-node": "^1.19.0"
   }
 }
