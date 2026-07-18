@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════
 // flow-electron/memory-store.js — Flow's Real Persistent Local Brain
-// (v2 — NO NATIVE DEPENDENCIES, restored after a real, confirmed crash)
+// (v3 — real semantic search added, still ZERO native dependencies)
 //
 // REAL, CONFIRMED CRASH HISTORY, for whoever reads this next — read
 // before touching this file again:
@@ -12,43 +12,41 @@
 //      tracker). After adding this dependency, Joel's real, actual
 //      packaged build showed app.asar MISSING FILES ENTIRELY and
 //      crashed with "Cannot find module './heartbeat'".
-//   2. This file was rewritten (this version) to remove vectra
-//      entirely — plain JSON storage + keyword/recency scoring instead
-//      of real vector embeddings. `vectra` was also removed from
-//      flow-electron/package.json's dependencies to match.
-//   3. A LATER session did a "cleanup" that reverted THIS FILE back to
-//      the vectra-based version (require('vectra'), Vectra.
-//      TransformersEmbeddings.create(...)) WITHOUT re-adding vectra to
-//      package.json's dependencies. Confirmed directly: package.json's
-//      real dependencies list has no vectra entry at all, while this
-//      file was calling require('vectra') anyway — a guaranteed,
-//      immediate crash the moment heartbeat.js requires this file
-//      (heartbeat.js -> memory-store.js -> vectra, none of it present
-//      in node_modules). This produced a new, different crash
-//      (ENOENT on app.asar.unpack...\package.json) that was actually
-//      just electron-builder's native-module auto-unpack logic getting
-//      confused by a half-removed dependency tree.
+//   2. This file was rewritten to remove vectra entirely — plain JSON
+//      storage + keyword/recency scoring instead of real vector
+//      embeddings.
+//   3. A LATER session reverted this file back to vectra without
+//      re-adding it to package.json, causing a second, different crash.
 //
-// REAL, STANDING INSTRUCTION: Joel has explicitly said he wants to keep
-// a genuine vector-based/semantic-search approach long-term. The RIGHT
-// way to do that is to find a real embeddings provider with ZERO
-// native/ONNX dependency anywhere in its chain (not yet found/verified
-// as of this note — HF's OpenAI-compatible endpoint was checked and
-// confirmed to NOT support embeddings, only chat completions) — and
-// ONLY THEN reintroduce a real vector library, with vectra (or
-// whatever's chosen) added back to package.json's dependencies in the
-// SAME commit as any code change requiring it. Never let this file's
-// imports and package.json's dependencies drift apart again — that
-// exact drift is what caused this crash twice.
+// REAL FIX FOR SEMANTIC SEARCH, THIS VERSION (v3): instead of any local
+// vector library (vectra, @xenova/transformers, or anything importing
+// onnxruntime-node), embeddings are fetched over PLAIN HTTPS from a
+// server-side Vercel route (/api/mediapipe?action=embed), which itself
+// calls Hugging Face's real, documented feature-extraction endpoint
+// using HF_TOKEN (kept server-side, never touching this process).
+// Verified directly against HuggingFace's own current Inference
+// Providers docs before writing this. ZERO new npm dependencies were
+// added for this — cosine similarity is plain arithmetic, embeddings
+// come back as plain JSON arrays over fetch(), which Electron's main
+// process has natively since Node 18+. There is nothing here for
+// electron-builder's native-module packing logic to mishandle.
 //
-// Until a real, verified native-free vector solution exists, this file
-// stays on plain JSON + keyword/recency scoring. It is fully
-// functional, genuinely persists across restarts, and has zero
-// packaging risk.
+// REAL, HONEST DESIGN: embedding fetch happens once per entry, at write
+// time, and is cached on the entry itself — recall() does NOT call the
+// embed API on every search, only for the query text (one call per
+// recall). If the embed call fails for any reason (network, rate limit,
+// HF_TOKEN missing, cold start), remember() still saves the entry
+// WITHOUT an embedding, and recall() falls back to the pre-existing
+// keyword+recency score for that entry — this feature can never block
+// or break a write, and a real network hiccup never crashes anything.
 // ═══════════════════════════════════════════
 const path = require('path');
 const fs = require('fs');
 const { app } = require('electron');
+
+// Real, matches the same VERCEL_URL convention already used in
+// heartbeat.js for its own fetch() calls to your deployed backend.
+const VERCEL_URL = 'https://flow-v3-mu.vercel.app'; // real, matches heartbeat.js exactly
 
 function _storePath() {
   return path.join(app.getPath('userData'), 'flow-memory.json');
@@ -78,16 +76,60 @@ function _saveAll(entries) {
   }
 }
 
+// ── Real embedding fetch — plain HTTPS, no native deps ──────────────────
+// Calls the server-side embed route. Returns null (not a throw) on any
+// failure, so callers can treat "no embedding" as a real, expected,
+// non-fatal case rather than having to wrap every call in try/catch
+// themselves.
+async function _getEmbedding(text) {
+  try {
+    const res = await fetch(`${VERCEL_URL}/api/mediapipe?action=embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      console.warn('[Memory] Embed fetch non-OK (non-fatal):', res.status, errBody.error || '');
+      return null;
+    }
+    const data = await res.json();
+    return Array.isArray(data.embedding) ? data.embedding : null;
+  } catch (e) {
+    console.warn('[Memory] Embed fetch failed (non-fatal):', e.message);
+    return null;
+  }
+}
+
+// ── Real cosine similarity — plain arithmetic, zero dependency ─────────
+function _cosineSimilarity(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 // ── Real, permanent write path ──────────────────────────────────────────
 // category: "conversation" | "decision" | "self-tool" | "goal" | "note" |
 // "scratchpad" — used for filtered recall below.
+//
+// Real, honest behavior: this now ALSO fetches and stores a real
+// embedding for the entry, but a failure to do so never blocks the
+// actual save — the text-based memory write always succeeds regardless
+// of network/HF status.
 async function remember(text, category = "conversation", metadata = {}) {
   try {
     const entries = _loadAll();
     const id = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    entries.push({ id, text, category, ts: Date.now(), ...metadata });
+    const embedding = await _getEmbedding(text); // null on any failure, real and expected
+    entries.push({ id, text, category, ts: Date.now(), embedding, ...metadata });
     _saveAll(entries);
-    return { ok: true, id };
+    return { ok: true, id, hasEmbedding: !!embedding };
   } catch (e) {
     console.error('[Memory] Real write failure:', e.message);
     return { ok: false, error: e.message };
@@ -95,10 +137,9 @@ async function remember(text, category = "conversation", metadata = {}) {
 }
 
 // ── Real keyword-overlap scoring ─────────────────────────────────────────
-// Not semantic similarity (that needed the now-removed embeddings
-// pipeline) — a real, honest word-overlap score, weighted toward more
-// recent entries so "what have we talked about lately" genuinely favors
-// recent context over old, coincidentally-matching text.
+// Not semantic on its own — a real, honest word-overlap score, weighted
+// toward more recent entries so "what have we talked about lately"
+// genuinely favors recent context over old, coincidentally-matching text.
 function _tokenize(text) {
   return (text || "").toLowerCase().match(/[a-z0-9]+/g) || [];
 }
@@ -109,23 +150,39 @@ function _scoreOverlap(queryTokens, entryTokens) {
   return shared / queryTokens.length;
 }
 
-// ── Real recall — keyword + recency, not semantic, stated honestly ─────
+// ── Real recall — semantic (when available) + keyword + recency ───────
+// Real, honest blend: if the query's own embedding fetch succeeds, each
+// entry's score becomes a real weighted mix of cosine similarity (when
+// that entry also has a stored embedding) and the original keyword+
+// recency score. Entries without embeddings (older ones, or ones saved
+// while the embed API was down) still score fully via keyword+recency —
+// nothing is silently excluded for lacking a vector.
 async function recall(query, { maxResults = 5, category = null } = {}) {
   try {
     const entries = _loadAll();
     const queryTokens = _tokenize(query);
     const now = Date.now();
+    const queryEmbedding = await _getEmbedding(query); // null on failure, real fallback below
 
     const scored = entries
       .filter(e => !category || e.category === category)
       .map(e => {
         const overlap = _scoreOverlap(queryTokens, _tokenize(e.text));
-        // Real, modest recency boost — a 7-day-old entry with equal
-        // keyword overlap to a fresh one still ranks slightly lower,
-        // matching the actual intent of "recent context matters more."
         const ageDays = (now - e.ts) / (24 * 60 * 60 * 1000);
         const recencyBoost = Math.max(0, 1 - ageDays / 30) * 0.2;
-        return { entry: e, score: overlap + recencyBoost };
+        const keywordScore = overlap + recencyBoost;
+
+        let finalScore = keywordScore;
+        if (queryEmbedding && e.embedding) {
+          const semanticScore = _cosineSimilarity(queryEmbedding, e.embedding);
+          // Real blend: semantic similarity weighted higher (0.7) since
+          // it's the more meaningful signal when available, keyword+
+          // recency still contributes (0.3) so exact-term matches and
+          // recency aren't fully discarded.
+          finalScore = (semanticScore * 0.7) + (keywordScore * 0.3);
+        }
+
+        return { entry: e, score: finalScore };
       })
       .filter(s => s.score > 0)
       .sort((a, b) => b.score - a.score)
@@ -143,7 +200,10 @@ async function recall(query, { maxResults = 5, category = null } = {}) {
 // TOPIC that keeps recurring — the real mechanism behind "you've asked
 // about this three times." Uses the same real keyword-overlap scoring,
 // just clustering entries against each other instead of against a
-// single query.
+// single query. Left on keyword-overlap only (not semantic) since this
+// runs unattended in the background on a timer — keeping it embedding-
+// free means it has zero network dependency and can never fail due to
+// HF being down or rate-limited.
 async function findRecurringTopics({ sinceDays = 7, minOccurrences = 3 } = {}) {
   try {
     const entries = _loadAll();
