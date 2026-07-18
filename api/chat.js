@@ -269,44 +269,6 @@ const FLOW_TOOLS = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'generate_marketing_post',
-      description: "Generate a real pain-point-focused social media post (image + caption) about how Joel genuinely helps real clients — bot integration, workflow automation, web development. Call this when Joel asks Flow to make a marketing/promo post, or judges one would genuinely help him get seen. This shows Joel a real approval card (in-app AND via Telegram) — it does NOT post automatically; posting only happens after his explicit approval.",
-      parameters: {
-        type: 'object',
-        properties: {
-          angle: { type: 'string', description: 'Optional: a specific pain point or angle Joel wants this post to focus on. Omit to let Flow pick one.' },
-        },
-        required: [],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'update_portfolio',
-      description: "Add a completed project to the live portfolio site (joelflowstack-portfolio \u2014 the public studio site, NOT this app). Uses the existing GitHub bridge (api/github.js) to commit directly. Only works when Joel is chatting from his own admin session \u2014 refuses safely otherwise. Call this ONLY after Joel explicitly asks you to add a specific finished project; confirm title/description with him first if anything is ambiguous, since this is a real, public, live commit.",
-      parameters: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Short project title, e.g. \"Acme Corp \u2014 3D Product Launch Site\"' },
-          description: { type: 'string', description: 'One to two sentences on what was built, written confident and specific, no filler.' },
-          tags: { type: 'array', items: { type: 'string' }, description: 'Optional short tags, e.g. [\"3D Web\", \"AI Agent\"]' },
-        },
-        required: ['title', 'description'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_site_analytics',
-      description: 'Get real visit and bounce data for the live portfolio site, read straight from the site\u2019s own tracked data via the GitHub bridge \u2014 not an estimate. Only works from Joel\u2019s own admin session. Call whenever Joel asks about site traffic, visits, or bounce rate.',
-      parameters: { type: 'object', properties: {}, required: [] },
-    },
-  },
 ];
 
 // Real execution dispatcher — actually runs the tool server-side where
@@ -315,74 +277,7 @@ const FLOW_TOOLS = [
 // this server function can't touch directly — camera access and image
 // generation both require client-side execution). The response shape
 // tells the caller which case it is.
-// Portfolio admin helpers \u2014 these do NOT duplicate GitHub API calls.
-// They call the EXISTING api/github.js bridge (same project, already
-// working, already has GITHUB_TOKEN configured) rather than reinventing
-// it, so this adds zero new serverless functions and zero new GitHub
-// auth wiring.
-const PORTFOLIO_OWNER = 'joelflowstack';
-const PORTFOLIO_REPO  = 'joelflowstack-portfolio';
-const GITHUB_BRIDGE   = 'https://flow-v3-mu.vercel.app/api/github';
-
-async function readPortfolioJson(path) {
-  const url = `${GITHUB_BRIDGE}?mode=file&owner=${PORTFOLIO_OWNER}&repo=${PORTFOLIO_REPO}&path=${encodeURIComponent(path)}`;
-  const r = await fetch(url);
-  if (r.status === 404) return null;
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
-  return JSON.parse(d.content);
-}
-
-async function writePortfolioJson(path, data, message) {
-  const r = await fetch(`${GITHUB_BRIDGE}?mode=put-file`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      owner: PORTFOLIO_OWNER, repo: PORTFOLIO_REPO, path,
-      content: JSON.stringify(data, null, 2),
-      message,
-    }),
-  });
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
-  return d;
-}
-
-async function addPortfolioProject(project) {
-  const current = (await readPortfolioJson('content/projects.json')) || { schema_version: 1, projects: [] };
-  current.projects.unshift({
-    id: `p_${Date.now()}`,
-    title: project.title,
-    description: project.description,
-    tags: Array.isArray(project.tags) ? project.tags : [],
-    addedAt: new Date().toISOString(),
-  });
-  await writePortfolioJson('content/projects.json', current, `Flow: add portfolio project "${project.title}"`);
-  return current;
-}
-
-async function getPortfolioAnalytics() {
-  return (await readPortfolioJson('content/analytics.json')) || { schema_version: 1, days: {} };
-}
-
-// Records one visitor event (pageview or bounce) sent from the public
-// site's flowbot.js widget \u2014 no admin secret needed, this is the one
-// path anonymous visitors' browsers are allowed to reach.
-async function trackPortfolioEvent(event) {
-  const today = new Date().toISOString().slice(0, 10);
-  const current = (await readPortfolioJson('content/analytics.json')) || { schema_version: 1, days: {} };
-  const day = current.days[today] || { visits: 0, bounces: 0, pages: {} };
-  if (event.type === 'pageview') {
-    day.visits += 1;
-    day.pages[event.page] = (day.pages[event.page] || 0) + 1;
-  } else if (event.type === 'bounce') {
-    day.bounces += 1;
-  }
-  current.days[today] = day;
-  await writePortfolioJson('content/analytics.json', current, `Flow: analytics update ${today}`);
-}
-
-async function executeFlowTool(toolName, args, isAdmin) {
+async function executeFlowTool(toolName, args) {
   if (toolName === 'get_current_time') {
     const now = new Date();
     return {
@@ -429,37 +324,10 @@ async function executeFlowTool(toolName, args, isAdmin) {
   if (toolName === 'post_to_bluesky') {
     return { handled: false, clientAction: 'post_to_bluesky', clientArgs: args, result: null };
   }
-  if (toolName === 'generate_marketing_post') {
-    return { handled: false, clientAction: 'generate_marketing_post', clientArgs: args, result: null };
-  }
-  // Both below are hard-gated on isAdmin, computed server-side from a
-  // secret only Joel's own app sends \u2014 never from the model's own
-  // judgment or the request's phrasing. This matters because the public
-  // portfolio site's chat widget hits this exact same endpoint, so
-  // without a hard server-side gate a visitor could try to talk Flow
-  // into writing to the live site.
-  if (toolName === 'update_portfolio') {
-    if (!isAdmin) return { handled: true, result: "Can't do that from here \u2014 portfolio edits only work from Joel's own admin session." };
-    try {
-      await addPortfolioProject({ title: args.title, description: args.description, tags: args.tags || [] });
-      return { handled: true, result: `Added "${args.title}" to the live portfolio site. It'll appear on the Portfolio page within about a minute, once Vercel redeploys.` };
-    } catch (e) {
-      return { handled: true, result: `Failed to update the portfolio site: ${e.message}` };
-    }
-  }
-  if (toolName === 'get_site_analytics') {
-    if (!isAdmin) return { handled: true, result: "Can't do that from here \u2014 site analytics only work from Joel's own admin session." };
-    try {
-      const data = await getPortfolioAnalytics();
-      return { handled: true, result: `Real analytics data (by day) from the live portfolio site: ${JSON.stringify(data)}` };
-    } catch (e) {
-      return { handled: true, result: `Failed to fetch site analytics: ${e.message}` };
-    }
-  }
   return { handled: true, result: `Unknown tool: ${toolName}` };
 }
 
-async function tryCerebras(messages, intent, key, isAdmin) {
+async function tryCerebras(messages, intent, key) {
   const chain = CB_MODELS[intent] || CB_MODELS.chat;
   // Only offer tools for intents where autonomous tool-use genuinely
   // helps — chat and research are the natural fit for "what time is it"
@@ -498,7 +366,7 @@ async function tryCerebras(messages, intent, key, isAdmin) {
       if (toolCalls?.length) {
         const call = toolCalls[0]; // one tool call per turn for now — real, simple scope
         const toolArgs = JSON.parse(call.function.arguments || '{}');
-        const toolResult = await executeFlowTool(call.function.name, toolArgs, isAdmin);
+        const toolResult = await executeFlowTool(call.function.name, toolArgs);
 
         if (!toolResult.handled) {
           return {
@@ -769,27 +637,6 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')    return res.status(405).json({ error: 'POST only' });
 
-  // Public analytics beacon from the portfolio site's flowbot.js widget\u2014
-  // not a chat completion, no AI provider involved, short-circuits here.
-  // No admin secret required: this is the one write anonymous visitors'
-  // browsers are meant to trigger.
-  if (req.body?.action === 'track_event') {
-    const { event } = req.body;
-    if (!event?.type || !event?.page) return res.status(400).json({ error: 'event.type and event.page required' });
-    try {
-      await trackPortfolioEvent(event);
-      return res.status(200).json({ ok: true });
-    } catch (e) {
-      return res.status(502).json({ error: e.message });
-    }
-  }
-
-  // True only when the CALLER (Joel's own app) sent the matching secret
-  // \u2014 never inferred from message content or the model's judgment.
-  // The public website's flowbot.js never sends this, so it can never be
-  // true for a random site visitor's conversation, no matter what they type.
-  const isAdmin = !!process.env.ADMIN_SECRET && req.body?.adminSecret === process.env.ADMIN_SECRET;
-
   const CB_KEY = process.env.CEREBRAS_API_KEY;
   const NV_KEY = process.env.NVIDIA_API_KEY;
   const OR_KEY = process.env.OPENROUTER_API_KEY;
@@ -842,7 +689,7 @@ export default async function handler(req, res) {
 
   // Cerebras is fast but sometimes struggles with complex code — skip for Nemotron targets
   if (CB_KEY && intent !== 'code') {
-    try   { const r = await tryCerebras(trimmed, intent, CB_KEY, isAdmin); return res.status(200).json({ ...r, intent }); }
+    try   { const r = await tryCerebras(trimmed, intent, CB_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`Cerebras: ${e.message}`); }
   }
 
@@ -859,7 +706,7 @@ export default async function handler(req, res) {
 
   // Cerebras fallback for code if OR failed
   if (CB_KEY && intent === 'code') {
-    try   { const r = await tryCerebras(trimmed, intent, CB_KEY, isAdmin); return res.status(200).json({ ...r, intent }); }
+    try   { const r = await tryCerebras(trimmed, intent, CB_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`Cerebras(code fallback): ${e.message}`); }
   }
 
