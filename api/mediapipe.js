@@ -11,6 +11,22 @@
 // it's folded in here as a second query-param action on this existing
 // edge function, following the same pattern already used in api/social.js
 // and api/tts.js. ui/imagine.js and ui/videogen.js both point at this.
+//
+// NEW: also serves /api/mediapipe?action=embed (POST) — real, server-side
+// text-embeddings route for Flow's semantic memory feature. Real reason
+// this lives here, server-side, rather than calling HF directly from
+// Electron's main process the way memory-store.js's caller might expect:
+// HF_TOKEN is a real, long-lived secret (HF has no short-lived client
+// token mechanism), so it should never be sent to or held by a desktop
+// app process if it can be avoided — the embed route below takes plain
+// text in, calls HF's real feature-extraction endpoint with the token
+// kept server-side, and only returns the resulting vector array. This
+// matches the same "keep the real secret in Vercel, only hand back what's
+// needed" posture used everywhere else HF is touched in this codebase.
+// Endpoint spec verified directly against HuggingFace's own current docs
+// (Inference Providers → feature-extraction task) before writing this —
+// POST body { inputs: string, normalize: true }, returns a flat array of
+// floats (single input) or array-of-arrays (batch input).
 
 export const config = { runtime: 'edge' };
 
@@ -20,6 +36,13 @@ const BASE     = `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${VERSION}`;
 const CAM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@${CAM_VER}`;
 
 const CAM_FILES = new Set(['camera_utils.js']);
+
+// Real model choice for embeddings — thenlper/gte-large, a well-established
+// general-purpose embedding model with strong retrieval benchmark results,
+// confirmed live and documented on HF's Inference Providers feature-
+// extraction task page at the time this was written. 1024-dim output.
+const EMBED_MODEL = 'thenlper/gte-large';
+const EMBED_URL   = `https://router.huggingface.co/hf-inference/models/${EMBED_MODEL}/pipeline/feature-extraction`;
 
 // Face Landmarker's model bundle lives on Google's own model storage, a
 // completely different host/package family than the hand-tracking files
@@ -41,11 +64,11 @@ const FACE_MODEL_URLS = [
   'https://github.com/sanderdesnaijer/mediapipe-model-mirrors/releases/download/v1/face_landmarker.task',
 ];
 
-async function _fetchWithTimeout(url, ms) {
+async function _fetchWithTimeout(url, ms, opts = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { signal: controller.signal });
+    return await fetch(url, { ...opts, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -69,11 +92,102 @@ function handleToken() {
   });
 }
 
+// Real embed handler — POST only. Takes { text: string } (or
+// { texts: string[] } for batch), calls HF's feature-extraction endpoint
+// server-side with HF_TOKEN, returns { embedding: number[] } (or
+// { embeddings: number[][] } for batch). Every real failure mode gets a
+// distinct, honest message rather than a generic 500 — same discipline
+// used in whisper.js's error handling.
+async function handleEmbed(req) {
+  const token = process.env.HF_TOKEN;
+  if (!token) {
+    return new Response(JSON.stringify({ error: 'HF_TOKEN not set in Vercel environment variables' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Request body must be valid JSON' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const isBatch = Array.isArray(body.texts);
+  const inputs = isBatch ? body.texts : body.text;
+
+  if (!inputs || (isBatch && inputs.length === 0)) {
+    return new Response(JSON.stringify({ error: 'Provide either { text: string } or { texts: string[] }' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const res = await _fetchWithTimeout(EMBED_URL, 15000, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ inputs, normalize: true }),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      if (res.status === 402) {
+        return new Response(JSON.stringify({ error: 'Hugging Face free-tier inference credits are used up for this month — real free-tier limit, not a bug.' }), {
+          status: 402,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (res.status === 503) {
+        return new Response(JSON.stringify({ error: `Embedding model is warming up (cold start) — try again in a few seconds.`, estimated_time: errBody.estimated_time || null }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ error: errBody.error || `Hugging Face returned HTTP ${res.status}` }), {
+        status: res.status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const vectors = await res.json();
+
+    if (isBatch) {
+      return new Response(JSON.stringify({ embeddings: vectors }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // Single-input real response shape from HF is [[...]] or [...]
+    // depending on model — normalize to a flat array here so callers
+    // never have to guess which shape came back.
+    const single = Array.isArray(vectors[0]) ? vectors[0] : vectors;
+    return new Response(JSON.stringify({ embedding: single }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (err) {
+    const msg = err.name === 'AbortError' ? 'Embedding request timed out after 15s' : err.message;
+    return new Response(JSON.stringify({ error: msg }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 export default async function handler(req) {
   const url    = new URL(req.url);
   const action = url.searchParams.get('action');
 
   if (action === 'token') return handleToken();
+  if (action === 'embed') return handleEmbed(req);
 
   const file = url.searchParams.get('f') || '';
 
