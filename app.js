@@ -372,16 +372,45 @@ setClientActionHandler(async (action, args) => {
     return;
   }
   if (action === "post_to_bluesky") {
-    // REAL SAFETY GATE, defense in depth: the tool description already
-    // instructs the model to only call this after Joel's explicit
-    // approval in conversation — but a model following an instruction is
-    // one layer, not a guarantee. This is a second, independent, real
-    // confirmation directly in the browser before anything actually
-    // posts — matching the same "human clicks a real button before
-    // anything irreversible happens" pattern already used for self-tool
-    // approvals elsewhere in Flow.
+    // REAL FIX: this used to be window.confirm(), a native OS/Chromium
+    // dialog — confirmed by Joel as the jarring "white card" popup he
+    // didn't want. Real replacement: an in-app card matching the same
+    // approval-card pattern already used for marketing drafts in
+    // ui/marketing.js (_renderApprovalCard), so approval always looks
+    // and feels like part of Flow, never like a system interruption.
     const preview = args?.text?.slice(0, 200) || "(no text)";
-    const confirmed = window.confirm(`Post this to Bluesky?\n\n"${preview}"${args?.videoUrl ? "\n\n[+ video attached]" : ""}`);
+    const confirmed = await new Promise((resolve) => {
+      const col = document.getElementById("col-left");
+      if (!col) { resolve(true); return; } // real fallback: if the column somehow doesn't exist, don't block posting entirely — just proceed
+      const wrap = document.createElement("div");
+      wrap.className = "mwrap mleft fresh img-card-wrap";
+      const label = document.createElement("div");
+      label.className = "mlabel";
+      label.textContent = "FLOW — BLUESKY APPROVAL";
+      const card = document.createElement("div");
+      card.className = "video-card";
+      const textEl = document.createElement("div");
+      textEl.style.cssText = "padding:12px;font-size:13px;color:rgba(255,255,255,0.85);white-space:pre-wrap;";
+      textEl.textContent = preview + (args?.videoUrl ? "\n\n[+ video attached]" : "");
+      const btnRow = document.createElement("div");
+      btnRow.style.cssText = "display:flex;gap:8px;padding:0 10px 10px;";
+      const approveBtn = document.createElement("button");
+      approveBtn.textContent = "✅ Post to Bluesky";
+      approveBtn.style.cssText = "flex:1;padding:8px;border-radius:8px;border:1px solid rgba(74,222,128,0.4);background:rgba(74,222,128,0.15);color:#4ade80;cursor:pointer;font-size:12px;";
+      approveBtn.onclick = () => { wrap.remove(); resolve(true); };
+      const declineBtn = document.createElement("button");
+      declineBtn.textContent = "❌ Don't post";
+      declineBtn.style.cssText = "padding:8px 16px;border-radius:8px;border:1px solid rgba(248,113,113,0.4);background:rgba(248,113,113,0.1);color:#f87171;cursor:pointer;font-size:12px;";
+      declineBtn.onclick = () => { wrap.remove(); resolve(false); };
+      btnRow.appendChild(approveBtn);
+      btnRow.appendChild(declineBtn);
+      card.appendChild(textEl);
+      card.appendChild(btnRow);
+      wrap.appendChild(label);
+      wrap.appendChild(card);
+      col.appendChild(wrap);
+      col.scrollTop = col.scrollHeight;
+    });
     if (!confirmed) {
       Chat.add("Didn't post — you said no.", "bot");
       return "Joel declined to post — do not retry automatically, ask him what he'd like to change if anything.";
