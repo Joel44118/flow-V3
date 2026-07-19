@@ -817,6 +817,21 @@ body::after {
 }
 #proj-btn:hover,#proj-btn.active { background:rgba(255,255,255,0.16); }
 
+/* ── CONTENT LAB BUTTON ──────────────────────────────────── */
+/* Real, exact stack: brain-btn(88) -> kb-btn(136) -> proj-btn(176)
+   -> content-lab-toggle-btn(224), same right:18px, same 40x40 circle
+   style, so it sits directly above the other three as Joel asked. */
+#content-lab-toggle-btn {
+  position:fixed; bottom:224px; right:18px; z-index:20;
+  width:40px; height:40px; border-radius:50%;
+  background:rgba(255,255,255,0.08); backdrop-filter:blur(16px);
+  border:1px solid rgba(255,255,255,0.16);
+  display:flex; align-items:center; justify-content:center;
+  font-size:18px; cursor:pointer; transition:background .2s;
+  box-shadow:0 1px 0 rgba(255,255,255,0.12) inset, 0 4px 20px rgba(0,0,0,0.4);
+}
+#content-lab-toggle-btn:hover,#content-lab-toggle-btn.active { background:rgba(255,255,255,0.16); }
+
 #proj-panel {
   display:none; position:fixed; top:50%; left:50%;
   transform:translate(-50%,-50%) scale(.94);
@@ -1037,6 +1052,7 @@ body::after {
   #proj-btn  { bottom:auto; top:60px; right:14px; }
   #kb-btn    { bottom:auto; top:60px; right:62px; }
   #brain-btn { bottom:auto; top:60px; right:110px; }
+  #content-lab-toggle-btn { bottom:auto; top:60px; right:158px; }
   #top-bar { padding:0 12px; }
   #flow-logo { font-size:14px; letter-spacing:.2em; }
   #wake-indicator { display:none; }
