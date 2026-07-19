@@ -36,6 +36,23 @@ let _panelEl = null;
 export function initContentLab(chat, orb) {
   _chat = chat;
   _orb  = orb;
+  _buildToggleButton();
+}
+
+// Real button, matching the exact same creation pattern as kb-btn
+// (ui/knowledge.js) and proj-btn (ui/projects.js) — a floating circular
+// div, positioned via CSS by ID (styles.css: #content-lab-toggle-btn),
+// stacked directly above brain/kb/projects as Joel asked.
+function _buildToggleButton() {
+  const btn = document.createElement("div");
+  btn.id = "content-lab-toggle-btn";
+  btn.title = "Content Lab";
+  btn.textContent = "🧪";
+  btn.addEventListener("click", () => {
+    if (isContentLabOpen()) { closeContentLab(); btn.classList.remove("active"); }
+    else { openContentLab(); btn.classList.add("active"); }
+  });
+  document.body.appendChild(btn);
 }
 
 const PLATFORMS = [
@@ -455,6 +472,8 @@ export function openContentLab() {
 
 export function closeContentLab() {
   if (_panelEl) { _panelEl.remove(); _panelEl = null; }
+  const btn = document.getElementById("content-lab-toggle-btn");
+  if (btn) btn.classList.remove("active");
 }
 
 export function isContentLabOpen() {
