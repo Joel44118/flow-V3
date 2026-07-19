@@ -269,6 +269,36 @@ const FLOW_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_marketing_post',
+      // REAL FIX: this tool was described to the model in identity.js's
+      // prompt text and its client-side dispatch already existed in
+      // app.js — but it was never actually added to THIS tools array,
+      // meaning the model could never really call it. That real gap is
+      // the confirmed cause of "make a post for bluesky" producing
+      // unpredictable behavior instead of generating real content: with
+      // no valid marketing tool available to call, the model had
+      // nothing correct to reach for.
+      description: "Generates a real, pain-point-focused social media post (image + caption) using Flow's actual content pipeline, and shows Joel a real in-app approval card before anything is posted anywhere. Call this whenever Joel asks to make/create a post, marketing content, or something to share on social media — even if he doesn't name a specific platform. This does NOT post anything by itself; it only creates a draft for Joel's real approval.",
+      parameters: {
+        type: 'object',
+        properties: {
+          angle: { type: 'string', description: 'Optional: a specific pain point or theme Joel wants the post to focus on. Omit to let Flow choose one.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_content_lab',
+      description: "Opens Flow's real Content Lab overlay — a workspace for creating and previewing social media content (video, images, text, hashtags) across Joel's platforms (Bluesky, and others in preview). Call this when Joel explicitly asks to open Content Lab, or when he's asking about content/marketing work broadly enough that the full workspace would genuinely help more than a single generated post.",
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
 ];
 
 // Real execution dispatcher — actually runs the tool server-side where
@@ -323,6 +353,16 @@ async function executeFlowTool(toolName, args) {
   }
   if (toolName === 'post_to_bluesky') {
     return { handled: false, clientAction: 'post_to_bluesky', clientArgs: args, result: null };
+  }
+  if (toolName === 'generate_marketing_post') {
+    // Real fix: this case genuinely did not exist before, matching the
+    // tool definition's earlier absence — the client-side handler in
+    // app.js (case "generate_marketing_post") was already correct and
+    // waiting for this signal, it just never arrived.
+    return { handled: false, clientAction: 'generate_marketing_post', clientArgs: args, result: null };
+  }
+  if (toolName === 'open_content_lab') {
+    return { handled: false, clientAction: 'open_content_lab', result: null };
   }
   return { handled: true, result: `Unknown tool: ${toolName}` };
 }
