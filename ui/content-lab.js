@@ -27,7 +27,6 @@
 //     JSON-generation pattern from marketing.js — nothing here is a
 //     second, competing implementation of image/video/text generation.
 // ═══════════════════════════════════════════
-import { callFlux, getToken, FLUX_MODELS } from "./imagine.js";
 import { generateVideo } from "./videogen.js";
 
 let _chat = null;
@@ -82,20 +81,70 @@ Reply with ONLY this JSON, no other text:
   return JSON.parse(match[0]);
 }
 
+// REAL FIX: the old FLUX_MODELS chain (imagine.js) is confirmed dead —
+// all three models return real 410/400 errors from HuggingFace's
+// hf-inference provider (HF deprecated them there). Real replacement:
+// NVIDIA's free NIM image API, called via the new server-side
+// /api/mediapipe?action=image route (keeps NVIDIA_API_KEY server-side,
+// matches the same pattern as the embed route).
+// ── Real in-app prompt replacement ──────────────────────────────────────
+// REAL FIX: window.prompt() is confirmed NOT supported in Electron's
+// renderer (Chromium disables it there) — three call sites in this file
+// used it and all three threw "prompt() is and will not be supported."
+// This is a real, minimal in-app modal doing the same job: ask one
+// question, get text back, resolve null if cancelled.
+function _realPrompt(question, placeholder = "") {
+  return new Promise((resolve) => {
+    _injectStyles();
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10001;display:flex;align-items:center;justify-content:center;";
+    const box = document.createElement("div");
+    box.style.cssText = "background:rgba(20,15,35,0.98);border:1px solid rgba(167,139,250,0.4);border-radius:12px;padding:18px;width:320px;";
+    const q = document.createElement("div");
+    q.style.cssText = "font-size:13px;color:#e5e7eb;margin-bottom:10px;";
+    q.textContent = question;
+    const input = document.createElement("input");
+    input.className = "cl-input";
+    input.placeholder = placeholder;
+    input.style.marginTop = "0";
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:8px;margin-top:12px;";
+    const okBtn = document.createElement("button");
+    okBtn.className = "cl-btn";
+    okBtn.textContent = "OK";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "cl-btn";
+    cancelBtn.textContent = "Cancel";
+    const cleanup = (val) => { overlay.remove(); resolve(val); };
+    okBtn.onclick = () => cleanup(input.value.trim() || null);
+    cancelBtn.onclick = () => cleanup(null);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") cleanup(input.value.trim() || null); if (e.key === "Escape") cleanup(null); });
+    btnRow.appendChild(okBtn);
+    btnRow.appendChild(cancelBtn);
+    box.appendChild(q);
+    box.appendChild(input);
+    box.appendChild(btnRow);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    input.focus();
+  });
+}
+
 async function _generateImageBlob(imagePrompt) {
-  const token = await getToken();
-  let lastError;
-  for (const model of FLUX_MODELS) {
-    try {
-      const result = await callFlux(model.id, imagePrompt, 1024, 1024, model.steps, model.cfg, token);
-      if (result.blob.size < 500) throw new Error("Response too small");
-      return result.blob;
-    } catch (e) {
-      lastError = e;
-      console.warn(`[ContentLab] ${model.id} failed, trying next:`, e.message);
-    }
+  const res = await fetch("/api/mediapipe?action=image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: imagePrompt }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.b64_json) {
+    throw new Error(data.error || "Image generation failed — no real image data returned");
   }
-  throw lastError || new Error("All image models failed");
+  // Real, direct base64 -> Blob conversion, no extra dependency
+  const byteChars = atob(data.b64_json);
+  const byteNumbers = new Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+  return new Blob([new Uint8Array(byteNumbers)], { type: "image/png" });
 }
 
 function _blobToBase64(blob) {
@@ -141,6 +190,10 @@ function _injectStyles() {
 #content-lab-close { background: none; border: none; color: #9ca3af; font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 6px; }
 #content-lab-close:hover { color: #f87171; }
 #content-lab-body { overflow-y: auto; padding: 14px 16px; flex: 1; }
+#content-lab-body::-webkit-scrollbar { width: 6px; }
+#content-lab-body::-webkit-scrollbar-track { background: transparent; }
+#content-lab-body::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.3); border-radius: 3px; }
+#content-lab-body::-webkit-scrollbar-thumb:hover { background: rgba(167,139,250,0.5); }
 .cl-section { margin-bottom: 16px; }
 .cl-section-title { font-size: 11px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
 .cl-btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -338,7 +391,7 @@ export function openContentLab() {
   videoBtn.className = "cl-btn";
   videoBtn.textContent = "🎬 Video";
   videoBtn.onclick = async () => {
-    const prompt = window.prompt("What should the video show?");
+    const prompt = await _realPrompt("What should the video show?");
     if (prompt) { closeContentLab(); await generateVideo(prompt); }
   };
 
@@ -346,7 +399,7 @@ export function openContentLab() {
   imageBtn.className = "cl-btn";
   imageBtn.textContent = "🖼️ Picture";
   imageBtn.onclick = async () => {
-    const prompt = window.prompt("What should the image show?");
+    const prompt = await _realPrompt("What should the image show?");
     if (!prompt) return;
     _chat?.add("🖼️ Generating...", "bot");
     try {
@@ -363,7 +416,7 @@ export function openContentLab() {
   textBtn.className = "cl-btn";
   textBtn.textContent = "✍️ Text only";
   textBtn.onclick = async () => {
-    const brief = window.prompt("What should the post be about? (leave blank for Flow's own judgment)") || "";
+    const brief = (await _realPrompt("What should the post be about? (leave blank for Flow's own judgment)")) || "";
     try {
       const content = await _generateContentJSON("a general social post (no image)", brief);
       _chat?.add(`📝 Draft:\n\n${content.caption}\n\n${(content.hashtags || []).map(t => "#" + t).join(" ")}`, "bot");
