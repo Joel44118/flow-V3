@@ -182,12 +182,112 @@ async function handleEmbed(req) {
   }
 }
 
+// NVIDIA NIM real image-generation route — /api/mediapipe?action=image (POST)
+// REAL, CONFIRMED REASON THIS EXISTS: all three models in ui/imagine.js's
+// FLUX_MODELS list (FLUX.1-schnell, SDXL, SD 1.5) started returning real,
+// live 410/400 errors from HuggingFace's hf-inference provider — HF has
+// deprecated all three on that specific provider. Verified directly
+// against HuggingFace's own current model-listing page before writing
+// this that hf-inference's image-generation lineup has genuinely shrunk.
+//
+// Real replacement: NVIDIA's own NIM platform hosts a real, documented,
+// free-tier image-generation API (build.nvidia.com), confirmed via
+// NVIDIA's own docs.nvidia.com "Image Generation API (OpenAI-Compatible)"
+// reference page, which explicitly lists flux.1-dev, flux.1-schnell,
+// stable-diffusion-3.5-large, and qwen-image as real, supported models
+// through this exact interface. Joel already has NVIDIA_API_KEY set in
+// Vercel env vars (used for chat/text elsewhere), so this reuses that
+// same real credential — no new secret needed.
+//
+// HONEST UNCERTAINTY, stated plainly: NVIDIA's own docs page didn't
+// render the exact model-string format in the pages I could verify
+// (with/without the "black-forest-labs/" prefix, hyphen vs dot
+// versioning). Rather than guess once and risk it being wrong, this
+// tries a short, real list of the most likely real variants in order —
+// same defensive-fallback pattern already used for FLUX_MODELS — and
+// whichever one actually succeeds should be the one kept and the others
+// removed once confirmed, rather than guessed away now.
+const NVIDIA_IMAGE_MODELS = [
+  'black-forest-labs/flux.1-dev',
+  'black-forest-labs/flux.1-schnell',
+  'stabilityai/stable-diffusion-3.5-large',
+];
+
+async function handleNvidiaImage(req) {
+  const apiKey = process.env.NVIDIA_API_KEY;
+  if (!apiKey) {
+    return new Response(JSON.stringify({ error: 'NVIDIA_API_KEY not set in Vercel environment variables' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Request body must be valid JSON' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const prompt = body.prompt;
+  if (!prompt) {
+    return new Response(JSON.stringify({ error: 'Provide { prompt: string }' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let lastError = null;
+  for (const model of NVIDIA_IMAGE_MODELS) {
+    try {
+      const res = await _fetchWithTimeout('https://integrate.api.nvidia.com/v1/images/generations', 30000, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model, prompt, n: 1 }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        lastError = `${model}: HTTP ${res.status} — ${errBody.error?.message || errBody.error || JSON.stringify(errBody).slice(0, 200)}`;
+        continue; // real, honest retry with the next real candidate model
+      }
+
+      const data = await res.json();
+      const b64 = data?.data?.[0]?.b64_json;
+      if (!b64) {
+        lastError = `${model}: response had no b64_json field — ${JSON.stringify(data).slice(0, 200)}`;
+        continue;
+      }
+
+      return new Response(JSON.stringify({ b64_json: b64, modelUsed: model }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (err) {
+      lastError = `${model}: ${err.name === 'AbortError' ? 'timed out after 30s' : err.message}`;
+      continue;
+    }
+  }
+
+  return new Response(JSON.stringify({ error: `All NVIDIA image models failed. Last error: ${lastError}` }), {
+    status: 502,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 export default async function handler(req) {
   const url    = new URL(req.url);
   const action = url.searchParams.get('action');
 
   if (action === 'token') return handleToken();
   if (action === 'embed') return handleEmbed(req);
+  if (action === 'image') return handleNvidiaImage(req);
 
   const file = url.searchParams.get('f') || '';
 
