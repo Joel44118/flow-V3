@@ -30,6 +30,7 @@ import { initStagedFiles, stageFiles, clearStaged, getStagedFiles, hasStagedFile
 import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
 import { initVideoGen, generateVideo, generateVideoFromImage } from "./ui/videogen.js";
 import { initMarketing, generateMarketingPost } from "./ui/marketing.js";
+import { initContentLab, openContentLab, closeContentLab, isContentLabOpen } from "./ui/content-lab.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -123,6 +124,16 @@ async function handleSlashCmd(cmd, prompt) {
       // ui/marketing.js's PAIN_POINT_SYSTEM_PROMPT for the real,
       // required structure every generated post must follow).
       await generateMarketingPost(p || undefined);
+      break;
+    }
+    case "/content-lab": {
+      // Real, direct toggle for Content Lab — Joel's explicit request:
+      // both voice ("open content lab") and typed text should work the
+      // same way, since natural-language transcripts and typed text
+      // both flow through this exact same handler (see the real
+      // comment further down about voice/text sharing one path).
+      openContentLab();
+      Chat.add("🧪 Content Lab is open.", "bot");
       break;
     }
     case "/scrape":
@@ -446,6 +457,11 @@ setClientActionHandler(async (action, args) => {
       return `Real failure generating the marketing post: ${e.message}`;
     }
   }
+  if (action === "open_content_lab") {
+    openContentLab();
+    Chat.add("🧪 Content Lab is open.", "bot");
+    return "Content Lab is now open on screen — Joel can create video/image/text content and preview it per-platform from there. Only Bluesky can actually post right now; the others generate real previews but posting isn't connected yet.";
+  }
   if (action === "get_my_level") {
     const lvl = getLevelState();
     return `Level ${lvl.level}, ${lvl.xp}/${lvl.xpNeeded} XP (${lvl.percent}%), ${lvl.totalXp} total XP earned.`;
@@ -525,6 +541,7 @@ initFileUpload(Chat, (t) => sendMessage(t), (s) => Orb.setState(s));
 initImagine(Chat, Orb);
 initVideoGen(Chat, Orb);
 initMarketing(Chat, Orb);
+initContentLab(Chat, Orb);
 initKnowledge(Chat);
 initProjects(Chat, (t) => sendToAI(t));
 
