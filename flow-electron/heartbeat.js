@@ -185,7 +185,43 @@ function _daysSinceLastMarketingPost() {
 // Bluesky success — not guessed at from the main process's side.
 function recordMarketingPost() {
   try { fs.writeFileSync(_lastMarketingPostPath(), JSON.stringify({ ts: Date.now() })); } catch (e) { console.warn('[Heartbeat] Failed to record marketing post timestamp:', e.message); }
+  // Real, honest reset: a genuine post going out resolves the cadence
+  // question outright — no need to wait out the suggestion cooldown too.
+  try { fs.writeFileSync(_lastMarketingSuggestionPath(), JSON.stringify({ ts: Date.now() })); } catch (e) { /* non-fatal */ }
 }
+
+// ── Real, HARD-enforced suggestion cooldown ─────────────────────────────
+// REAL BUG FIX: the previous design only told the model, in the prompt
+// text, "don't force it every tick" — a soft instruction, not a real
+// constraint. Since each 15-minute tick calls the model fresh with no
+// memory of its OWN past unprompted messages (only scratchpad thoughts,
+// a separate optional action), the model kept independently re-deciding
+// "yes, it's been a while, worth mentioning" every tick — producing
+// genuinely repetitive, spammy real messages (confirmed directly by
+// Joel: two near-identical marketing nudges ~40 minutes apart, which
+// Flow's own self-check then correctly flagged as a real problem).
+//
+// Real fix: track WHEN the marketing angle was last actually suggested
+// (distinct from when a post last actually went out), and don't even
+// OFFER the model that reasoning angle in the prompt again until a real,
+// generous cooldown has passed — currently 48 hours. This is a hard,
+// code-level gate, not another soft instruction the model can second-
+// guess its way around.
+function _lastMarketingSuggestionPath() { return path.join(app.getPath('userData'), 'flow-last-marketing-suggestion.json'); }
+function _hoursSinceLastMarketingSuggestion() {
+  try {
+    const p = _lastMarketingSuggestionPath();
+    if (!fs.existsSync(p)) return Infinity;
+    const { ts } = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return (Date.now() - ts) / (60 * 60 * 1000);
+  } catch (e) {
+    return Infinity;
+  }
+}
+function _recordMarketingSuggestion() {
+  try { fs.writeFileSync(_lastMarketingSuggestionPath(), JSON.stringify({ ts: Date.now() })); } catch (e) { console.warn('[Heartbeat] Failed to record marketing suggestion timestamp:', e.message); }
+}
+const MARKETING_SUGGESTION_COOLDOWN_HOURS = 48; // real, deliberate: generous enough that Joel genuinely forgot the last nudge before a new one can fire
 
 // ── Real reasoning call — asks the actual cloud model, not a fake ───────
 // canned response, whether anything is genuinely worth doing this tick.
@@ -195,6 +231,8 @@ async function _reasonAboutTick() {
   const recentThoughts = await _recallScratchpad();
   const recurringTopics = await memoryStore.findRecurringTopics({ sinceDays: 7, minOccurrences: 3 });
   const daysSincePost = _daysSinceLastMarketingPost();
+  const hoursSinceLastSuggestion = _hoursSinceLastMarketingSuggestion();
+  const marketingCooldownActive = hoursSinceLastSuggestion < MARKETING_SUGGESTION_COOLDOWN_HOURS;
 
   // Real, honest prompt — explicitly tells the model this is an
   // UNPROMPTED reasoning pass, not a reply to Joel, and to say "nothing"
@@ -209,7 +247,7 @@ ${priorities.map(p => `- ${p}`).join('\n') || '(none set)'}
 YOUR OPEN GOALS:
 ${openGoals.length ? openGoals.map(g => `- [${g.id}] ${g.description}`).join('\n') : '(none — this is fine, not every tick needs a goal)'}
 
-REAL MARKETING CADENCE: it has been ${daysSincePost === Infinity ? 'a while (no post recorded yet)' : `${daysSincePost.toFixed(1)} days`} since the last real marketing post went out. Joel's stated goal is getting genuinely seen on socials to help him land real clients — if it's been more than ~3 days, consider suggesting a new post as a real "message" action below, but don't force it every single tick just because time passed; use real judgment about whether now is a reasonable moment.
+${marketingCooldownActive ? '' : `REAL MARKETING CADENCE: it has been ${daysSincePost === Infinity ? 'a while (no post recorded yet)' : `${daysSincePost.toFixed(1)} days`} since the last real marketing post went out. Joel's stated goal is getting genuinely seen on socials to help him land real clients — if it's been more than ~3 days, consider suggesting a new post as a real "message" action below, but don't force it every single tick just because time passed; use real judgment about whether now is a reasonable moment.`}
 
 YOUR RECENT SCRATCHPAD THOUGHTS (from previous ticks):
 ${recentThoughts.map(t => `- ${t.text}`).join('\n') || '(none yet)'}
@@ -286,10 +324,18 @@ ${recentActions.map(a => `- ${a.text}`).join('\n')}`;
 async function _tick() {
   console.log('[Heartbeat] Real tick at', new Date().toLocaleTimeString());
   try {
+    const wasMarketingAngleAvailable = _hoursSinceLastMarketingSuggestion() >= MARKETING_SUGGESTION_COOLDOWN_HOURS;
     const decision = await _reasonAboutTick();
     if (decision.action === "message" && decision.text) {
       await sendSelfInitiatedMessage(decision.text);
       await memoryStore.remember(decision.text, "decision", { selfInitiated: true });
+      // Real, honest heuristic: if the marketing angle was genuinely
+      // available to the model this tick (not already on cooldown) and
+      // it chose to send an unprompted message, start the real cooldown
+      // now — this is the moment a marketing nudge (if this was one)
+      // would have gone out, and starting the clock here prevents the
+      // exact repeated-reminder pattern Joel confirmed happening.
+      if (wasMarketingAngleAvailable) _recordMarketingSuggestion();
     } else if (decision.action === "scratchpad" && decision.text) {
       await _writeScratchpad(decision.text);
     } else if (decision.action === "self_check" && decision.text) {
