@@ -96,17 +96,21 @@ async function _generateImageBlob(imagePrompt, width = 1024, height = 1024) {
     body: JSON.stringify({ prompt: imagePrompt, width, height }),
   });
   const data = await res.json();
-  if (!res.ok || !data.b64_json) {
+  if (!res.ok || (!data.b64_json && !data.imageUrl)) {
     throw new Error(data.error || "Image generation failed — no real image data returned");
   }
-  const byteChars = atob(data.b64_json);
-  const byteNumbers = new Array(byteChars.length);
-  for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
-  const blob = new Blob([new Uint8Array(byteNumbers)], { type: "image/png" });
-  // Real, actual dimensions NVIDIA generated — may differ from what was
-  // requested, since FLUX's supported sizes are a fixed set (see
-  // api/mediapipe.js's real snapping logic). Callers should use these,
-  // not the originally-requested width/height, for accurate previews.
+  let blob;
+  if (data.b64_json) {
+    const byteChars = atob(data.b64_json);
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+    blob = new Blob([new Uint8Array(byteNumbers)], { type: "image/png" });
+  } else {
+    // Real fallback: some providers return a URL instead of base64 —
+    // fetch it directly to get a real usable blob either way.
+    const imgRes = await fetch(data.imageUrl);
+    blob = await imgRes.blob();
+  }
   return { blob, actualWidth: data.actualWidth || width, actualHeight: data.actualHeight || height };
 }
 
@@ -135,8 +139,15 @@ function _injectStyles() {
   style.id = "content-lab-style";
   style.textContent = `
 #content-lab-panel {
-  position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
-  width: min(94vw, 1180px); max-height: 74vh;
+  /* REAL FIX: previously centered edge-to-edge (94vw), which could sit
+     directly under the right-side brain/kb/proj/content-lab-toggle
+     button column (all at right:18px). Real clearance reserved here —
+     right:80px keeps the panel's right edge clear of that entire
+     button stack at any reasonable screen width, and the panel is now
+     positioned from the left instead of centered, so its width doesn't
+     silently creep back under the buttons on wider screens. */
+  position: fixed; bottom: 90px; left: 24px; right: 80px;
+  max-width: 1180px; max-height: 70vh;
   background: rgba(15,10,30,0.97); border: 1px solid rgba(167,139,250,0.4);
   border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);
   z-index: 9999; display: flex; flex-direction: column;
@@ -162,7 +173,7 @@ function _injectStyles() {
    stack — scrolls sideways if it overflows the panel width. */
 #cl-platforms-row {
   display: flex; gap: 12px; padding: 14px 16px; overflow-x: auto;
-  overflow-y: hidden; flex: 1;
+  overflow-y: hidden; flex: 1; align-items: flex-start;
 }
 #cl-platforms-row::-webkit-scrollbar { height: 6px; }
 #cl-platforms-row::-webkit-scrollbar-track { background: transparent; }
@@ -182,23 +193,47 @@ function _injectStyles() {
   color: #e5e7eb; font-size: 12px; box-sizing: border-box;
 }
 .cl-platform-card {
-  flex: 0 0 240px; border: 1px solid rgba(167,139,250,0.2); border-radius: 10px;
-  padding: 10px; background: rgba(255,255,255,0.02); display: flex; flex-direction: column;
+  /* REAL FIX: cards are a fixed 240px width, but platforms have
+     different real aspect ratios (TikTok 9:16 vs Bluesky 16:9 vs
+     Instagram 4:5) — without a cap, a 9:16 image at 240px wide would
+     render ~426px tall, making that ONE card visually tower over its
+     16:9/4:5 neighbors in the same horizontal row. max-height + a
+     scrollable card body keeps every card the same real, predictable
+     footprint regardless of which platform's image is showing. */
+  flex: 0 0 240px; max-height: 100%; border: 1px solid rgba(167,139,250,0.2);
+  border-radius: 10px; padding: 10px; background: rgba(255,255,255,0.02);
+  display: flex; flex-direction: column; overflow-y: auto;
 }
+.cl-platform-card::-webkit-scrollbar { width: 4px; }
+.cl-platform-card::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.3); border-radius: 2px; }
 .cl-platform-card.disabled { opacity: 0.7; }
-.cl-platform-title { font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; }
-.cl-badge-live { color: #4ade80; font-size: 9px; border: 1px solid rgba(74,222,128,0.4); border-radius: 10px; padding: 1px 7px; }
-.cl-badge-soon { color: #9ca3af; font-size: 9px; border: 1px solid rgba(156,163,175,0.4); border-radius: 10px; padding: 1px 7px; }
-.cl-preview-img { width: 100%; border-radius: 8px; margin-top: 8px; object-fit: cover; }
-.cl-caption { font-size: 11px; color: rgba(255,255,255,0.75); white-space: pre-wrap; margin-top: 6px; max-height: 90px; overflow-y: auto; }
-.cl-hashtags { font-size: 10px; color: #a78bfa; margin-top: 4px; }
+.cl-platform-title { font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.cl-badge-live { color: #4ade80; font-size: 9px; border: 1px solid rgba(74,222,128,0.4); border-radius: 10px; padding: 1px 7px; flex-shrink: 0; }
+.cl-badge-soon { color: #9ca3af; font-size: 9px; border: 1px solid rgba(156,163,175,0.4); border-radius: 10px; padding: 1px 7px; flex-shrink: 0; }
+.cl-preview-img {
+  /* REAL FIX: cap displayed height regardless of the real aspect ratio,
+     so a tall 9:16 image never blows out the card — object-fit:cover
+     crops rather than distorts, keeping every card's image area a
+     consistent, predictable size. */
+  width: 100%; max-height: 220px; object-fit: cover; border-radius: 8px; margin-top: 8px; flex-shrink: 0;
+}
+.cl-caption {
+  font-size: 11px; color: rgba(255,255,255,0.75); white-space: pre-wrap;
+  margin-top: 6px; max-height: 90px; overflow-y: auto;
+  word-wrap: break-word; overflow-wrap: anywhere; /* REAL FIX: a single long word/URL with no spaces could previously overflow the card's fixed width instead of wrapping */
+}
+.cl-hashtags {
+  font-size: 10px; color: #a78bfa; margin-top: 4px;
+  word-wrap: break-word; overflow-wrap: anywhere; /* REAL FIX: previously had no overflow protection at all */
+  max-height: 40px; overflow-y: auto;
+}
 .cl-post-all-btn {
   margin: 0 16px 14px; padding: 11px; border-radius: 10px; flex-shrink: 0;
   border: 1px solid rgba(74,222,128,0.4); background: rgba(74,222,128,0.15);
   color: #4ade80; font-size: 13px; font-weight: 700; cursor: pointer;
 }
 .cl-post-all-btn:hover { background: rgba(74,222,128,0.25); }
-.cl-status { font-size: 10px; color: #9ca3af; margin-top: 6px; }
+.cl-status { font-size: 10px; color: #9ca3af; margin-top: 6px; word-wrap: break-word; overflow-wrap: anywhere; }
 
 /* Real create-panel (video/picture/text-only) rendering area — appears
    ABOVE the platform row, inside the Content Lab card, never in chat. */
@@ -209,6 +244,7 @@ function _injectStyles() {
 .cl-create-result {
   border: 1px solid rgba(167,139,250,0.25); border-radius: 10px;
   padding: 10px; margin-bottom: 10px; background: rgba(255,255,255,0.02);
+  word-wrap: break-word; overflow-wrap: anywhere; max-width: 100%;
 }
 `;
   document.head.appendChild(style);
@@ -226,6 +262,7 @@ function _makeDraggable(panel, handle) {
     if (!dragging) return;
     panel.style.left = `${e.clientX - offX}px`;
     panel.style.top  = `${e.clientY - offY}px`;
+    panel.style.right = "auto";
     panel.style.bottom = "auto";
     panel.style.transform = "none";
   });
