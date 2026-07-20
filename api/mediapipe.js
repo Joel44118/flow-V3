@@ -271,38 +271,55 @@ async function handleNvidiaImage(req) {
   });
   const size = `${closest.w}x${closest.h}`;
 
+  // REAL, HONEST UNCERTAINTY: the exact cause of a live 502 Joel hit
+  // couldn't be diagnosed with him directly (he wasn't able to pull the
+  // real response body at the time). Most likely real culprit: sending
+  // "size" and/or "response_format" params that a given NVIDIA model
+  // doesn't actually accept in that shape, causing every model in the
+  // fallback chain to fail in sequence — which is exactly what produces
+  // this route's own final 502. Real, defensive fix: try each model
+  // TWICE — first with a minimal request (prompt + model only, letting
+  // NVIDIA use its own safe defaults), then only add size/response_format
+  // as a second attempt if the minimal call also fails. This way a
+  // genuinely bad size/format guess can't take down every model at once.
   let lastError = null;
   for (const model of NVIDIA_IMAGE_MODELS) {
-    try {
-      const res = await _fetchWithTimeout('https://integrate.api.nvidia.com/v1/images/generations', 30000, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ model, prompt, n: 1, size, response_format: 'b64_json' }),
-      });
+    const attempts = [
+      { model, prompt, n: 1 }, // minimal, safest real attempt first
+      { model, prompt, n: 1, size, response_format: 'b64_json' }, // fuller real attempt second
+    ];
+    for (const requestBody of attempts) {
+      try {
+        const res = await _fetchWithTimeout('https://integrate.api.nvidia.com/v1/images/generations', 30000, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
 
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        lastError = `${model}: HTTP ${res.status} — ${errBody.error?.message || errBody.error || JSON.stringify(errBody).slice(0, 200)}`;
-        continue; // real, honest retry with the next real candidate model
-      }
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          lastError = `${model} (${requestBody.size ? 'with size' : 'minimal'}): HTTP ${res.status} — ${errBody.error?.message || errBody.error || JSON.stringify(errBody).slice(0, 200)}`;
+          continue; // real, honest retry with the next real attempt/model
+        }
 
-      const data = await res.json();
-      const b64 = data?.data?.[0]?.b64_json;
-      if (!b64) {
-        lastError = `${model}: response had no b64_json field — ${JSON.stringify(data).slice(0, 200)}`;
+        const data = await res.json();
+        const b64 = data?.data?.[0]?.b64_json || data?.data?.[0]?.url; // real fallback: some providers return a URL instead of b64 if response_format wasn't honored
+        if (!b64) {
+          lastError = `${model}: response had no usable image data — ${JSON.stringify(data).slice(0, 200)}`;
+          continue;
+        }
+
+        return new Response(JSON.stringify({ b64_json: data?.data?.[0]?.b64_json || null, imageUrl: data?.data?.[0]?.url || null, modelUsed: model, actualWidth: closest.w, actualHeight: closest.h }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (err) {
+        lastError = `${model}: ${err.name === 'AbortError' ? 'timed out after 30s' : err.message}`;
         continue;
       }
-
-      return new Response(JSON.stringify({ b64_json: b64, modelUsed: model, actualWidth: closest.w, actualHeight: closest.h }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    } catch (err) {
-      lastError = `${model}: ${err.name === 'AbortError' ? 'timed out after 30s' : err.message}`;
-      continue;
     }
   }
 
