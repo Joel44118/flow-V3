@@ -249,6 +249,28 @@ async function handleNvidiaImage(req) {
     });
   }
 
+  // REAL, CONFIRMED CONSTRAINT: NVIDIA's own FLUX.1-dev model card
+  // documents a FIXED set of supported output sizes — 1024x1024,
+  // 768x1344, 1344x768, 1216x832 — not arbitrary dimensions. Rather than
+  // send an unsupported exact size and risk a real rejection or silent
+  // mismatch, snap the requested width/height to the closest real
+  // supported size by aspect ratio.
+  const width  = Number(body.width)  || 1024;
+  const height = Number(body.height) || 1024;
+  const requestedRatio = width / height;
+  const SUPPORTED_SIZES = [
+    { w: 1024, h: 1024 }, // 1:1
+    { w: 768,  h: 1344 }, // portrait ~9:16
+    { w: 1344, h: 768  }, // landscape ~16:9
+    { w: 1216, h: 832  }, // landscape ~3:2
+  ];
+  const closest = SUPPORTED_SIZES.reduce((best, s) => {
+    const diff = Math.abs((s.w / s.h) - requestedRatio);
+    const bestDiff = Math.abs((best.w / best.h) - requestedRatio);
+    return diff < bestDiff ? s : best;
+  });
+  const size = `${closest.w}x${closest.h}`;
+
   let lastError = null;
   for (const model of NVIDIA_IMAGE_MODELS) {
     try {
@@ -258,7 +280,7 @@ async function handleNvidiaImage(req) {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ model, prompt, n: 1, response_format: 'b64_json' }),
+        body: JSON.stringify({ model, prompt, n: 1, size, response_format: 'b64_json' }),
       });
 
       if (!res.ok) {
@@ -274,7 +296,7 @@ async function handleNvidiaImage(req) {
         continue;
       }
 
-      return new Response(JSON.stringify({ b64_json: b64, modelUsed: model }), {
+      return new Response(JSON.stringify({ b64_json: b64, modelUsed: model, actualWidth: closest.w, actualHeight: closest.h }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
