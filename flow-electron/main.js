@@ -175,6 +175,43 @@ function createWindow() {
     }, delay);
   });
 
+  // REAL, ADDITIONAL FIX for a DIFFERENT real symptom Joel confirmed:
+  // a genuinely blank window at auto-start boot, with the taskbar
+  // tooltip showing a real build stamp (meaning the window itself is
+  // alive and did receive SOME page load) — this is NOT the same
+  // failure the did-fail-load handler above covers. did-fail-load only
+  // fires on a hard network-level failure; it does nothing for a load
+  // that technically "succeeds" (no network error) but the page itself
+  // renders empty — e.g. a slow/flaky connection at boot serving a
+  // stale/incomplete response, or a JS error on the page preventing the
+  // real UI from ever mounting into the DOM. Real fix: after the page
+  // reports it finished loading, actually check whether real content
+  // exists in the page — not just trust that "finished" means "worked."
+  mainWin.webContents.on('did-finish-load', () => {
+    setTimeout(async () => {
+      if (!mainWin || mainWin.isDestroyed()) return;
+      try {
+        const hasRealContent = await mainWin.webContents.executeJavaScript(
+          `document.body && document.body.innerText && document.body.innerText.trim().length > 20`
+        );
+        if (!hasRealContent && loadRetries < MAX_LOAD_RETRIES) {
+          loadRetries++;
+          console.warn(`[Flow] Page finished loading but appears genuinely blank — reloading (attempt ${loadRetries}/${MAX_LOAD_RETRIES})`);
+          mainWin.loadURL('https://flow-v3-mu.vercel.app');
+        }
+      } catch (e) {
+        // Real, honest: if we can't even check (e.g. page is in a truly
+        // broken state where executeJavaScript itself fails), that's
+        // itself a strong real signal something's wrong — reload too.
+        if (loadRetries < MAX_LOAD_RETRIES) {
+          loadRetries++;
+          console.warn(`[Flow] Could not verify page content (${e.message}) — reloading (attempt ${loadRetries}/${MAX_LOAD_RETRIES})`);
+          mainWin.loadURL('https://flow-v3-mu.vercel.app');
+        }
+      }
+    }, 3000); // real, deliberate delay — give the page's own JS a genuine 3s to finish mounting before judging it blank
+  });
+
   mainWin.webContents.session.setPermissionRequestHandler(
     (_wc, perm, cb) =>
       cb(['media','microphone','camera','notifications','geolocation'].includes(perm))
