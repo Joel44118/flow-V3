@@ -324,18 +324,27 @@ ${recentActions.map(a => `- ${a.text}`).join('\n')}`;
 async function _tick() {
   console.log('[Heartbeat] Real tick at', new Date().toLocaleTimeString());
   try {
-    const wasMarketingAngleAvailable = _hoursSinceLastMarketingSuggestion() >= MARKETING_SUGGESTION_COOLDOWN_HOURS;
     const decision = await _reasonAboutTick();
     if (decision.action === "message" && decision.text) {
       await sendSelfInitiatedMessage(decision.text);
       await memoryStore.remember(decision.text, "decision", { selfInitiated: true });
-      // Real, honest heuristic: if the marketing angle was genuinely
-      // available to the model this tick (not already on cooldown) and
-      // it chose to send an unprompted message, start the real cooldown
-      // now — this is the moment a marketing nudge (if this was one)
-      // would have gone out, and starting the clock here prevents the
-      // exact repeated-reminder pattern Joel confirmed happening.
-      if (wasMarketingAngleAvailable) _recordMarketingSuggestion();
+      // REAL, CORRECTED FIX: the previous version's real bug — confirmed
+      // by Joel still seeing repeated reminders even after the 48h
+      // cooldown was deployed — was assuming ANY unprompted message sent
+      // while the marketing angle was merely "available" must have been
+      // a marketing nudge, and starting the cooldown based on that
+      // assumption alone. That's wrong: Flow could send a genuinely
+      // unrelated message (a different reminder, a self-check) while the
+      // angle happened to be available, silently consuming the cooldown
+      // for something that was never actually about marketing — leaving
+      // the REAL marketing-nudge cooldown never properly triggered at
+      // the right moment, which is exactly the repeat Joel kept seeing.
+      //
+      // Real fix: check the actual message TEXT for real marketing/
+      // posting-related language before starting the cooldown — not an
+      // assumption based on timing alone.
+      const looksLikeMarketingNudge = /\b(marketing post|social media|bluesky|linkedin|twitter|content lab|last (real )?post|posting cadence|getting seen|visibility|share (a|an|your))\b/i.test(decision.text);
+      if (looksLikeMarketingNudge) _recordMarketingSuggestion();
     } else if (decision.action === "scratchpad" && decision.text) {
       await _writeScratchpad(decision.text);
     } else if (decision.action === "self_check" && decision.text) {
