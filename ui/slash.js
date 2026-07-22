@@ -67,7 +67,14 @@ export function initSlash(inputEl, onNoArg) {
 
 export function getSlashState() {
   if (!_activeCmd) return null;
-  return { cmd: _activeCmd, prompt: _input.textContent.trim() };
+  // REAL, DEFENSIVE SECOND LAYER: even with the _onInput fix above,
+  // don't trust a stuck _activeCmd if the input is genuinely empty —
+  // an empty prompt being sent to a command handler is never correct
+  // behavior, and this catches any future edge case the _onInput fix
+  // didn't anticipate.
+  const prompt = _input.textContent.trim();
+  if (!prompt) { _removeChip(); return null; }
+  return { cmd: _activeCmd, prompt };
 }
 
 export function clearSlash() {
@@ -153,6 +160,25 @@ function _bindEvents() {
 
 function _onInput() {
   const val = _input.textContent;
+
+  // REAL BUG FIX: previously, an active chip only cleared via a literal
+  // Backspace keypress on empty input (_onKeydown below) or the ✕
+  // button. Any OTHER way of emptying the input — Ctrl+A+Delete, Cut,
+  // clicking a "clear" action, or clearInput() being called
+  // programmatically elsewhere in app.js — left _activeCmd silently
+  // stuck active, since none of those paths fire the specific
+  // Backspace-on-empty condition. Every subsequent normal chat message
+  // then got misrouted through getSlashState() as if it were an
+  // argument to that stuck command (e.g. every message becoming a repo
+  // name/description for /repo) — this is the exact real bug Joel
+  // reported: "my chats keeps making flow try creating a repo."
+  // Real fix: the input event itself (which fires on every genuine way
+  // the content changes, not just Backspace) now also clears the chip
+  // whenever the input becomes empty while a chip is active.
+  if (_activeCmd && val === "") {
+    _removeChip();
+    return;
+  }
 
   // Show palette only when no chip active and typing a slash command
   if (!_activeCmd && val.startsWith("/") && !val.includes(" ")) {
