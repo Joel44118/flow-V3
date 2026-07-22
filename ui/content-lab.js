@@ -87,38 +87,90 @@ Reply with ONLY this JSON, no other text:
   return JSON.parse(match[0]);
 }
 
-// REAL, per-platform image generation — takes real width/height so each
-// platform gets its actual correct aspect ratio, not a shared square.
-async function _generateImageBlob(imagePrompt) {
+// REAL, per-platform image generation — requests n images (1-5) from the
+// Cloudflare Worker in one call. Joel's real, explicit ask: a single
+// image per post doesn't read as a real social post the way multi-image
+// carousels do, matching how creators actually post today.
+async function _generateImageBlobs(imagePrompt, n = 1) {
   const res = await fetch("/api/mediapipe?action=image", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: imagePrompt }),
+    body: JSON.stringify({ prompt: imagePrompt, n }),
   });
   const data = await res.json();
-  if (!res.ok || (!data.b64_json && !data.imageUrl)) {
+  if (!res.ok || !Array.isArray(data.images) || data.images.length === 0) {
     throw new Error(data.error || "Image generation failed — no real image data returned");
   }
-  let blob;
-  if (data.b64_json) {
-    const byteChars = atob(data.b64_json);
+  return data.images.map((b64) => {
+    const byteChars = atob(b64);
     const byteNumbers = new Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
-    blob = new Blob([new Uint8Array(byteNumbers)], { type: "image/png" });
-  } else {
-    const imgRes = await fetch(data.imageUrl);
-    blob = await imgRes.blob();
+    return new Blob([new Uint8Array(byteNumbers)], { type: "image/png" });
+  });
+  // REAL, HONEST NOTE: the underlying generated images come back at
+  // whatever size the Cloudflare Worker/model produces (no per-platform
+  // width/height control server-side) — the CSS aspect-ratio box in each
+  // platform card still displays the platform's real correct SHAPE
+  // (object-fit:cover crops to it), even though actual pixel dimensions
+  // aren't platform-specific.
+}
+
+// REAL, client-side caption-burn — draws bold text onto the image via
+// <canvas>, matching how real creators style hook/quote text directly on
+// a post image (not just in the caption field below it). No new API
+// needed — this is pure browser Canvas 2D.
+async function _burnTextOnImage(blob, text) {
+  if (!text || !text.trim()) return blob;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+
+  // Real, simple readable style: bottom-anchored, dark gradient behind
+  // the text so it stays legible over any background, word-wrapped to
+  // the image width.
+  const fontSize = Math.round(canvas.width * 0.055);
+  ctx.font = `800 ${fontSize}px system-ui, -apple-system, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+
+  const maxWidth = canvas.width * 0.88;
+  const words = text.trim().split(/\s+/);
+  const lines = [];
+  let line = "";
+  for (const w of words) {
+    const test = line ? `${line} ${w}` : w;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      lines.push(line);
+      line = w;
+    } else {
+      line = test;
+    }
   }
-  // REAL, HONEST CORRECTION: NVIDIA's images/generations API has no
-  // real "size" parameter (confirmed against their own official code
-  // sample — only prompt/n/response_format/extra_body:{seed,steps}
-  // actually exist). Images come back at whatever NVIDIA's own default
-  // resolution is — real per-platform pixel dimensions aren't
-  // controllable server-side. The CSS aspect-ratio box below still
-  // displays each platform's real correct SHAPE (object-fit:cover crops
-  // to it), even though the underlying generated image's actual pixel
-  // size isn't platform-specific.
-  return { blob };
+  if (line) lines.push(line);
+
+  const lineHeight = fontSize * 1.25;
+  const blockHeight = lines.length * lineHeight;
+  const gradientHeight = blockHeight + fontSize * 1.6;
+  const gradient = ctx.createLinearGradient(0, canvas.height - gradientHeight, 0, canvas.height);
+  gradient.addColorStop(0, "rgba(0,0,0,0)");
+  gradient.addColorStop(1, "rgba(0,0,0,0.72)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, canvas.height - gradientHeight, canvas.width, gradientHeight);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.lineWidth = fontSize * 0.06;
+  let y = canvas.height - fontSize * 0.9 - (lines.length - 1) * lineHeight;
+  for (const l of lines) {
+    ctx.strokeText(l, canvas.width / 2, y);
+    ctx.fillText(l, canvas.width / 2, y);
+    y += lineHeight;
+  }
+
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b || blob), "image/png"));
 }
 
 function _blobToBase64(blob) {
@@ -217,6 +269,15 @@ function _injectStyles() {
 .cl-platform-title { font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
 .cl-badge-live { color: #4ade80; font-size: 9px; border: 1px solid rgba(74,222,128,0.4); border-radius: 10px; padding: 1px 7px; flex-shrink: 0; }
 .cl-badge-soon { color: #9ca3af; font-size: 9px; border: 1px solid rgba(156,163,175,0.4); border-radius: 10px; padding: 1px 7px; flex-shrink: 0; }
+.cl-image-strip {
+  display: flex; gap: 6px; overflow-x: auto; margin-top: 8px;
+  flex-shrink: 0;
+}
+.cl-image-strip::-webkit-scrollbar { height: 4px; }
+.cl-image-strip::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.3); border-radius: 2px; }
+.cl-image-strip .cl-preview-img {
+  flex: 0 0 120px; width: 120px; margin-top: 0;
+}
 .cl-preview-img {
   /* REAL FIX: cap displayed height regardless of the real aspect ratio,
      so a tall 9:16 image never blows out the card — object-fit:cover
@@ -328,6 +389,36 @@ function _renderPlatformCard(platform, container) {
   briefInput.placeholder = "Optional brief...";
   card.appendChild(briefInput);
 
+  const optsRow = document.createElement("div");
+  optsRow.style.cssText = "display:flex;gap:6px;margin-top:8px;align-items:center;";
+
+  const countLabel = document.createElement("label");
+  countLabel.style.cssText = "font-size:10px;color:#9ca3af;display:flex;align-items:center;gap:4px;";
+  countLabel.textContent = "Images:";
+  const countSelect = document.createElement("select");
+  countSelect.className = "cl-input";
+  countSelect.style.cssText = "width:auto;padding:4px 6px;font-size:11px;";
+  [1, 2, 3, 4, 5].forEach((n) => {
+    const opt = document.createElement("option");
+    opt.value = n;
+    opt.textContent = n;
+    if (n === 3) opt.selected = true; // real, sensible default matching Joel's "3, 4, or 5 would be good"
+    countSelect.appendChild(opt);
+  });
+  countLabel.appendChild(countSelect);
+  optsRow.appendChild(countLabel);
+
+  const burnLabel = document.createElement("label");
+  burnLabel.style.cssText = "font-size:10px;color:#9ca3af;display:flex;align-items:center;gap:4px;";
+  const burnCheckbox = document.createElement("input");
+  burnCheckbox.type = "checkbox";
+  burnCheckbox.checked = true; // real default on, matching "how influencers do it now"
+  burnLabel.appendChild(burnCheckbox);
+  burnLabel.appendChild(document.createTextNode("Text on image"));
+  optsRow.appendChild(burnLabel);
+
+  card.appendChild(optsRow);
+
   const genBtn = document.createElement("button");
   genBtn.className = "cl-btn";
   genBtn.style.marginTop = "8px";
@@ -339,32 +430,38 @@ function _renderPlatformCard(platform, container) {
   statusEl.className = "cl-status";
   card.appendChild(statusEl);
 
-  let generated = null;
+  let generated = null; // { ...content, blobs: [Blob, ...] } — blobs[0] used for posting today
 
   genBtn.onclick = async () => {
     genBtn.disabled = true;
     statusEl.textContent = "Generating content...";
     try {
       const brief = briefInput.value.trim();
+      const n = Number(countSelect.value) || 1;
+      const burnText = burnCheckbox.checked;
       const content = await _generateContentJSON(`a ${platform.label} post`, brief);
-      statusEl.textContent = `Generating image (${platform.width}×${platform.height})...`;
-      const { blob } = await _generateImageBlob(content.imagePrompt);
-      const blobUrl = URL.createObjectURL(blob);
+      statusEl.textContent = `Generating ${n} image${n > 1 ? "s" : ""} (${platform.width}×${platform.height})...`;
+      let blobs = await _generateImageBlobs(content.imagePrompt, n);
+      if (burnText) {
+        // Real, short hook text burned onto each image — reuses the
+        // first ~8 words of the caption as the on-image hook, matching
+        // how a real caption/hook split typically works for creators.
+        const hook = content.caption.split(/\s+/).slice(0, 8).join(" ");
+        blobs = await Promise.all(blobs.map((b) => _burnTextOnImage(b, hook)));
+      }
 
-      card.querySelectorAll(".cl-preview-img, .cl-caption, .cl-hashtags, .cl-post-btn").forEach(el => el.remove());
+      card.querySelectorAll(".cl-image-strip, .cl-caption, .cl-hashtags, .cl-post-btn").forEach(el => el.remove());
 
-      const img = document.createElement("img");
-      img.className = "cl-preview-img";
-      // Real, actual dimensions the model produced — may differ from
-      // the platform's ideal ratio since FLUX only supports a fixed set
-      // of output sizes (see api/mediapipe.js's real snapping logic).
-      // Real, honest: display shape uses the platform's own defined
-      // aspect ratio (object-fit:cover crops the generated image to
-      // fit it) — the underlying image's real pixel dimensions come
-      // from NVIDIA's own default, not a per-platform-controlled size.
-      img.style.aspectRatio = `${platform.width} / ${platform.height}`;
-      img.src = blobUrl;
-      card.appendChild(img);
+      const strip = document.createElement("div");
+      strip.className = "cl-image-strip";
+      blobs.forEach((blob) => {
+        const img = document.createElement("img");
+        img.className = "cl-preview-img";
+        img.style.aspectRatio = `${platform.width} / ${platform.height}`;
+        img.src = URL.createObjectURL(blob);
+        strip.appendChild(img);
+      });
+      card.appendChild(strip);
 
       const cap = document.createElement("div");
       cap.className = "cl-caption";
@@ -376,7 +473,7 @@ function _renderPlatformCard(platform, container) {
       tags.textContent = (content.hashtags || []).map(t => `#${t.replace(/^#/, "")}`).join("  ");
       card.appendChild(tags);
 
-      generated = { ...content, blob };
+      generated = { ...content, blobs };
 
       if (platform.live) {
         const postBtn = document.createElement("button");
@@ -386,12 +483,16 @@ function _renderPlatformCard(platform, container) {
         postBtn.style.background = "rgba(74,222,128,0.15)";
         postBtn.style.borderColor = "rgba(74,222,128,0.4)";
         postBtn.style.color = "#4ade80";
-        postBtn.textContent = `Post to ${platform.label}`;
+        // Real, honest label — Bluesky posting today only sends the
+        // FIRST generated image (api/social.js's existing handler takes
+        // a single imageBase64, never confirmed to support multiple
+        // images per post, so not guessing that it does).
+        postBtn.textContent = blobs.length > 1 ? `Post to ${platform.label} (1st image)` : `Post to ${platform.label}`;
         postBtn.onclick = async () => {
           postBtn.disabled = true;
           postBtn.textContent = "Posting...";
           try {
-            const base64 = await _blobToBase64(generated.blob);
+            const base64 = await _blobToBase64(generated.blobs[0]);
             const result = await _postToBluesky(generated.caption, base64);
             if (!result.ok) throw new Error(result.error);
             statusEl.textContent = `✅ Posted`;
@@ -423,7 +524,7 @@ async function _handlePostToAll(platformCards, statusOutput) {
     const generated = ref.getGenerated();
     if (!generated) continue;
     try {
-      const base64 = await _blobToBase64(generated.blob);
+      const base64 = await _blobToBase64(generated.blobs[0]);
       const result = await _postToBluesky(generated.caption, base64);
       statusOutput.textContent = result.ok ? `✅ Posted to ${platform.label}` : `❌ ${platform.label} failed: ${result.error}`;
     } catch (e) {
@@ -510,7 +611,7 @@ export function openContentLab() {
     resultWrap.textContent = "Generating...";
     createOutput.prepend(resultWrap);
     try {
-      const { blob } = await _generateImageBlob(prompt);
+      const [blob] = await _generateImageBlobs(prompt, 1);
       const url = URL.createObjectURL(blob);
       resultWrap.remove();
       _renderCreateResult(createOutput, { title: "🖼️ Picture", imgUrl: url });
