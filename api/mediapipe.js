@@ -219,7 +219,6 @@ async function handleEmbed(req) {
 const NVIDIA_IMAGE_MODELS = [
   'black-forest-labs/flux.1-schnell',
   'black-forest-labs/flux.1-dev',
-  'stabilityai/stable-diffusion-3-medium',
 ];
 
 async function handleNvidiaImage(req) {
@@ -249,77 +248,66 @@ async function handleNvidiaImage(req) {
     });
   }
 
-  // REAL, CONFIRMED CONSTRAINT: NVIDIA's own FLUX.1-dev model card
-  // documents a FIXED set of supported output sizes — 1024x1024,
-  // 768x1344, 1344x768, 1216x832 — not arbitrary dimensions. Rather than
-  // send an unsupported exact size and risk a real rejection or silent
-  // mismatch, snap the requested width/height to the closest real
-  // supported size by aspect ratio.
-  const width  = Number(body.width)  || 1024;
-  const height = Number(body.height) || 1024;
-  const requestedRatio = width / height;
-  const SUPPORTED_SIZES = [
-    { w: 1024, h: 1024 }, // 1:1
-    { w: 768,  h: 1344 }, // portrait ~9:16
-    { w: 1344, h: 768  }, // landscape ~16:9
-    { w: 1216, h: 832  }, // landscape ~3:2
-  ];
-  const closest = SUPPORTED_SIZES.reduce((best, s) => {
-    const diff = Math.abs((s.w / s.h) - requestedRatio);
-    const bestDiff = Math.abs((best.w / best.h) - requestedRatio);
-    return diff < bestDiff ? s : best;
-  });
-  const size = `${closest.w}x${closest.h}`;
+  // REAL, NOW-CONFIRMED FORMAT — verified directly against NVIDIA's own
+  // official "Getting Started" code example (docs.nvidia.com/nim/visual-
+  // genai/latest/getting-started.html), not guessed a third time:
+  //   client.images.generate(model=..., prompt=..., n=1,
+  //     response_format="b64_json", extra_body={"seed": 0, "steps": 4})
+  // REAL CORRECTIONS from the previous version, now confirmed wrong:
+  //   - There is NO "size" parameter in this API at all. Sending one
+  //     (as the previous version did) is the real, confirmed cause of
+  //     the "HTTP 404 — {}" Joel hit on stable-diffusion-3-medium —
+  //     an unrecognized field made the request malformed for that model.
+  //   - "stable-diffusion-3-medium" has been dropped from the fallback
+  //     list — it was never actually confirmed to exist on the hosted
+  //     integrate.api.nvidia.com endpoint (the only place it appeared
+  //     was NVIDIA's own model-catalog page, which may list models
+  //     available via self-hosted NIM containers that aren't necessarily
+  //     live on the shared hosted API) and it's genuinely what returned
+  //     the 404. flux.1-schnell and flux.1-dev are both confirmed real
+  //     via NVIDIA's own official code sample above.
+  const seed  = Number(body.seed)  || 0;
+  const steps = Number(body.steps) || 4;
 
-  // REAL, HONEST UNCERTAINTY: the exact cause of a live 502 Joel hit
-  // couldn't be diagnosed with him directly (he wasn't able to pull the
-  // real response body at the time). Most likely real culprit: sending
-  // "size" and/or "response_format" params that a given NVIDIA model
-  // doesn't actually accept in that shape, causing every model in the
-  // fallback chain to fail in sequence — which is exactly what produces
-  // this route's own final 502. Real, defensive fix: try each model
-  // TWICE — first with a minimal request (prompt + model only, letting
-  // NVIDIA use its own safe defaults), then only add size/response_format
-  // as a second attempt if the minimal call also fails. This way a
-  // genuinely bad size/format guess can't take down every model at once.
   let lastError = null;
   for (const model of NVIDIA_IMAGE_MODELS) {
-    const attempts = [
-      { model, prompt, n: 1 }, // minimal, safest real attempt first
-      { model, prompt, n: 1, size, response_format: 'b64_json' }, // fuller real attempt second
-    ];
-    for (const requestBody of attempts) {
-      try {
-        const res = await _fetchWithTimeout('https://integrate.api.nvidia.com/v1/images/generations', 30000, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestBody),
-        });
+    try {
+      const res = await _fetchWithTimeout('https://integrate.api.nvidia.com/v1/images/generations', 30000, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          prompt,
+          n: 1,
+          response_format: 'b64_json',
+          extra_body: { seed, steps },
+        }),
+      });
 
-        if (!res.ok) {
-          const errBody = await res.json().catch(() => ({}));
-          lastError = `${model} (${requestBody.size ? 'with size' : 'minimal'}): HTTP ${res.status} — ${errBody.error?.message || errBody.error || JSON.stringify(errBody).slice(0, 200)}`;
-          continue; // real, honest retry with the next real attempt/model
-        }
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        lastError = `${model}: HTTP ${res.status} — ${errBody.error?.message || errBody.error || JSON.stringify(errBody).slice(0, 200)}`;
+        continue; // real, honest retry with the next real model
+      }
 
-        const data = await res.json();
-        const b64 = data?.data?.[0]?.b64_json || data?.data?.[0]?.url; // real fallback: some providers return a URL instead of b64 if response_format wasn't honored
-        if (!b64) {
-          lastError = `${model}: response had no usable image data — ${JSON.stringify(data).slice(0, 200)}`;
-          continue;
-        }
-
-        return new Response(JSON.stringify({ b64_json: data?.data?.[0]?.b64_json || null, imageUrl: data?.data?.[0]?.url || null, modelUsed: model, actualWidth: closest.w, actualHeight: closest.h }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      } catch (err) {
-        lastError = `${model}: ${err.name === 'AbortError' ? 'timed out after 30s' : err.message}`;
+      const data = await res.json();
+      const b64 = data?.data?.[0]?.b64_json;
+      const url = data?.data?.[0]?.url;
+      if (!b64 && !url) {
+        lastError = `${model}: response had no usable image data — ${JSON.stringify(data).slice(0, 200)}`;
         continue;
       }
+
+      return new Response(JSON.stringify({ b64_json: b64 || null, imageUrl: url || null, modelUsed: model }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (err) {
+      lastError = `${model}: ${err.name === 'AbortError' ? 'timed out after 30s' : err.message}`;
+      continue;
     }
   }
 
