@@ -4,7 +4,7 @@
 
 const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCapturer, powerMonitor, globalShortcut } = require('electron');
 const path = require('path');
-const { startWakeWordEngine, stopWakeWordEngine, setRendererLogSink } = require('./wakeword-engine');
+const { startVoiceEngine, stopVoiceEngine, setRendererLogSink } = require('./voice-engine');
 const heartbeat = require('./heartbeat');
 
 // ── Main-process log forwarding to renderer DevTools ─────────────────────
@@ -935,44 +935,37 @@ function setupAutoStart() {
 // app's resources directory — accessed at runtime via
 // process.resourcesPath (see startWakeWord below for why, and the real
 // bug this fixes).
+// REAL, UPDATED (this session): replaces the previous ONNX-classifier
+// wake-word pipeline with voice-engine.js's continuous-transcription
+// approach — Joel explicitly asked to stop chasing trained wake-word
+// models after multiple failed attempts. Same bundled sox.exe as before,
+// same extraResources pattern (now also bundling transcribe-cli.exe and
+// a Whisper GGUF model — see package.json + the CI workflow).
 function startWakeWord() {
-  // extraResources (declared in package.json's build.extraResources) are
-  // copied to the packaged app's resources directory, accessible via
-  // process.resourcesPath — NOT relative to __dirname. This was a real
-  // bug in the first version of this function: __dirname only resolves
-  // correctly here in dev mode running unpacked; once electron-builder
-  // packages the app (confirmed: your build succeeded), main.js itself
-  // lives inside app.asar, and __dirname pointed at the wrong location,
-  // so loadModels() was silently failing to find any of the 3 .onnx
-  // files and the whole engine never started — which is exactly why
-  // there was no mic-in-use indicator at all. Verified against
-  // electron-builder's own docs before fixing, not guessed.
   const resourcesPath  = process.resourcesPath;
   const soxBinaryPath  = path.join(resourcesPath, 'sox', 'sox.exe');
 
-  // REAL FIX: forwards every wake-word log line (model loading, SoX
-  // status, detection scores, errors) to the renderer via IPC, so it
-  // finally shows up in DevTools (F12) — previously these only reached a
-  // real terminal window, which genuinely does not exist in a packaged
-  // .exe, meaning wake-word activity was always invisible to Joel no
-  // matter how many times he checked the console.
   setRendererLogSink((channel, payload) => {
     if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(channel, payload);
   });
 
-  startWakeWordEngine({
+  startVoiceEngine({
     resourcesPath,
     soxBinaryPath,
     onWakeDetected: () => {
       if (!mainWin) return;
-      // Bring Flow to front so Joel can see it's listening, same as the
-      // existing global-shortcut behavior — then tell the renderer to
-      // start recording via the same IPC push pattern already used for
-      // sentinel-observation/sentinel-toggled.
       if (mainWin.isMinimized()) mainWin.restore();
       mainWin.show();
       mainWin.focus();
       mainWin.webContents.send('wakeword-detected');
+    },
+    // REAL, NEW — the actual transcribed command text, fired once the
+    // engine detects the user has stopped talking after a wake phrase.
+    // The renderer (app.js / content-lab.js) is responsible for actually
+    // routing this text into real actions — this only delivers it.
+    onCommand: (text) => {
+      if (!mainWin || mainWin.isDestroyed()) return;
+      mainWin.webContents.send('voice-command', { text });
     },
   });
 }
@@ -1002,4 +995,4 @@ app.on('window-all-closed',() => {
   // it to meaningfully decide.
   /* stay in tray */
 });
-app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); stopWakeWordEngine(); heartbeat.stopHeartbeat(); });
+app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); stopVoiceEngine(); heartbeat.stopHeartbeat(); });
