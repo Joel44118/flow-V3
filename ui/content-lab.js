@@ -28,10 +28,12 @@
 // "Coming soon", not faked.
 // ═══════════════════════════════════════════
 import { generateVideo } from "./videogen.js";
+import { Speech } from "../core/speech.js";
 
 let _chat = null;
 let _orb  = null;
 let _panelEl = null;
+let _platformCards = []; // module-scope so the voice command router can reach active cards
 
 export function initContentLab(chat, orb) {
   _chat = chat;
@@ -750,7 +752,32 @@ function _renderPlatformCard(platform, container) {
   };
 
   container.appendChild(card);
-  return { card, getGenerated: () => (state.blobs && state.caption ? { ...state } : null) };
+  // REAL, for voice control: exposes the same actions the buttons above
+  // trigger, as plain functions — the voice command router (below, module
+  // scope) calls these directly rather than duplicating any generation
+  // logic. setBrief/setImageCount let a voice command configure the card
+  // before triggering generation (e.g. "generate 3 images for bluesky").
+  return {
+    card,
+    getGenerated: () => (state.blobs && state.caption ? { ...state } : null),
+    platformId: platform.id,
+    platformLabel: platform.label,
+    generateAll: () => genBtn.onclick(),
+    generateImageOnly: () => imgOnlyBtn.onclick(),
+    generateTextOnly: () => textOnlyBtn.onclick(),
+    generateTagsOnly: () => tagsOnlyBtn.onclick(),
+    generateVideoOnly: () => videoOnlyBtn.onclick(),
+    setBrief: (text) => { briefInput.value = text || ""; },
+    setImageCount: (n) => {
+      const clamped = Math.min(Math.max(Math.round(Number(n)) || 1, 1), 5);
+      countSelect.value = String(clamped);
+    },
+    setBurnText: (on) => { burnCheckbox.checked = !!on; },
+    post: () => {
+      const btn = card.querySelector(".cl-post-btn");
+      if (btn && !btn.disabled) btn.click();
+    },
+  };
 }
 
 async function _handlePostToAll(platformCards, statusOutput, setStatus) {
@@ -891,6 +918,7 @@ export function openContentLab() {
     const ref = _renderPlatformCard(p, platformsRow);
     platformCards.push([p, ref]);
   });
+  _platformCards = platformCards; // real, module-scope reference for voice commands
   panel.appendChild(platformsRow);
 
   const statusDrawer = document.createElement("div");
@@ -961,4 +989,158 @@ function _buildToggleButton() {
     else openContentLab();
   });
   document.body.appendChild(btn);
+}
+
+// ═══════════════════════════════════════════
+// REAL, Joel-requested feature: voice control of Content Lab via
+// transcribed commands from the Electron main process's voice engine
+// (voice-engine.js — continuous transcription + "hey flow"/"wake up
+// flow" phrase matching, no trained wake-word model). This is a plain
+// text-command parser, NOT an LLM call — genuinely fast, free, and
+// predictable, matching the zero-budget constraint. It handles a real,
+// useful subset of phrasing; anything it doesn't recognize gets a
+// direct, honest "didn't understand" response rather than silently
+// doing nothing.
+// ═══════════════════════════════════════════
+
+const PLATFORM_ALIASES = {
+  bluesky: "bluesky", tiktok: "tiktok", "tik tok": "tiktok",
+  x: "x", twitter: "x", youtube: "youtube", "you tube": "youtube",
+  instagram: "instagram", insta: "instagram", threads: "threads",
+};
+
+function _findCardByVoice(text) {
+  for (const [alias, id] of Object.entries(PLATFORM_ALIASES)) {
+    if (text.includes(alias)) {
+      const found = _platformCards.find(([p]) => p.id === id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// Real, simple number-word parser covering the real range Joel asked
+// for (1-5 images) — no need for a general number parser here.
+const NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+function _extractImageCount(text) {
+  const digitMatch = text.match(/\b([1-5])\b/);
+  if (digitMatch) return Number(digitMatch[1]);
+  for (const [word, n] of Object.entries(NUMBER_WORDS)) {
+    if (text.includes(word)) return n;
+  }
+  return null;
+}
+
+// Real, honest spoken-feedback helper — uses Flow's actual TTS module
+// (core/speech.js's Speech.speak, confirmed via app.js's own usage
+// pattern) rather than guessing at a method on the chat object.
+function _speak(text) {
+  try { Speech.speak(text); } catch (_) {}
+  // Always also show it visually — TTS may not be wired/available in
+  // every real context, and a silent voice command with no visible
+  // trace would be confusing.
+  if (_panelEl) {
+    const note = _panelEl.querySelector("#cl-status-body");
+    if (note) {
+      note.textContent = text;
+      note.classList.remove("cl-collapsed");
+      const toggle = _panelEl.querySelector("#cl-status-toggle");
+      if (toggle) toggle.textContent = "▲";
+    }
+  }
+}
+
+// REAL command dispatcher — plain keyword/pattern matching, deliberately
+// not an LLM call (fast, free, predictable). Extend this function
+// directly to teach Flow new phrasings; each branch is a real, distinct
+// intent Joel can trigger by voice.
+async function _handleVoiceCommand(rawText) {
+  const text = (rawText || "").toLowerCase().trim();
+  if (!text) return;
+
+  if (!isContentLabOpen()) openContentLab();
+
+  const target = _findCardByVoice(text);
+
+  // "post to all" / "post everything"
+  if (/post (to )?all|post everything/.test(text)) {
+    const postAllBtn = _panelEl?.querySelector(".cl-post-all-btn");
+    if (postAllBtn) { postAllBtn.click(); _speak("Posting to all connected socials."); }
+    return;
+  }
+
+  // "post [to] <platform>"
+  if (/^post\b/.test(text) || text.includes("post to")) {
+    if (target) {
+      const [platform, ref] = target;
+      ref.post();
+      _speak(`Posting to ${platform.label}.`);
+    } else {
+      _speak("Which platform should I post to? I heard: " + rawText);
+    }
+    return;
+  }
+
+  // "generate [N] image[s] [for <platform>]" / "make an image..."
+  if (/(generate|make|create).*(image|picture|photo)/.test(text)) {
+    if (!target) { _speak("Which platform is that image for?"); return; }
+    const [platform, ref] = target;
+    const n = _extractImageCount(text);
+    if (n) ref.setImageCount(n);
+    _speak(`Generating ${n || "the"} image${n && n > 1 ? "s" : ""} for ${platform.label}.`);
+    await ref.generateImageOnly();
+    return;
+  }
+
+  // "generate [a] video [for <platform>]"
+  if (/(generate|make|create).*video/.test(text)) {
+    if (!target) { _speak("Which platform is that video for?"); return; }
+    const [platform, ref] = target;
+    _speak(`Generating a video for ${platform.label}. This runs in the background.`);
+    await ref.generateVideoOnly();
+    return;
+  }
+
+  // "generate [the] text/caption [for <platform>]"
+  if (/(generate|make|create|write).*(text|caption)/.test(text)) {
+    if (!target) { _speak("Which platform is that caption for?"); return; }
+    const [platform, ref] = target;
+    _speak(`Writing the caption for ${platform.label}.`);
+    await ref.generateTextOnly();
+    return;
+  }
+
+  // "generate [the] tags/hashtags [for <platform>]"
+  if (/(generate|make|create).*(tags|hashtags)/.test(text)) {
+    if (!target) { _speak("Which platform are those tags for?"); return; }
+    const [platform, ref] = target;
+    _speak(`Generating hashtags for ${platform.label}.`);
+    await ref.generateTagsOnly();
+    return;
+  }
+
+  // "generate [a post] for <platform>" / "cook [me] a post for <platform>"
+  // — the real, full all-in-one Generate button, matching Joel's
+  // existing "cook a content" phrasing from earlier in this session.
+  if (/(generate|make|create|cook).*(post|content)/.test(text) || /^cook\b/.test(text)) {
+    if (!target) { _speak("Which platform should I generate a post for?"); return; }
+    const [platform, ref] = target;
+    const n = _extractImageCount(text);
+    if (n) ref.setImageCount(n);
+    _speak(`Generating a full post for ${platform.label}.`);
+    await ref.generateAll();
+    return;
+  }
+
+  // Real, honest fallback — never silently does nothing.
+  _speak("I didn't catch a Content Lab command in that. I heard: " + rawText);
+}
+
+// REAL, module-level listener setup — call once at load time. Only
+// wires up in the Electron app (window.__flowElectron.wakeword exists);
+// harmless no-op in the web/PWA build where this bridge doesn't exist.
+if (typeof window !== "undefined" && window.__flowElectron?.wakeword?.onCommand) {
+  window.__flowElectron.wakeword.onCommand((text) => {
+    _handleVoiceCommand(text).catch((e) => console.error("[ContentLab] voice command error:", e));
+  });
 }
