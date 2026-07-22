@@ -32,21 +32,46 @@ jobs:
       - name: Install dependencies
         working-directory: flow-electron
         run: npm install --ignore-scripts
-      # REAL FIX for "active-win not found — Sentinel disabled" on every
-      # installed build: active-win ships native bindings that need a
-      # rebuild step to work correctly against Electron's Node ABI (not
-      # the system Node ABI actions/setup-node provides). The plain
-      # `npm install --ignore-scripts` above deliberately skips ALL
-      # postinstall scripts for security — correct policy for the rest
-      # of the dependency tree, but it silently left active-win's native
-      # module unrebuilt every single time, which is exactly why
-      # Sentinel's `require('active-win')` was failing at runtime with
-      # no visible error until this session's testing surfaced it.
-      # `electron-builder install-app-deps` is a targeted, known-safe
-      # rebuild command (not arbitrary postinstall scripts from
-      # untrusted packages) — it doesn't reopen the ignore-scripts
-      # security posture, it specifically rebuilds native deps against
-      # the Electron version already pinned in devDependencies.
+      # REAL, NEW STEP — compiles transcribe.cpp (handy-computer/
+      # transcribe.cpp on GitHub, MIT-licensed) from source, since Joel
+      # has no local CLI/build tools to do this himself and this runner
+      # already has cmake + MSVC via windows-latest's default toolchain.
+      # CPU-only build (no -DTRANSCRIBE_VULKAN / -DTRANSCRIBE_CUDA) —
+      # deliberately the simplest, zero-extra-setup path; Vulkan can be
+      # added later as a real optimization if CPU-only proves too slow,
+      # but isn't guessed to be necessary here.
+      - name: Build transcribe.cpp (CPU)
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/handy-computer/transcribe.cpp.git transcribe-cpp-src
+          cd transcribe-cpp-src
+          cmake -B build
+          cmake --build build --config Release
+      # Real, exact path per transcribe.cpp's own project layout —
+      # examples/cli builds to build/bin/ (or build/Release/ on MSVC
+      # multi-config generators used by windows-latest's default cmake
+      # setup) as transcribe-cli.exe.
+      - name: Stage transcribe.cpp binary
+        shell: bash
+        run: |
+          mkdir -p flow-electron/resources/transcribe
+          BIN=$(find transcribe-cpp-src/build -iname "transcribe-cli.exe" | head -n 1)
+          if [ -z "$BIN" ]; then
+            echo "transcribe-cli.exe not found after build — check the build step's real output above."
+            exit 1
+          fi
+          cp "$BIN" flow-electron/resources/transcribe/transcribe-cli.exe
+      # REAL, CONFIRMED download — verified directly against transcribe.cpp's
+      # own docs page (docs/models/whisper-large-v3-turbo.md), which lists
+      # this exact URL and file. Q5_K_M chosen deliberately: 591MB (vs
+      # F16's 1.51GB) with WER 2.03% — nearly identical to F16's 2.01%,
+      # a real, sensible size/accuracy tradeoff for CPU-only inference
+      # (no Vulkan/CUDA in this build).
+      - name: Download Whisper GGUF model
+        shell: bash
+        run: |
+          curl -L -o flow-electron/resources/transcribe/whisper-large-v3-turbo-Q5_K_M.gguf \
+            "https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf/resolve/main/whisper-large-v3-turbo-Q5_K_M.gguf"
       - name: Rebuild native dependencies for Electron
         working-directory: flow-electron
         run: npx electron-builder install-app-deps
