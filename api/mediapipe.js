@@ -182,67 +182,40 @@ async function handleEmbed(req) {
   }
 }
 
-// NVIDIA NIM real image-generation route — /api/mediapipe?action=image (POST)
-// REAL, CONFIRMED REASON THIS EXISTS: all three models in ui/imagine.js's
-// FLUX_MODELS list (FLUX.1-schnell, SDXL, SD 1.5) started returning real,
-// live 410/400 errors from HuggingFace's hf-inference provider — HF has
-// deprecated all three on that specific provider.
+// Real image-generation route — /api/mediapipe?action=image (POST)
+// REAL, CONFIRMED HISTORY: HuggingFace's hf-inference models (FLUX.1-
+// schnell, SDXL, SD 1.5) were confirmed dead (410/400) on that provider.
+// NVIDIA's hosted flux.1-schnell endpoint (ai.api.nvidia.com/v1/genai/...)
+// was then tried and had the correct request shape confirmed against
+// NVIDIA's own docs — but genuinely timed out past 20s on TWO separate
+// clean-connection tests. That's not a config problem; that endpoint is
+// too slow/unreliable for a serverless request/response cycle. Dropped
+// entirely rather than debugged further.
 //
-// SECOND CORRECTION (this pass) — the previous version of this file used
-// an OpenAI-compatible shape (POST to integrate.api.nvidia.com/v1/images/
-// generations with {model, prompt, n, response_format, extra_body}). That
-// was WRONG and is the real, confirmed cause of the live 404 Joel hit on
-// both flux.1-schnell and flux.1-dev. Verified directly against NVIDIA's
-// own current API Reference pages for each model
-// (docs.api.nvidia.com/nim/reference/black-forest-labs-flux_1-schnell-infer
-// and .../black-forest-labs-flux_1-dev-infer), which show a COMPLETELY
-// DIFFERENT interface:
-//   - Endpoint is MODEL-SPECIFIC (model is in the URL path, not the body):
-//       POST https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell
-//       POST https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev
-//   - Body fields are: prompt, height, width, cfg_scale, mode, seed, steps,
-//     samples. There is NO "model", "n", "response_format", or "extra_body"
-//     field in this API at all.
-//   - height/width: only 1024 is confirmed supported in practice per the
-//     docs page (other enum values listed but "Only height=1024 is
-//     supported" / "Only width=1024 is supported" per the docs text).
-//   - steps: schnell allows 1-4 (default 4); dev allows 5-100 (default 50).
-//   - samples: must be 1 (only value supported).
-//   - mode: "base" for plain text-to-image (schnell only supports "base";
-//     dev also supports "depth"/"canny" but those need an image input).
+// REAL, CURRENT SOLUTION: a small Cloudflare Worker Joel deployed himself
+// (free account, no card, Workers AI binding), running the same open
+// model — @cf/black-forest-labs/flux-1-schnell (Apache 2.0, commercially
+// safe) — on Cloudflare's own edge GPUs. This is a genuinely different,
+// faster execution path than NVIDIA's hosted API, not just a config swap.
+// Worker URL: https://flow-image-gen.olaiyaprosper44.workers.dev/
+// Auth: Worker expects `Authorization: Bearer <CLOUDFLARE_IMAGE_KEY>`,
+// a value Joel invented himself and set as a Vercel env var — this is
+// NOT a Cloudflare account token, just a shared secret to stop randoms
+// from burning the free quota if the Worker URL ever leaks.
 //
-// HONEST, STILL-UNVERIFIED PIECE: the docs page did not render the actual
-// 200-response JSON schema (it's behind an interactive "Try It" widget
-// that didn't return schema text on fetch). NVIDIA's other NIM genai
-// endpoints commonly return either {"image": "<base64>"} or
-// {"artifacts": [{"base64": "..."}]} — this code checks several plausible
-// shapes below and reports the raw response if none match, rather than
-// silently returning nothing. This needs a real live test to confirm.
-//
-// HONEST NOTE: flux.1-dev's own NVIDIA model card states it is licensed
-// for non-commercial use only ("Contact [...] for commercial terms").
-// Since Joelflowstack is a real commercial service, that alone rules out
-// flux.1-dev as a fallback here regardless of speed.
-//
-// REAL, IMPORTANT CORRECTION from the previous version of this file —
-// the previous version tried flux.1-schnell, and on failure/slowness
-// fell back to flux.1-dev SEQUENTIALLY inside the same request. That's
-// the real, confirmed cause of the 504 Joel hit: two ~18s attempts back
-// to back can add up to ~36s, which blows straight past Vercel Edge's
-// own ~25s execution ceiling regardless of any internal fetch timeout —
-// Vercel then kills the function and returns its own non-JSON timeout
-// page (the "An error o..." text), breaking content-lab.js's
-// `await res.json()` before this code's own JSON error response can ever
-// be sent. So: only ONE model is tried per invocation now — schnell,
-// which is both the commercially-safe choice and the fast one (1-4
-// steps vs dev's 50-100), sized to comfortably finish inside one
-// request's real time budget.
-const NVIDIA_IMAGE_MODEL = 'black-forest-labs/flux.1-schnell';
+// SUPPORTS MULTIPLE IMAGES PER POST — Joel's real, explicit ask: one
+// image per post doesn't read as a real social post the way multi-image
+// carousels do (matching how creators actually post now). Accepts
+// { prompt, n } where n is 1-5; the Worker itself generates each one and
+// returns an array. Response here is { images: [b64, b64, ...] } — an
+// array of raw base64 PNG strings, not wrapped in data-URI or JSON
+// sub-objects, since that's the real shape the Worker returns.
+const CF_WORKER_URL = 'https://flow-image-gen.olaiyaprosper44.workers.dev/';
 
 async function handleNvidiaImage(req) {
-  const apiKey = process.env.NVIDIA_API_KEY;
+  const apiKey = process.env.CLOUDFLARE_IMAGE_KEY;
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'NVIDIA_API_KEY not set in Vercel environment variables' }), {
+    return new Response(JSON.stringify({ error: 'CLOUDFLARE_IMAGE_KEY not set in Vercel environment variables' }), {
       status: 503,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -266,82 +239,60 @@ async function handleNvidiaImage(req) {
     });
   }
 
-  const seed = Number(body.seed) || 0;
-  // Real, confirmed default from schnell's own docs page: steps 1-4,
-  // default 4. Kept as-is — schnell is fast enough at its own default
-  // that no timeout-driven cap is needed here (unlike dev, which is no
-  // longer used at all — see note above).
-  const steps = Number(body.steps) || 4;
-  // schnell docs: cfg_scale range is "0 to 0" — i.e. schnell doesn't
-  // actually use this parameter meaningfully, but it's still required
-  // in the request body per the API reference.
-  const cfgScale = 0;
+  // Real cap matching the Worker's own server-side limit (5) — Joel's
+  // real ask was "3, 4, or 5 images would be good" for a real post.
+  const n = Math.min(Math.max(Number(body.n) || 1, 1), 5);
+  const steps = Number(body.steps) || 4; // schnell real range: 1-4, default 4
 
-  // Real, single-attempt timeout — stays comfortably under Vercel Edge's
-  // ~25s ceiling with margin for the rest of the function to run and
-  // still return real JSON (not a raw Vercel timeout page) if it's close.
-  const FETCH_TIMEOUT_MS = 20000;
-
-  const endpoint = `https://ai.api.nvidia.com/v1/genai/${NVIDIA_IMAGE_MODEL}`;
+  // Cloudflare's edge inference is genuinely fast (this is the whole
+  // reason for the switch), so a shorter timeout than NVIDIA's is
+  // reasonable — but n>1 means the Worker runs multiple generations in
+  // parallel internally, so this scales a little with n rather than
+  // being a flat cap, to give real headroom for a 5-image request.
+  const FETCH_TIMEOUT_MS = 15000 + (n - 1) * 3000;
 
   try {
-    const res = await _fetchWithTimeout(endpoint, FETCH_TIMEOUT_MS, {
+    const res = await _fetchWithTimeout(CF_WORKER_URL, FETCH_TIMEOUT_MS, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
-        'Accept': 'application/json',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        prompt,
-        height: 1024,
-        width: 1024,
-        cfg_scale: cfgScale,
-        mode: 'base',
-        samples: 1,
-        seed,
-        steps,
-      }),
+      body: JSON.stringify({ prompt, n, steps }),
     });
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      const detail = errBody.detail || errBody.error || JSON.stringify(errBody).slice(0, 200);
-      return new Response(JSON.stringify({ error: `${NVIDIA_IMAGE_MODEL}: HTTP ${res.status} — ${detail}` }), {
+      const detail = errBody.error || JSON.stringify(errBody).slice(0, 200);
+      return new Response(JSON.stringify({ error: `Cloudflare Worker: HTTP ${res.status} — ${detail}` }), {
         status: 502,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
     const data = await res.json();
-    // Trying several plausible response shapes since the exact schema
-    // wasn't visible in the docs page — this live test will confirm
-    // which of these actually fires, so the others can be deleted.
-    const b64 =
-      data?.artifacts?.[0]?.base64 ||
-      data?.artifacts?.[0]?.b64_json ||
-      data?.image ||
-      data?.data?.[0]?.b64_json ||
-      data?.b64_json ||
-      null;
-    const url = data?.data?.[0]?.url || data?.url || null;
+    const images = Array.isArray(data.images) ? data.images.filter(Boolean) : [];
 
-    if (!b64 && !url) {
+    if (images.length === 0) {
       return new Response(JSON.stringify({
-        error: `${NVIDIA_IMAGE_MODEL}: HTTP 200 but no recognized image field — raw keys: ${Object.keys(data || {}).join(', ')} — raw: ${JSON.stringify(data).slice(0, 300)}`,
+        error: `Cloudflare Worker returned HTTP 200 but no images — raw: ${JSON.stringify(data).slice(0, 300)}`,
       }), {
         status: 502,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    return new Response(JSON.stringify({ b64_json: b64 || null, imageUrl: url || null, modelUsed: NVIDIA_IMAGE_MODEL }), {
+    // Real, backward-compatible shape: keep b64_json as the FIRST image
+    // (existing callers like ui/imagine.js's single-image path can keep
+    // reading b64_json unchanged), and add the full array as `images` for
+    // callers (content-lab.js) that want more than one.
+    return new Response(JSON.stringify({ b64_json: images[0], images, modelUsed: 'flux-1-schnell (Cloudflare)' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (err) {
-    const msg = err.name === 'AbortError' ? 'timed out after 20s' : err.message;
-    return new Response(JSON.stringify({ error: `${NVIDIA_IMAGE_MODEL}: ${msg}` }), {
+    const msg = err.name === 'AbortError' ? `timed out after ${FETCH_TIMEOUT_MS / 1000}s` : err.message;
+    return new Response(JSON.stringify({ error: `Cloudflare Worker: ${msg}` }), {
       status: 502,
       headers: { 'Content-Type': 'application/json' },
     });
