@@ -231,39 +231,46 @@ export async function generateImage(promptText, dimensionHint = "") {
     return;
   }
 
-  // Photo/art mode — use FLUX
+  // Photo/art mode — REAL FIX: the old HF FLUX chain (FLUX.1-schnell,
+  // SDXL, SD 1.5) is confirmed fully dead — all three return real,
+  // live 410/400 errors from HuggingFace's hf-inference provider, which
+  // has deprecated them there. Real replacement: the same NVIDIA NIM
+  // image route already built and fixed for Content Lab
+  // (api/mediapipe.js's real, confirmed-working handleNvidiaImage),
+  // reused here instead of a second, duplicate implementation.
   _chat?.add(`Generating ${w}×${h} image — "${cleanPrompt}"...`, "bot");
   _orb?.setState("thinking");
 
-  let token;
   try {
-    token = await getToken();
-  } catch (e) {
-    _chat?.addError(e.message);
+    const res = await fetch("/api/mediapipe?action=image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: cleanPrompt }),
+    });
+    const data = await res.json();
+    if (!res.ok || (!data.b64_json && !data.imageUrl)) {
+      throw new Error(data.error || "No real image data returned");
+    }
+    let blob;
+    if (data.b64_json) {
+      const byteChars = atob(data.b64_json);
+      const byteNumbers = new Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+      blob = new Blob([new Uint8Array(byteNumbers)], { type: "image/png" });
+    } else {
+      const imgRes = await fetch(data.imageUrl);
+      blob = await imgRes.blob();
+    }
+    console.log(`[Imagine] ✓ ${data.modelUsed} — ${blob.size} bytes`);
+    _renderCard(URL.createObjectURL(blob), cleanPrompt, w, h, data.modelUsed?.split("/")[1] || "nvidia");
+    Speech.speak("Image ready, Boss.");
     _orb?.setState("idle");
     return;
+  } catch (e) {
+    console.warn(`[Imagine] NVIDIA image generation failed: ${e.message}`);
   }
 
-  const modelPref = /\brealistic\b|\bphoto\b/.test(combined.toLowerCase()) ? "realistic" : "flux";
-  const models    = modelPref === "realistic"
-    ? [FLUX_MODELS[1], FLUX_MODELS[2], FLUX_MODELS[0]]
-    : FLUX_MODELS;
-
-  for (const model of models) {
-    try {
-      const result  = await callFlux(model.id, cleanPrompt, w, h, model.steps, model.cfg, token);
-      console.log(`[Imagine] ✓ ${model.id} — ${result.blob.size} bytes`);
-      if (result.blob.size < 500) throw new Error("Response too small");
-      _renderCard(URL.createObjectURL(result.blob), cleanPrompt, w, h, model.id.split("/")[1]);
-      Speech.speak("Image ready, Boss.");
-      _orb?.setState("idle");
-      return;
-    } catch (e) {
-      console.warn(`[Imagine] ${model.id}: ${e.message}`);
-    }
-  }
-
-  _chat?.addError("Image generation failed. Check HF_TOKEN is set in Vercel → Settings → Environment Variables.");
+  _chat?.addError("Image generation failed. Check NVIDIA_API_KEY is set in Vercel → Settings → Environment Variables.");
   _orb?.setState("idle");
 }
 
