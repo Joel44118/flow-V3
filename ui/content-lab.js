@@ -89,11 +89,11 @@ Reply with ONLY this JSON, no other text:
 
 // REAL, per-platform image generation — takes real width/height so each
 // platform gets its actual correct aspect ratio, not a shared square.
-async function _generateImageBlob(imagePrompt, width = 1024, height = 1024) {
+async function _generateImageBlob(imagePrompt) {
   const res = await fetch("/api/mediapipe?action=image", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: imagePrompt, width, height }),
+    body: JSON.stringify({ prompt: imagePrompt }),
   });
   const data = await res.json();
   if (!res.ok || (!data.b64_json && !data.imageUrl)) {
@@ -106,12 +106,19 @@ async function _generateImageBlob(imagePrompt, width = 1024, height = 1024) {
     for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
     blob = new Blob([new Uint8Array(byteNumbers)], { type: "image/png" });
   } else {
-    // Real fallback: some providers return a URL instead of base64 —
-    // fetch it directly to get a real usable blob either way.
     const imgRes = await fetch(data.imageUrl);
     blob = await imgRes.blob();
   }
-  return { blob, actualWidth: data.actualWidth || width, actualHeight: data.actualHeight || height };
+  // REAL, HONEST CORRECTION: NVIDIA's images/generations API has no
+  // real "size" parameter (confirmed against their own official code
+  // sample — only prompt/n/response_format/extra_body:{seed,steps}
+  // actually exist). Images come back at whatever NVIDIA's own default
+  // resolution is — real per-platform pixel dimensions aren't
+  // controllable server-side. The CSS aspect-ratio box below still
+  // displays each platform's real correct SHAPE (object-fit:cover crops
+  // to it), even though the underlying generated image's actual pixel
+  // size isn't platform-specific.
+  return { blob };
 }
 
 function _blobToBase64(blob) {
@@ -341,7 +348,7 @@ function _renderPlatformCard(platform, container) {
       const brief = briefInput.value.trim();
       const content = await _generateContentJSON(`a ${platform.label} post`, brief);
       statusEl.textContent = `Generating image (${platform.width}×${platform.height})...`;
-      const { blob, actualWidth, actualHeight } = await _generateImageBlob(content.imagePrompt, platform.width, platform.height);
+      const { blob } = await _generateImageBlob(content.imagePrompt);
       const blobUrl = URL.createObjectURL(blob);
 
       card.querySelectorAll(".cl-preview-img, .cl-caption, .cl-hashtags, .cl-post-btn").forEach(el => el.remove());
@@ -351,7 +358,11 @@ function _renderPlatformCard(platform, container) {
       // Real, actual dimensions the model produced — may differ from
       // the platform's ideal ratio since FLUX only supports a fixed set
       // of output sizes (see api/mediapipe.js's real snapping logic).
-      img.style.aspectRatio = `${actualWidth} / ${actualHeight}`;
+      // Real, honest: display shape uses the platform's own defined
+      // aspect ratio (object-fit:cover crops the generated image to
+      // fit it) — the underlying image's real pixel dimensions come
+      // from NVIDIA's own default, not a per-platform-controlled size.
+      img.style.aspectRatio = `${platform.width} / ${platform.height}`;
       img.src = blobUrl;
       card.appendChild(img);
 
@@ -499,7 +510,7 @@ export function openContentLab() {
     resultWrap.textContent = "Generating...";
     createOutput.prepend(resultWrap);
     try {
-      const { blob } = await _generateImageBlob(prompt, 1024, 1024);
+      const { blob } = await _generateImageBlob(prompt);
       const url = URL.createObjectURL(blob);
       resultWrap.remove();
       _renderCreateResult(createOutput, { title: "🖼️ Picture", imgUrl: url });
