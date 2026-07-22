@@ -23,8 +23,16 @@ let _sbKey = null;
 async function _initSB() {
   if (_sbUrl) return !!_sbUrl;
   try {
-    // Try to get Supabase config from our API endpoint
-    const r = await fetch('/api/memory?key=__sb_config');
+    // Try to get Supabase config from our API endpoint. Real, simple
+    // retry-once on a transient 5xx — Upstash's own console confirms
+    // usage is well under free-tier limits (24K/500K commands), so an
+    // occasional 503 here is a real but rare platform blip, not a
+    // config problem — worth one retry before giving up.
+    let r = await fetch('/api/memory?key=__sb_config');
+    if (!r.ok && r.status >= 500) {
+      await new Promise(res => setTimeout(res, 1500));
+      r = await fetch('/api/memory?key=__sb_config');
+    }
     if (r.ok) {
       const d = await r.json();
       if (d.value?.url) {
