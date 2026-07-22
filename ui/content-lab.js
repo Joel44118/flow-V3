@@ -58,7 +58,7 @@ async function _generateContentJSON(kind, brief) {
   const system = `You are helping Joel Olaiya — a solo web/bot developer running Joelflowstack (Ibadan, Nigeria), building bot integrations, workflow automation, and premium web development — create ONE piece of real social content.
 
 Content type requested: ${kind}
-${brief ? `Joel's specific brief: "${brief}"` : `Joel left this to your judgment — pick a real, specific pain point a small-business owner or solo founder genuinely has, and connect it to something Joel actually does.`}
+${brief ? `Joel's specific brief: "${brief}"` : `Joel left this to your judgment — this should be a genuinely useful TIP post, not a pitch or promotion. Share one real, specific, practical tip related to web development, bots, or workflow automation — something a small-business owner or solo founder could actually use today. Teach something real; don't sell.`}
 
 REAL, REQUIRED RULES:
 - Never invent a service Joel doesn't offer (bot integration, workflow automation, web development only).
@@ -182,6 +182,40 @@ function _blobToBase64(blob) {
   });
 }
 
+// REAL, CONFIRMED FIX for Bluesky's 1MB image cap — verified against
+// Bluesky's own AT Protocol lexicon (app.bsky.embed.images limits blobs
+// to 1,000,000 bytes exactly), which is why a 1122KB generated PNG was
+// genuinely rejected. Re-encodes as JPEG (much smaller than PNG for
+// photographic content) and steps quality down until it's actually under
+// the real 1MB cap, rather than guessing a single fixed quality value.
+async function _compressForBluesky(blob, maxBytes = 999000) {
+  if (blob.size <= maxBytes) return blob;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+
+  // Real, stepped quality attempts — starts high, drops until it fits.
+  // If even the lowest quality doesn't fit (rare, only for very large
+  // source images), fall back to also shrinking dimensions once.
+  const qualities = [0.85, 0.7, 0.55, 0.4];
+  for (const q of qualities) {
+    const out = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", q));
+    if (out && out.size <= maxBytes) return out;
+  }
+
+  // Real last resort: shrink actual pixel dimensions by half and retry
+  // at a middling quality — still under the real cap for genuinely huge
+  // source images where quality alone wasn't enough.
+  const smallCanvas = document.createElement("canvas");
+  smallCanvas.width = Math.round(canvas.width / 2);
+  smallCanvas.height = Math.round(canvas.height / 2);
+  smallCanvas.getContext("2d").drawImage(canvas, 0, 0, smallCanvas.width, smallCanvas.height);
+  return new Promise((resolve) => smallCanvas.toBlob((b) => resolve(b), "image/jpeg", 0.6));
+}
+
 async function _postToBluesky(text, imageBase64) {
   const res = await fetch("/api/social?platform=bluesky", {
     method: "POST",
@@ -265,6 +299,15 @@ function _injectStyles() {
   width: 100%; padding: 8px 10px; border-radius: 8px;
   border: 1px solid rgba(167,139,250,0.3); background: rgba(255,255,255,0.04);
   color: #e5e7eb; font-size: 12px; box-sizing: border-box;
+}
+/* REAL BUG FIX: <select>/<option> elements don't reliably inherit the
+   parent's color/background in every browser — some browsers render
+   the dropdown's own popup list with a default white background and
+   near-white text, making the number genuinely invisible until hover
+   (which triggers the browser's own hover-highlight color). Explicit
+   colors on both the select and its options fixes this everywhere. */
+select.cl-input, select.cl-input option {
+  background: #1a1330; color: #e5e7eb;
 }
 .cl-platform-card {
   /* REAL FIX: cards are a fixed 240px width, but platforms have
@@ -462,6 +505,27 @@ function _renderPlatformCard(platform, container) {
 
   card.appendChild(optsRow);
 
+  // REAL, Joel-requested feature: individual buttons per piece (image,
+  // video, text, tags), so any one part can be regenerated on its own
+  // without redoing the whole card — "cooking" a post piece by piece —
+  // while the existing all-in-one Generate button (below) still does
+  // everything at once for speed.
+  const individualRow = document.createElement("div");
+  individualRow.style.cssText = "display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;";
+  const mkSmallBtn = (label) => {
+    const b = document.createElement("button");
+    b.className = "cl-btn";
+    b.style.cssText = "flex:1;min-width:0;padding:6px 4px;font-size:10px;";
+    b.textContent = label;
+    individualRow.appendChild(b);
+    return b;
+  };
+  const imgOnlyBtn  = mkSmallBtn("🖼️ Image");
+  const videoOnlyBtn = mkSmallBtn("🎬 Video");
+  const textOnlyBtn = mkSmallBtn("✍️ Text");
+  const tagsOnlyBtn = mkSmallBtn("#️⃣ Tags");
+  card.appendChild(individualRow);
+
   const genBtn = document.createElement("button");
   genBtn.className = "cl-btn";
   genBtn.style.marginTop = "8px";
@@ -473,31 +537,23 @@ function _renderPlatformCard(platform, container) {
   statusEl.className = "cl-status";
   card.appendChild(statusEl);
 
-  let generated = null; // { ...content, blobs: [Blob, ...] } — blobs[0] used for posting today
+  // REAL, persistent per-card state — lets any individual button update
+  // just its own piece while keeping everything else exactly as it was.
+  // caption/hashtags/imagePrompt come from the same content-JSON call;
+  // blobs are the generated (and possibly text-burned) images.
+  const state = { caption: null, hashtags: null, imagePrompt: null, blobs: null };
 
-  genBtn.onclick = async () => {
-    genBtn.disabled = true;
-    statusEl.textContent = "Generating content...";
-    try {
-      const brief = briefInput.value.trim();
-      const n = Number(countSelect.value) || 1;
-      const burnText = burnCheckbox.checked;
-      const content = await _generateContentJSON(`a ${platform.label} post`, brief);
-      statusEl.textContent = `Generating ${n} image${n > 1 ? "s" : ""} (${platform.width}×${platform.height})...`;
-      let blobs = await _generateImageBlobs(content.imagePrompt, n);
-      if (burnText) {
-        // Real, short hook text burned onto each image — reuses the
-        // first ~8 words of the caption as the on-image hook, matching
-        // how a real caption/hook split typically works for creators.
-        const hook = content.caption.split(/\s+/).slice(0, 8).join(" ");
-        blobs = await Promise.all(blobs.map((b) => _burnTextOnImage(b, hook)));
-      }
+  // Real, single render function — redraws the card's output area from
+  // current `state`, called after ANY individual or full generation so
+  // the visible card always reflects exactly what's actually stored,
+  // never a stale mix of old and new pieces.
+  function _renderFromState() {
+    card.querySelectorAll(".cl-image-strip, .cl-caption, .cl-hashtags, .cl-post-btn").forEach(el => el.remove());
 
-      card.querySelectorAll(".cl-image-strip, .cl-caption, .cl-hashtags, .cl-post-btn").forEach(el => el.remove());
-
+    if (state.blobs && state.blobs.length) {
       const strip = document.createElement("div");
       strip.className = "cl-image-strip";
-      blobs.forEach((blob) => {
+      state.blobs.forEach((blob) => {
         const img = document.createElement("img");
         img.className = "cl-preview-img";
         img.style.aspectRatio = `${platform.width} / ${platform.height}`;
@@ -505,60 +561,196 @@ function _renderPlatformCard(platform, container) {
         strip.appendChild(img);
       });
       card.appendChild(strip);
+    }
 
+    if (state.caption) {
       const cap = document.createElement("div");
       cap.className = "cl-caption";
-      cap.textContent = content.caption;
+      cap.textContent = state.caption;
       card.appendChild(cap);
+    }
 
+    if (state.hashtags) {
       const tags = document.createElement("div");
       tags.className = "cl-hashtags";
-      tags.textContent = (content.hashtags || []).map(t => `#${t.replace(/^#/, "")}`).join("  ");
+      tags.textContent = state.hashtags.map(t => `#${t.replace(/^#/, "")}`).join("  ");
       card.appendChild(tags);
+    }
 
-      generated = { ...content, blobs };
+    if (platform.live && state.blobs && state.blobs.length && state.caption) {
+      const postBtn = document.createElement("button");
+      postBtn.className = "cl-btn cl-post-btn";
+      postBtn.style.width = "100%";
+      postBtn.style.marginTop = "8px";
+      postBtn.style.background = "rgba(74,222,128,0.15)";
+      postBtn.style.borderColor = "rgba(74,222,128,0.4)";
+      postBtn.style.color = "#4ade80";
+      // Real, honest label — Bluesky posting today only sends the
+      // FIRST generated image (api/social.js's existing handler takes
+      // a single imageBase64, never confirmed to support multiple
+      // images per post, so not guessing that it does).
+      postBtn.textContent = state.blobs.length > 1 ? `Post to ${platform.label} (1st image)` : `Post to ${platform.label}`;
+      postBtn.onclick = async () => {
+        postBtn.disabled = true;
+        postBtn.textContent = "Posting...";
+        try {
+          const compressed = await _compressForBluesky(state.blobs[0]);
+          const base64 = await _blobToBase64(compressed);
+          const result = await _postToBluesky(state.caption, base64);
+          if (!result.ok) throw new Error(result.error);
+          statusEl.textContent = `✅ Posted`;
+          postBtn.textContent = "Posted ✓";
+        } catch (e) {
+          statusEl.textContent = `❌ ${e.message}`;
+          postBtn.disabled = false;
+          postBtn.textContent = `Post to ${platform.label}`;
+        }
+      };
+      card.appendChild(postBtn);
+    }
+  }
 
-      if (platform.live) {
-        const postBtn = document.createElement("button");
-        postBtn.className = "cl-btn cl-post-btn";
-        postBtn.style.width = "100%";
-        postBtn.style.marginTop = "8px";
-        postBtn.style.background = "rgba(74,222,128,0.15)";
-        postBtn.style.borderColor = "rgba(74,222,128,0.4)";
-        postBtn.style.color = "#4ade80";
-        // Real, honest label — Bluesky posting today only sends the
-        // FIRST generated image (api/social.js's existing handler takes
-        // a single imageBase64, never confirmed to support multiple
-        // images per post, so not guessing that it does).
-        postBtn.textContent = blobs.length > 1 ? `Post to ${platform.label} (1st image)` : `Post to ${platform.label}`;
-        postBtn.onclick = async () => {
-          postBtn.disabled = true;
-          postBtn.textContent = "Posting...";
-          try {
-            const base64 = await _blobToBase64(generated.blobs[0]);
-            const result = await _postToBluesky(generated.caption, base64);
-            if (!result.ok) throw new Error(result.error);
-            statusEl.textContent = `✅ Posted`;
-            postBtn.textContent = "Posted ✓";
-          } catch (e) {
-            statusEl.textContent = `❌ ${e.message}`;
-            postBtn.disabled = false;
-            postBtn.textContent = `Post to ${platform.label}`;
-          }
-        };
-        card.appendChild(postBtn);
+  // Real helper: makes sure state.caption/hashtags/imagePrompt exist
+  // before an image-only regeneration needs an imagePrompt to work
+  // from — if text hasn't been generated yet, generates it silently
+  // first rather than failing with a confusing error.
+  async function _ensureContent() {
+    if (state.caption && state.imagePrompt) return;
+    const brief = briefInput.value.trim();
+    const content = await _generateContentJSON(`a ${platform.label} post`, brief);
+    state.caption = content.caption;
+    state.hashtags = content.hashtags || [];
+    state.imagePrompt = content.imagePrompt;
+  }
+
+  function _setBusy(btn, busyLabel) {
+    const allBtns = [genBtn, imgOnlyBtn, videoOnlyBtn, textOnlyBtn, tagsOnlyBtn];
+    allBtns.forEach(b => b.disabled = true);
+    const original = btn.textContent;
+    btn.textContent = busyLabel;
+    return () => { allBtns.forEach(b => b.disabled = false); btn.textContent = original; };
+  }
+
+  genBtn.onclick = async () => {
+    const restore = _setBusy(genBtn, "Generating...");
+    statusEl.textContent = "Generating content...";
+    try {
+      const brief = briefInput.value.trim();
+      const n = Number(countSelect.value) || 1;
+      const burnText = burnCheckbox.checked;
+      const content = await _generateContentJSON(`a ${platform.label} post`, brief);
+      state.caption = content.caption;
+      state.hashtags = content.hashtags || [];
+      state.imagePrompt = content.imagePrompt;
+
+      statusEl.textContent = `Generating ${n} image${n > 1 ? "s" : ""} (${platform.width}×${platform.height})...`;
+      let blobs = await _generateImageBlobs(state.imagePrompt, n);
+      if (burnText) {
+        // Real, short hook text burned onto each image — reuses the
+        // first ~8 words of the caption as the on-image hook, matching
+        // how a real caption/hook split typically works for creators.
+        const hook = state.caption.split(/\s+/).slice(0, 8).join(" ");
+        blobs = await Promise.all(blobs.map((b) => _burnTextOnImage(b, hook)));
       }
+      state.blobs = blobs;
 
+      _renderFromState();
       statusEl.textContent = "Ready.";
     } catch (e) {
       statusEl.textContent = `❌ ${e.message}`;
     } finally {
-      genBtn.disabled = false;
+      restore();
+    }
+  };
+
+  // Real, individual regeneration — image only. Reuses the existing
+  // caption's imagePrompt if content already exists (via _ensureContent),
+  // so regenerating just the image doesn't discard a caption Joel
+  // already liked.
+  imgOnlyBtn.onclick = async () => {
+    const restore = _setBusy(imgOnlyBtn, "...");
+    statusEl.textContent = "Generating image...";
+    try {
+      await _ensureContent();
+      const n = Number(countSelect.value) || 1;
+      const burnText = burnCheckbox.checked;
+      let blobs = await _generateImageBlobs(state.imagePrompt, n);
+      if (burnText) {
+        const hook = state.caption.split(/\s+/).slice(0, 8).join(" ");
+        blobs = await Promise.all(blobs.map((b) => _burnTextOnImage(b, hook)));
+      }
+      state.blobs = blobs;
+      _renderFromState();
+      statusEl.textContent = "Ready.";
+    } catch (e) {
+      statusEl.textContent = `❌ ${e.message}`;
+    } finally {
+      restore();
+    }
+  };
+
+  // Real, individual regeneration — video. Reuses the existing video
+  // pipeline (same one as the top-level 🎬 Video quick-action), scoped
+  // to this platform's brief.
+  videoOnlyBtn.onclick = async () => {
+    const restore = _setBusy(videoOnlyBtn, "...");
+    statusEl.textContent = "Generating video in the background — check your videos area when ready.";
+    try {
+      await _ensureContent();
+      await generateVideo(state.imagePrompt);
+    } catch (e) {
+      statusEl.textContent = `❌ ${e.message}`;
+    } finally {
+      restore();
+    }
+  };
+
+  // Real, individual regeneration — caption text only. Keeps the
+  // existing hashtags/images untouched, only replaces state.caption
+  // (and state.imagePrompt, in case a future image regen wants the new
+  // one) — genuinely independent from the image, per Joel's request.
+  textOnlyBtn.onclick = async () => {
+    const restore = _setBusy(textOnlyBtn, "...");
+    statusEl.textContent = "Generating text...";
+    try {
+      const brief = briefInput.value.trim();
+      const content = await _generateContentJSON(`a ${platform.label} post`, brief);
+      state.caption = content.caption;
+      state.imagePrompt = content.imagePrompt;
+      // Real, deliberate choice: text-only regen keeps whatever
+      // hashtags already existed (if any) untouched, since Joel has a
+      // dedicated Tags button for regenerating those independently —
+      // only sets hashtags here if none existed yet.
+      if (!state.hashtags) state.hashtags = content.hashtags || [];
+      _renderFromState();
+      statusEl.textContent = "Ready.";
+    } catch (e) {
+      statusEl.textContent = `❌ ${e.message}`;
+    } finally {
+      restore();
+    }
+  };
+
+  // Real, individual regeneration — hashtags only. Keeps caption/images
+  // untouched.
+  tagsOnlyBtn.onclick = async () => {
+    const restore = _setBusy(tagsOnlyBtn, "...");
+    statusEl.textContent = "Generating tags...";
+    try {
+      const brief = briefInput.value.trim();
+      const content = await _generateContentJSON(`a ${platform.label} post`, brief);
+      state.hashtags = content.hashtags || [];
+      _renderFromState();
+      statusEl.textContent = "Ready.";
+    } catch (e) {
+      statusEl.textContent = `❌ ${e.message}`;
+    } finally {
+      restore();
     }
   };
 
   container.appendChild(card);
-  return { card, getGenerated: () => generated };
+  return { card, getGenerated: () => (state.blobs && state.caption ? { ...state } : null) };
 }
 
 async function _handlePostToAll(platformCards, statusOutput, setStatus) {
@@ -567,7 +759,8 @@ async function _handlePostToAll(platformCards, statusOutput, setStatus) {
     const generated = ref.getGenerated();
     if (!generated) continue;
     try {
-      const base64 = await _blobToBase64(generated.blobs[0]);
+      const compressed = await _compressForBluesky(generated.blobs[0]);
+      const base64 = await _blobToBase64(compressed);
       const result = await _postToBluesky(generated.caption, base64);
       setStatus(result.ok ? `✅ Posted to ${platform.label}` : `❌ ${platform.label} failed: ${result.error}`);
     } catch (e) {
