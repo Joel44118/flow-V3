@@ -186,29 +186,38 @@ async function handleEmbed(req) {
 // REAL, CONFIRMED REASON THIS EXISTS: all three models in ui/imagine.js's
 // FLUX_MODELS list (FLUX.1-schnell, SDXL, SD 1.5) started returning real,
 // live 410/400 errors from HuggingFace's hf-inference provider — HF has
-// deprecated all three on that specific provider. Verified directly
-// against HuggingFace's own current model-listing page before writing
-// this that hf-inference's image-generation lineup has genuinely shrunk.
+// deprecated all three on that specific provider.
 //
-// Real replacement: NVIDIA's own NIM platform hosts a real, documented,
-// free-tier image-generation API (build.nvidia.com), confirmed via
-// NVIDIA's own docs.nvidia.com "Image Generation API (OpenAI-Compatible)"
-// reference page, which explicitly lists flux.1-dev, flux.1-schnell,
-// stable-diffusion-3.5-large, and qwen-image as real, supported models
-// through this exact interface. Joel already has NVIDIA_API_KEY set in
-// Vercel env vars (used for chat/text elsewhere), so this reuses that
-// same real credential — no new secret needed.
+// SECOND CORRECTION (this pass) — the previous version of this file used
+// an OpenAI-compatible shape (POST to integrate.api.nvidia.com/v1/images/
+// generations with {model, prompt, n, response_format, extra_body}). That
+// was WRONG and is the real, confirmed cause of the live 404 Joel hit on
+// both flux.1-schnell and flux.1-dev. Verified directly against NVIDIA's
+// own current API Reference pages for each model
+// (docs.api.nvidia.com/nim/reference/black-forest-labs-flux_1-schnell-infer
+// and .../black-forest-labs-flux_1-dev-infer), which show a COMPLETELY
+// DIFFERENT interface:
+//   - Endpoint is MODEL-SPECIFIC (model is in the URL path, not the body):
+//       POST https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell
+//       POST https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev
+//   - Body fields are: prompt, height, width, cfg_scale, mode, seed, steps,
+//     samples. There is NO "model", "n", "response_format", or "extra_body"
+//     field in this API at all.
+//   - height/width: only 1024 is confirmed supported in practice per the
+//     docs page (other enum values listed but "Only height=1024 is
+//     supported" / "Only width=1024 is supported" per the docs text).
+//   - steps: schnell allows 1-4 (default 4); dev allows 5-100 (default 50).
+//   - samples: must be 1 (only value supported).
+//   - mode: "base" for plain text-to-image (schnell only supports "base";
+//     dev also supports "depth"/"canny" but those need an image input).
 //
-// REAL, CONFIRMED against NVIDIA's own official "Getting Started" guide
-// for NIM Visual GenAI (docs.nvidia.com/nim/visual-genai) — the
-// OpenAI-compatible request REQUIRES "response_format": "b64_json" or it
-// may not return base64 at all. This was missing before. Model list also
-// corrected against NVIDIA's own live API reference catalog
-// (docs.api.nvidia.com/nim/reference — Visual Models section, confirmed
-// directly, not guessed): flux.1-dev, flux.1-schnell, and
-// stable-diffusion-3-medium are the real, currently-listed models —
-// "stable-diffusion-3.5-large" was never actually confirmed anywhere and
-// has been replaced with the real, confirmed model name.
+// HONEST, STILL-UNVERIFIED PIECE: the docs page did not render the actual
+// 200-response JSON schema (it's behind an interactive "Try It" widget
+// that didn't return schema text on fetch). NVIDIA's other NIM genai
+// endpoints commonly return either {"image": "<base64>"} or
+// {"artifacts": [{"base64": "..."}]} — this code checks several plausible
+// shapes below and reports the raw response if none match, rather than
+// silently returning nothing. This needs a real live test to confirm.
 //
 // HONEST NOTE: flux.1-dev's own NVIDIA model card states it is licensed
 // for non-commercial use only ("Contact [...] for commercial terms").
@@ -248,56 +257,59 @@ async function handleNvidiaImage(req) {
     });
   }
 
-  // REAL, NOW-CONFIRMED FORMAT — verified directly against NVIDIA's own
-  // official "Getting Started" code example (docs.nvidia.com/nim/visual-
-  // genai/latest/getting-started.html), not guessed a third time:
-  //   client.images.generate(model=..., prompt=..., n=1,
-  //     response_format="b64_json", extra_body={"seed": 0, "steps": 4})
-  // REAL CORRECTIONS from the previous version, now confirmed wrong:
-  //   - There is NO "size" parameter in this API at all. Sending one
-  //     (as the previous version did) is the real, confirmed cause of
-  //     the "HTTP 404 — {}" Joel hit on stable-diffusion-3-medium —
-  //     an unrecognized field made the request malformed for that model.
-  //   - "stable-diffusion-3-medium" has been dropped from the fallback
-  //     list — it was never actually confirmed to exist on the hosted
-  //     integrate.api.nvidia.com endpoint (the only place it appeared
-  //     was NVIDIA's own model-catalog page, which may list models
-  //     available via self-hosted NIM containers that aren't necessarily
-  //     live on the shared hosted API) and it's genuinely what returned
-  //     the 404. flux.1-schnell and flux.1-dev are both confirmed real
-  //     via NVIDIA's own official code sample above.
-  const seed  = Number(body.seed)  || 0;
-  const steps = Number(body.steps) || 4;
+  const seed = Number(body.seed) || 0;
 
   let lastError = null;
   for (const model of NVIDIA_IMAGE_MODELS) {
+    // Real, per-model defaults confirmed on each model's own docs page —
+    // schnell: steps 1-4 (default 4); dev: steps 5-100 (default 50).
+    const isSchnell = model === 'black-forest-labs/flux.1-schnell';
+    const steps = Number(body.steps) || (isSchnell ? 4 : 50);
+    const cfgScale = isSchnell ? 0 : (Number(body.cfg_scale) || 5); // schnell docs: cfg_scale range "0 to 0"; dev: default 5
+
+    const endpoint = `https://ai.api.nvidia.com/v1/genai/${model}`;
+
     try {
-      const res = await _fetchWithTimeout('https://integrate.api.nvidia.com/v1/images/generations', 30000, {
+      const res = await _fetchWithTimeout(endpoint, 30000, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
+          'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model,
           prompt,
-          n: 1,
-          response_format: 'b64_json',
-          extra_body: { seed, steps },
+          height: 1024,
+          width: 1024,
+          cfg_scale: cfgScale,
+          mode: 'base',
+          samples: 1,
+          seed,
+          steps,
         }),
       });
 
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
-        lastError = `${model}: HTTP ${res.status} — ${errBody.error?.message || errBody.error || JSON.stringify(errBody).slice(0, 200)}`;
+        lastError = `${model}: HTTP ${res.status} — ${errBody.detail || errBody.error || JSON.stringify(errBody).slice(0, 200)}`;
         continue; // real, honest retry with the next real model
       }
 
       const data = await res.json();
-      const b64 = data?.data?.[0]?.b64_json;
-      const url = data?.data?.[0]?.url;
+      // Trying several plausible response shapes since the exact schema
+      // wasn't visible in the docs page — first live test should confirm
+      // which of these actually fires, so the others can be deleted.
+      const b64 =
+        data?.artifacts?.[0]?.base64 ||
+        data?.artifacts?.[0]?.b64_json ||
+        data?.image ||
+        data?.data?.[0]?.b64_json ||
+        data?.b64_json ||
+        null;
+      const url = data?.data?.[0]?.url || data?.url || null;
+
       if (!b64 && !url) {
-        lastError = `${model}: response had no usable image data — ${JSON.stringify(data).slice(0, 200)}`;
+        lastError = `${model}: HTTP 200 but no recognized image field — raw keys: ${Object.keys(data || {}).join(', ')} — raw: ${JSON.stringify(data).slice(0, 300)}`;
         continue;
       }
 
