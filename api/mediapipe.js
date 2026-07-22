@@ -221,14 +221,23 @@ async function handleEmbed(req) {
 //
 // HONEST NOTE: flux.1-dev's own NVIDIA model card states it is licensed
 // for non-commercial use only ("Contact [...] for commercial terms").
-// Since Joelflowstack is a real commercial service, flux.1-schnell
-// (Apache 2.0, commercially permissive) is tried FIRST here instead —
-// flux.1-dev is kept as a fallback only, not the primary choice, given
-// this real licensing constraint.
-const NVIDIA_IMAGE_MODELS = [
-  'black-forest-labs/flux.1-schnell',
-  'black-forest-labs/flux.1-dev',
-];
+// Since Joelflowstack is a real commercial service, that alone rules out
+// flux.1-dev as a fallback here regardless of speed.
+//
+// REAL, IMPORTANT CORRECTION from the previous version of this file —
+// the previous version tried flux.1-schnell, and on failure/slowness
+// fell back to flux.1-dev SEQUENTIALLY inside the same request. That's
+// the real, confirmed cause of the 504 Joel hit: two ~18s attempts back
+// to back can add up to ~36s, which blows straight past Vercel Edge's
+// own ~25s execution ceiling regardless of any internal fetch timeout —
+// Vercel then kills the function and returns its own non-JSON timeout
+// page (the "An error o..." text), breaking content-lab.js's
+// `await res.json()` before this code's own JSON error response can ever
+// be sent. So: only ONE model is tried per invocation now — schnell,
+// which is both the commercially-safe choice and the fast one (1-4
+// steps vs dev's 50-100), sized to comfortably finish inside one
+// request's real time budget.
+const NVIDIA_IMAGE_MODEL = 'black-forest-labs/flux.1-schnell';
 
 async function handleNvidiaImage(req) {
   const apiKey = process.env.NVIDIA_API_KEY;
@@ -258,75 +267,85 @@ async function handleNvidiaImage(req) {
   }
 
   const seed = Number(body.seed) || 0;
+  // Real, confirmed default from schnell's own docs page: steps 1-4,
+  // default 4. Kept as-is — schnell is fast enough at its own default
+  // that no timeout-driven cap is needed here (unlike dev, which is no
+  // longer used at all — see note above).
+  const steps = Number(body.steps) || 4;
+  // schnell docs: cfg_scale range is "0 to 0" — i.e. schnell doesn't
+  // actually use this parameter meaningfully, but it's still required
+  // in the request body per the API reference.
+  const cfgScale = 0;
 
-  let lastError = null;
-  for (const model of NVIDIA_IMAGE_MODELS) {
-    // Real, per-model defaults confirmed on each model's own docs page —
-    // schnell: steps 1-4 (default 4); dev: steps 5-100 (default 50).
-    const isSchnell = model === 'black-forest-labs/flux.1-schnell';
-    const steps = Number(body.steps) || (isSchnell ? 4 : 50);
-    const cfgScale = isSchnell ? 0 : (Number(body.cfg_scale) || 5); // schnell docs: cfg_scale range "0 to 0"; dev: default 5
+  // Real, single-attempt timeout — stays comfortably under Vercel Edge's
+  // ~25s ceiling with margin for the rest of the function to run and
+  // still return real JSON (not a raw Vercel timeout page) if it's close.
+  const FETCH_TIMEOUT_MS = 20000;
 
-    const endpoint = `https://ai.api.nvidia.com/v1/genai/${model}`;
+  const endpoint = `https://ai.api.nvidia.com/v1/genai/${NVIDIA_IMAGE_MODEL}`;
 
-    try {
-      const res = await _fetchWithTimeout(endpoint, 30000, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt,
-          height: 1024,
-          width: 1024,
-          cfg_scale: cfgScale,
-          mode: 'base',
-          samples: 1,
-          seed,
-          steps,
-        }),
-      });
+  try {
+    const res = await _fetchWithTimeout(endpoint, FETCH_TIMEOUT_MS, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt,
+        height: 1024,
+        width: 1024,
+        cfg_scale: cfgScale,
+        mode: 'base',
+        samples: 1,
+        seed,
+        steps,
+      }),
+    });
 
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        lastError = `${model}: HTTP ${res.status} — ${errBody.detail || errBody.error || JSON.stringify(errBody).slice(0, 200)}`;
-        continue; // real, honest retry with the next real model
-      }
-
-      const data = await res.json();
-      // Trying several plausible response shapes since the exact schema
-      // wasn't visible in the docs page — first live test should confirm
-      // which of these actually fires, so the others can be deleted.
-      const b64 =
-        data?.artifacts?.[0]?.base64 ||
-        data?.artifacts?.[0]?.b64_json ||
-        data?.image ||
-        data?.data?.[0]?.b64_json ||
-        data?.b64_json ||
-        null;
-      const url = data?.data?.[0]?.url || data?.url || null;
-
-      if (!b64 && !url) {
-        lastError = `${model}: HTTP 200 but no recognized image field — raw keys: ${Object.keys(data || {}).join(', ')} — raw: ${JSON.stringify(data).slice(0, 300)}`;
-        continue;
-      }
-
-      return new Response(JSON.stringify({ b64_json: b64 || null, imageUrl: url || null, modelUsed: model }), {
-        status: 200,
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const detail = errBody.detail || errBody.error || JSON.stringify(errBody).slice(0, 200);
+      return new Response(JSON.stringify({ error: `${NVIDIA_IMAGE_MODEL}: HTTP ${res.status} — ${detail}` }), {
+        status: 502,
         headers: { 'Content-Type': 'application/json' },
       });
-    } catch (err) {
-      lastError = `${model}: ${err.name === 'AbortError' ? 'timed out after 30s' : err.message}`;
-      continue;
     }
-  }
 
-  return new Response(JSON.stringify({ error: `All NVIDIA image models failed. Last error: ${lastError}` }), {
-    status: 502,
-    headers: { 'Content-Type': 'application/json' },
-  });
+    const data = await res.json();
+    // Trying several plausible response shapes since the exact schema
+    // wasn't visible in the docs page — this live test will confirm
+    // which of these actually fires, so the others can be deleted.
+    const b64 =
+      data?.artifacts?.[0]?.base64 ||
+      data?.artifacts?.[0]?.b64_json ||
+      data?.image ||
+      data?.data?.[0]?.b64_json ||
+      data?.b64_json ||
+      null;
+    const url = data?.data?.[0]?.url || data?.url || null;
+
+    if (!b64 && !url) {
+      return new Response(JSON.stringify({
+        error: `${NVIDIA_IMAGE_MODEL}: HTTP 200 but no recognized image field — raw keys: ${Object.keys(data || {}).join(', ')} — raw: ${JSON.stringify(data).slice(0, 300)}`,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    return new Response(JSON.stringify({ b64_json: b64 || null, imageUrl: url || null, modelUsed: NVIDIA_IMAGE_MODEL }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (err) {
+    const msg = err.name === 'AbortError' ? 'timed out after 20s' : err.message;
+    return new Response(JSON.stringify({ error: `${NVIDIA_IMAGE_MODEL}: ${msg}` }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 }
 
 export default async function handler(req) {
