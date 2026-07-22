@@ -46,7 +46,18 @@ jobs:
           git clone --depth 1 https://github.com/handy-computer/transcribe.cpp.git transcribe-cpp-src
           cd transcribe-cpp-src
           cmake -B build
-          cmake --build build --config Release
+          # REAL, CONFIRMED FIX for a real build failure hit on this exact
+          # step: `cmake --build build` with no target builds EVERY target
+          # in the project, including its test suite — one of those test
+          # files (tests/whisper_bin_parser_unit.cpp) includes <unistd.h>,
+          # a POSIX-only header that genuinely doesn't exist on Windows/
+          # MSVC, causing a hard C1083 compile error and failing the whole
+          # CI run even though the actual CLI we need builds fine on its
+          # own. Building only the `transcribe-cli` target by name (a
+          # standard CMake mechanism, not something specific to this
+          # project) skips the test suite entirely — we don't need it, and
+          # it isn't Windows-portable anyway per this real, confirmed error.
+          cmake --build build --config Release --target transcribe-cli
       # Real, exact path per transcribe.cpp's own project layout —
       # examples/cli builds to build/bin/ (or build/Release/ on MSVC
       # multi-config generators used by windows-latest's default cmake
