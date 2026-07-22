@@ -288,11 +288,53 @@ function _updateDot() {
 
 // Poll KV for new notifications from webhooks
 let _kvWarned = false;
+let _consecutiveFails = 0;
+
+// Real, small retry helper — a single 503/502/network blip (confirmed via
+// Upstash's own console: 24K/500K commands, 0B/50GB bandwidth, all well
+// under limits — so it's not a real quota problem, just an occasional
+// transient hiccup) shouldn't be treated the same as a real, ongoing
+// failure. Retries once after a short delay before giving up on this
+// particular poll tick.
+async function _fetchWithRetry(url, options, retries = 1, delayMs = 1500) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const r = await fetch(url, options);
+      if (r.ok) return r;
+      // Only retry on transient server-side errors, not real 4xx client
+      // errors (bad request, unauthorized, etc.) which won't fix
+      // themselves on retry.
+      if (r.status >= 500 && attempt < retries) {
+        await new Promise(res => setTimeout(res, delayMs));
+        continue;
+      }
+      return r; // return the non-ok response as-is on the last attempt
+    } catch (err) {
+      if (attempt < retries) {
+        await new Promise(res => setTimeout(res, delayMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function _startPolling() {
   const poll = async () => {
     try {
-      const r = await fetch('/api/memory?key=flow_pending_notifs');
-      if (!r.ok) return;
+      const r = await _fetchWithRetry('/api/memory?key=flow_pending_notifs', undefined, 1, 1500);
+      if (!r.ok) {
+        _consecutiveFails++;
+        // Only warn after several real, consecutive failures (10 polls =
+        // ~5 real minutes of genuine trouble) — a single blip that
+        // recovers on its own next tick shouldn't alarm Joel at all.
+        if (_consecutiveFails >= 10 && !_kvWarned) {
+          _kvWarned = true;
+          _chatAdd?.("⚠️ Notifications have been failing to load for a few minutes — might be a temporary server hiccup. If it keeps happening, worth checking Vercel's status or your KV setup.");
+        }
+        return;
+      }
+      _consecutiveFails = 0;
       const d = await r.json();
 
       // d.kv === false means KV_REST_API_URL/TOKEN aren't set in Vercel —
@@ -312,11 +354,11 @@ async function _startPolling() {
       // Add each pending notification
       pending.forEach(n => addNotification(n));
       // Clear the queue
-      await fetch('/api/memory', {
+      await _fetchWithRetry('/api/memory', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ key: 'flow_pending_notifs', value: [] }),
-      });
+      }, 1, 1500);
     } catch(_) {}
   };
 
