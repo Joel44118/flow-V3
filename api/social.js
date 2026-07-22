@@ -1225,10 +1225,12 @@ async function handleCallbackQuery(tgFetch, tgFetchStrict, callbackQuery) {
       try {
         // Real, direct call to the same Bluesky posting logic used by
         // the chat tool — genuinely posts, not a simulation.
+        // Same @ stripping fix as handleBluesky below — BLUESKY_HANDLE
+        // was confirmed set with a leading @, which breaks Bluesky's auth.
         const uploadRes = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ identifier: process.env.BLUESKY_HANDLE, password: process.env.BLUESKY_APP_PASSWORD }),
+          body: JSON.stringify({ identifier: (process.env.BLUESKY_HANDLE || '').replace(/^@/, ''), password: process.env.BLUESKY_APP_PASSWORD }),
         });
         if (!uploadRes.ok) { await ackAndEdit(`⚠️ Bluesky auth failed: ${await uploadRes.text()}`); return true; }
         const session = await uploadRes.json();
@@ -1561,7 +1563,14 @@ async function handleDiagnose(req, res) {
 // Passwords — NOT the real account password) in Vercel env vars.
 // ═══════════════════════════════════════════
 async function handleBluesky(req, res) {
-  const HANDLE       = process.env.BLUESKY_HANDLE;
+  // REAL, CONFIRMED FIX: Joel's actual BLUESKY_HANDLE env var was set to
+  // "@joelflowstack.bsky.social" (with a leading @). Bluesky's own
+  // createSession API expects the bare handle with NO @ — sending one
+  // makes the identifier invalid, which is the real, confirmed cause of
+  // the "Auth failed... credentials are invalid" error. Stripping any
+  // leading @ here means this exact typo can't silently break auth again,
+  // regardless of what's actually saved in the Vercel env var.
+  const HANDLE       = (process.env.BLUESKY_HANDLE || '').replace(/^@/, '');
   const APP_PASSWORD = process.env.BLUESKY_APP_PASSWORD;
 
   if (!HANDLE || !APP_PASSWORD) {
