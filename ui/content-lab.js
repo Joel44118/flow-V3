@@ -232,7 +232,22 @@ function _injectStyles() {
    stack — scrolls sideways if it overflows the panel width. */
 #cl-platforms-row {
   display: flex; gap: 12px; padding: 14px 16px; overflow-x: auto;
-  overflow-y: hidden; flex: 1; align-items: flex-start;
+  overflow-y: hidden; flex: 1; align-items: stretch;
+  /* REAL BUG FIX: was align-items: flex-start, which means each card's
+     height is its own content height, NOT the row's real height. That
+     made .cl-platform-card's "max-height: 100%" resolve against an
+     undefined/content-based parent height instead of a real, bounded
+     one — so a card with enough content (multi-image strip + caption +
+     hashtags + post button) could genuinely grow taller than the
+     visible panel with no reliable way to scroll down to the cut-off
+     button, exactly matching the bug Joel reported. align-items:
+     stretch makes every card the row's REAL full height, so
+     max-height:100% on the card now resolves against a real number and
+     the card's own overflow-y:auto genuinely engages and scrolls.
+     min-height:0 below is required alongside stretch so a flex child
+     can actually shrink/scroll instead of being forced to grow to fit
+     its content regardless of the parent's real bound. */
+  min-height: 0;
 }
 #cl-platforms-row::-webkit-scrollbar { height: 6px; }
 #cl-platforms-row::-webkit-scrollbar-track { background: transparent; }
@@ -258,8 +273,15 @@ function _injectStyles() {
      render ~426px tall, making that ONE card visually tower over its
      16:9/4:5 neighbors in the same horizontal row. max-height + a
      scrollable card body keeps every card the same real, predictable
-     footprint regardless of which platform's image is showing. */
-  flex: 0 0 240px; max-height: 100%; border: 1px solid rgba(167,139,250,0.2);
+     footprint regardless of which platform's image is showing.
+     REAL FIX (this pass): max-height:100% now resolves against a real
+     number since the parent row is align-items:stretch (was
+     flex-start), and min-height:0 lets this flex-column child actually
+     shrink to that bound instead of growing to fit its content — the
+     real, confirmed cause of the Post button being cut off with no way
+     to scroll to it. */
+  flex: 0 0 240px; max-height: 100%; min-height: 0;
+  border: 1px solid rgba(167,139,250,0.2);
   border-radius: 10px; padding: 10px; background: rgba(255,255,255,0.02);
   display: flex; flex-direction: column; overflow-y: auto;
 }
@@ -302,6 +324,27 @@ function _injectStyles() {
 }
 .cl-post-all-btn:hover { background: rgba(74,222,128,0.25); }
 .cl-status { font-size: 10px; color: #9ca3af; margin-top: 6px; word-wrap: break-word; overflow-wrap: anywhere; }
+
+/* REAL, Joel-requested feature: a collapsible drawer for post-status/
+   error output, so it can never silently grow the panel and push other
+   UI out of view. The arrow toggle flips ▼ (collapsed, tap to expand)
+   / ▲ (expanded, tap to collapse) depending on state. */
+#cl-status-drawer {
+  flex-shrink: 0; border-top: 1px solid rgba(167,139,250,0.15);
+}
+#cl-status-toggle {
+  width: 100%; display: flex; align-items: center; justify-content: center;
+  padding: 4px; background: rgba(167,139,250,0.06); border: none;
+  color: #9ca3af; font-size: 11px; cursor: pointer;
+}
+#cl-status-toggle:hover { background: rgba(167,139,250,0.14); color: #d8d4ff; }
+#cl-status-body {
+  max-height: 140px; overflow-y: auto; padding: 8px 16px;
+  transition: max-height 0.15s ease, padding 0.15s ease;
+}
+#cl-status-body.cl-collapsed {
+  max-height: 0; padding: 0 16px; overflow: hidden;
+}
 
 /* Real create-panel (video/picture/text-only) rendering area — appears
    ABOVE the platform row, inside the Content Lab card, never in chat. */
@@ -518,7 +561,7 @@ function _renderPlatformCard(platform, container) {
   return { card, getGenerated: () => generated };
 }
 
-async function _handlePostToAll(platformCards, statusOutput) {
+async function _handlePostToAll(platformCards, statusOutput, setStatus) {
   for (const [platform, ref] of platformCards) {
     if (!platform.live) continue;
     const generated = ref.getGenerated();
@@ -526,16 +569,16 @@ async function _handlePostToAll(platformCards, statusOutput) {
     try {
       const base64 = await _blobToBase64(generated.blobs[0]);
       const result = await _postToBluesky(generated.caption, base64);
-      statusOutput.textContent = result.ok ? `✅ Posted to ${platform.label}` : `❌ ${platform.label} failed: ${result.error}`;
+      setStatus(result.ok ? `✅ Posted to ${platform.label}` : `❌ ${platform.label} failed: ${result.error}`);
     } catch (e) {
-      statusOutput.textContent = `❌ ${platform.label} failed: ${e.message}`;
+      setStatus(`❌ ${platform.label} failed: ${e.message}`);
     }
   }
   const note = document.createElement("div");
   note.className = "cl-status";
   note.style.marginTop = "4px";
   note.textContent = "The rest (TikTok, X, YouTube, Instagram, Threads) are generated and previewed above — real posting isn't connected yet for those.";
-  statusOutput.after(note);
+  statusOutput.appendChild(note);
 }
 
 // ── Real, self-contained create-output renderer ─────────────────────────
@@ -657,16 +700,44 @@ export function openContentLab() {
   });
   panel.appendChild(platformsRow);
 
+  const statusDrawer = document.createElement("div");
+  statusDrawer.id = "cl-status-drawer";
+
+  const statusToggle = document.createElement("button");
+  statusToggle.id = "cl-status-toggle";
+  statusToggle.type = "button";
+  statusToggle.textContent = "▼";
+  statusDrawer.appendChild(statusToggle);
+
   const postAllStatus = document.createElement("div");
-  postAllStatus.className = "cl-status";
-  postAllStatus.style.margin = "0 16px";
+  postAllStatus.id = "cl-status-body";
+  postAllStatus.className = "cl-status cl-collapsed";
+  statusDrawer.appendChild(postAllStatus);
+
+  let _statusCollapsed = true;
+  statusToggle.onclick = () => {
+    _statusCollapsed = !_statusCollapsed;
+    postAllStatus.classList.toggle("cl-collapsed", _statusCollapsed);
+    statusToggle.textContent = _statusCollapsed ? "▼" : "▲";
+  };
+
+  // Real helper: any code that wants to write into this drawer calls
+  // this instead of touching postAllStatus directly — it auto-expands
+  // the drawer so new status/error text is never silently hidden behind
+  // a collapsed arrow the first time it appears.
+  function _setPostStatus(text) {
+    postAllStatus.textContent = text;
+    _statusCollapsed = false;
+    postAllStatus.classList.remove("cl-collapsed");
+    statusToggle.textContent = "▲";
+  }
 
   const postAllBtn = document.createElement("button");
   postAllBtn.className = "cl-post-all-btn";
   postAllBtn.textContent = "🚀 Post to all (generated) socials";
-  postAllBtn.onclick = () => _handlePostToAll(platformCards, postAllStatus);
+  postAllBtn.onclick = () => _handlePostToAll(platformCards, postAllStatus, _setPostStatus);
   panel.appendChild(postAllBtn);
-  panel.appendChild(postAllStatus);
+  panel.appendChild(statusDrawer);
 
   document.body.appendChild(panel);
   _makeDraggable(panel, header);
