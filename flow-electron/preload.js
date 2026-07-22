@@ -42,21 +42,20 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     replayExecute: (action, x, y, text, direction) => ipcRenderer.invoke('sentinel_replay_execute', { action, x, y, text, direction }),
   },
 
-  // ── Wake word — "Wake up Flow" ──────────────────────────────────────
-  // Fully local detection (main process). Fires once per detected wake
-  // word; the renderer's listener should call the existing
-  // core/whisper.js startRecording()/stopRecordingAndTranscribe() flow —
-  // no new transcription logic needed here.
+  // ── Voice control — "hey flow" / "wake up flow" ─────────────────────
+  // REAL, UPDATED (this session): the detection engine underneath
+  // changed (voice-engine.js replaces wakeword-engine.js's ONNX
+  // classifier with continuous transcribe.cpp transcription + text
+  // matching — no training required, ever), but the wake-detected signal
+  // channel name is kept the same for backward compatibility with
+  // existing renderer code. onCommand is NEW: delivers the actual
+  // transcribed command text once the user finishes speaking after the
+  // wake phrase — the renderer is responsible for routing this into
+  // real actions (e.g. Content Lab commands).
   wakeword: {
     onDetected: (cb) => ipcRenderer.on('wakeword-detected', () => cb()),
-    // REAL FIX: wake-word logs (model loading, SoX status, detection
-    // scores, errors) previously only reached a terminal window that
-    // genuinely doesn't exist in a packaged .exe — meaning Joel's F12
-    // DevTools console was ALWAYS silent about wake-word activity,
-    // regardless of whether it was working or broken. This forwards
-    // every real log line through so app.js can print it where Joel can
-    // actually see it.
     onLog: (cb) => ipcRenderer.on('wakeword-log', (_e, entry) => cb(entry)),
+    onCommand: (cb) => ipcRenderer.on('voice-command', (_e, { text }) => cb(text)),
   },
 
   // Real fix: this IPC handler (validate_js_syntax) was added to main.js
