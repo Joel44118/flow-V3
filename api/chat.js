@@ -133,8 +133,13 @@ const STOP4 = ['</s>', '<|eot_id|>', 'Human:', 'User:'];
 const CB_MODELS = {
   code:     [{ model: 'gpt-oss-120b', maxTokens: 2248 }, { model: 'zai-glm-4.7', maxTokens: 1700 }],
   research: [{ model: 'gpt-oss-120b', maxTokens: 1224 }],
-  chat:     [{ model: 'zai-glm-4.7',  maxTokens: 900  }],
-  creative: [{ model: 'gpt-oss-120b', maxTokens: 1000 }],
+  // REAL FIX: 'chat' was capped at 900 tokens (~650-700 words) — Joel
+  // confirmed real, detailed replies were cutting off mid-sentence,
+  // since his actual usage is involved conversation, not quick Q&A.
+  // Raised to a genuinely generous 2200 to match how Flow is actually
+  // used day-to-day.
+  chat:     [{ model: 'zai-glm-4.7',  maxTokens: 2200 }],
+  creative: [{ model: 'gpt-oss-120b', maxTokens: 1600 }],
   pdf:      [{ model: 'zai-glm-4.7',  maxTokens: 1200 }],
 };
 
@@ -478,7 +483,7 @@ const OR_MODELS = {
     'qwen/qwen-2.5-7b-instruct:free',
   ],
 };
-const OR_TOKENS = { code: 8000, research: 4000, creative: 1000, pdf: 1200, chat: 800 };
+const OR_TOKENS = { code: 8000, research: 4000, creative: 1600, pdf: 1200, chat: 2200 };
 
 async function tryOpenRouter(messages, intent, key) {
   const models    = OR_MODELS[intent] || OR_MODELS.chat;
@@ -540,8 +545,8 @@ const GROQ_MODELS = {
     { model: 'qwen/qwen3.6-27b',    maxTokens: 1200 },
   ],
   chat:     [
-    { model: 'openai/gpt-oss-20b',  maxTokens: 900  },
-    { model: 'qwen/qwen3.6-27b',    maxTokens: 900  },
+    { model: 'openai/gpt-oss-20b',  maxTokens: 2200 },
+    { model: 'qwen/qwen3.6-27b',    maxTokens: 2200 },
   ],
 };
 
@@ -629,7 +634,7 @@ const NV_MODELS = {
 // max_tokens bumped for code/research — 3000 was sized for the OLD
 // smaller-context model's typical use; a repo-analysis task feeding in
 // many files needs real room for the response too, not just the input.
-const NV_TOKENS = { code: 8000, research: 4000, chat: 600, creative: 800, pdf: 1000 };
+const NV_TOKENS = { code: 8000, research: 4000, chat: 2200, creative: 1600, pdf: 1000 };
 
 async function tryNvidia(messages, intent, key) {
   const model     = NV_MODELS[intent] || NV_MODELS.chat;
@@ -727,13 +732,22 @@ export default async function handler(req, res) {
 
   const errors = [];
 
-  // Cerebras is fast but sometimes struggles with complex code — skip for Nemotron targets
-  if (CB_KEY && intent !== 'code') {
+  // Cerebras is fast but sometimes struggles with complex/large-context
+  // tasks — skip for Nemotron targets. REAL, DELIBERATE CHOICE (Joel's
+  // own, given NVIDIA's real 40rpm + credit-limited free tier): NVIDIA
+  // stays #1 ONLY for code and research (the two intents that genuinely
+  // benefit from Nemotron's large context), NOT for chat/creative/pdf —
+  // spending the limited NVIDIA budget on ordinary chat messages would
+  // burn through the real rate limit faster with no real benefit, since
+  // those intents don't need the large-context model anyway.
+  if (CB_KEY && intent !== 'code' && intent !== 'research') {
     try   { const r = await tryCerebras(trimmed, intent, CB_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`Cerebras: ${e.message}`); }
   }
 
-  // NVIDIA direct API — Nemotron 3 Ultra (large-context), primary for code + research
+  // NVIDIA direct API — Nemotron 3 Ultra (large-context), genuinely #1
+  // for code + research now (both skip Cerebras above), matching the
+  // large-context need those two intents actually have.
   if (NV_KEY) {
     try   { const r = await tryNvidia(trimmed, intent, NV_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`NVIDIA: ${e.message}`); }
@@ -744,10 +758,10 @@ export default async function handler(req, res) {
     catch (e) { errors.push(`OpenRouter: ${e.message}`); }
   }
 
-  // Cerebras fallback for code if OR failed
-  if (CB_KEY && intent === 'code') {
+  // Cerebras fallback for code/research if NVIDIA and OpenRouter both failed
+  if (CB_KEY && (intent === 'code' || intent === 'research')) {
     try   { const r = await tryCerebras(trimmed, intent, CB_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(`Cerebras(code fallback): ${e.message}`); }
+    catch (e) { errors.push(`Cerebras(${intent} fallback): ${e.message}`); }
   }
 
   if (GR_KEY) {
