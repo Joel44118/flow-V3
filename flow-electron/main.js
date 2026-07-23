@@ -4,7 +4,7 @@
 
 const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCapturer, powerMonitor, globalShortcut } = require('electron');
 const path = require('path');
-const { startVoiceEngine, stopVoiceEngine, setRendererLogSink } = require('./voice-engine');
+const { startVoiceEngine, stopVoiceEngine, setRendererLogSink, startDictation, stopDictation } = require('./voice-engine');
 const heartbeat = require('./heartbeat');
 
 // ── Main-process log forwarding to renderer DevTools ─────────────────────
@@ -471,6 +471,19 @@ ipcMain.handle('get_screen_size', () => {
 });
 
 ipcMain.handle('get_build_info', () => buildInfo);
+
+// REAL, Joel-requested — live dictation mode: renderer requests start,
+// gets interim text streamed via 'dictation-update' and the final result
+// via 'dictation-final' (both pushed proactively, not returned from this
+// handle call, since dictation runs asynchronously in the background
+// until real silence is detected).
+ipcMain.handle('start_dictation', () => {
+  return startDictation({
+    onUpdate: (text) => { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('dictation-update', { text }); },
+    onFinal:  (text) => { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('dictation-final', { text }); },
+  });
+});
+ipcMain.handle('stop_dictation', () => { stopDictation(); return true; });
 
 // REAL, NEW: exposes Flow's standing goal list to the renderer, so Joel
 // can actually see and manage what Flow has decided is worth pursuing —
