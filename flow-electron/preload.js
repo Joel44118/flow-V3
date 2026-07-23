@@ -58,6 +58,19 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     onCommand: (cb) => ipcRenderer.on('voice-command', (_e, { text }) => cb(text)),
   },
 
+  // ── Live dictation mode — Joel's explicit request: text streams into
+  // the input box as he talks, auto-sends after ~3-4s of real silence.
+  // start() begins the mode (reuses the same mic/engine as wake-word,
+  // pausing wake-word listening while active); onUpdate fires repeatedly
+  // with the current best-guess text; onFinal fires once with the
+  // completed text when silence is detected or stop() is called manually.
+  dictation: {
+    start: () => ipcRenderer.invoke('start_dictation'),
+    stop: () => ipcRenderer.invoke('stop_dictation'),
+    onUpdate: (cb) => ipcRenderer.on('dictation-update', (_e, { text }) => cb(text)),
+    onFinal: (cb) => ipcRenderer.on('dictation-final', (_e, { text }) => cb(text)),
+  },
+
   // Real fix: this IPC handler (validate_js_syntax) was added to main.js
   // earlier this session but never actually exposed here — meaning
   // window.__flowElectron.validateJsSyntax was undefined this whole
