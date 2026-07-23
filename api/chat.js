@@ -55,6 +55,24 @@ function detectIntent(messages) {
   if (/\b(pdf|extract\s+from|read\s+this\s+file)\b/.test(recentUser)) return 'pdf';
   if (/\b(generate\s+(an?\s+)?image|draw\s+(me\s+)?a|picture\s+of|create\s+(an?\s+)?image)\b/.test(recentUser)) return 'creative';
 
+  // REAL, CONFIRMED FIX for Joel's reported "/intel goes into an abyss
+  // with no text" bug (specifically on blank input, i.e. the FULL world
+  // brief, not a targeted search). Root cause: core/intel.js's
+  // buildIntelPrompt() produces a genuinely large prompt (starts with
+  // "WORLD INTELLIGENCE BRIEF —", packed with forex/news/tech/quakes/
+  // fires/conflicts data) that doesn't match any of the patterns above,
+  // so it silently fell through to the DEFAULT 'chat' intent — capped at
+  // 2200 max_tokens across all providers. A full brief covering 6 real
+  // data categories plus a 3-part "what matters / opportunities /
+  // signals" instruction is a genuinely large ask that can exhaust that
+  // budget before finishing, which looks exactly like Joel's reported
+  // symptom. Routing this to 'research' intent instead gives it the
+  // real 8000/4000-token budget research already has — a targeted
+  // /intel search (with actual text after it) was less likely to hit
+  // this because Joel confirmed THAT case worked, consistent with a
+  // targeted brief being smaller than a full one.
+  if (/world intelligence brief/i.test(recentUser)) return 'research';
+
   // Default to chat — don't overthink it
   return 'chat';
 }
