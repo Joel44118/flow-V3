@@ -73,7 +73,7 @@ REAL, REQUIRED RULES:
 - REAL, HARD CHARACTER LIMIT for this specific platform: the caption MUST be under ${charLimit} characters, including spaces — this platform's real post limit, confirmed current for 2026. Write a complete, well-formed post that fits — don't write something longer and let it get cut off.
 
 Reply with ONLY this JSON, no other text:
-{"caption": "the real post text", "imagePrompt": "a short (under 15 words), concrete visual description for an accompanying image — specific, not generic stock-photo language", "hashtags": ["tag1","tag2","tag3"]}`;
+{"caption": "the real post text", "imagePrompt": "a short (under 20 words), concrete visual description for an accompanying image. Write it like a professional photography brief: describe the actual subject/scene, then add 2-3 real style cues (e.g. 'natural lighting', 'shallow depth of field', 'clean minimal background', 'shot on a modern desk setup', 'soft morning light') so it reads as a polished, professional photo rather than generic clipart or stock-photo cliché.", "hashtags": ["tag1","tag2","tag3"]}`;
 
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -282,43 +282,63 @@ function _injectStyles() {
   const style = document.createElement("style");
   style.id = "content-lab-style";
   style.textContent = `
+/* REAL, FULL REDESIGN this pass — Joel explicitly asked to move away
+   from the floating draggable panel entirely, to a slide-in tray
+   anchored to the right edge, spanning the full viewport height, that
+   overlays other UI (including the button stack) rather than sharing
+   space with it. Drag is removed entirely — an edge-anchored tray
+   doesn't need repositioning, which also permanently kills the
+   drag-resize bug from before since there's no more dragging at all. */
+#content-lab-tray-tab {
+  position: fixed; top: 50%; right: 0; transform: translateY(-50%);
+  width: 28px; height: 84px;
+  background: rgba(30,20,55,0.95); border: 1px solid rgba(167,139,250,0.4);
+  border-right: none; border-radius: 10px 0 0 10px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; z-index: 9998; color: #a78bfa; font-size: 16px;
+  box-shadow: -4px 0 16px rgba(0,0,0,0.35);
+  transition: background 0.15s ease, width 0.15s ease;
+}
+#content-lab-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
+#content-lab-tray-tab .cl-tab-arrow { transition: transform 0.2s ease; }
+#content-lab-tray-tab.cl-tray-open .cl-tab-arrow { transform: rotate(180deg); }
+
 #content-lab-panel {
-  /* REAL FIX: previously centered edge-to-edge (94vw), which could sit
-     directly under the right-side brain/kb/proj/content-lab-toggle
-     button column (all at right:18px). Real clearance reserved here —
-     right:80px keeps the panel's right edge clear of that entire
-     button stack at any reasonable screen width, and the panel is now
-     positioned from the left instead of centered, so its width doesn't
-     silently creep back under the buttons on wider screens. */
-  position: fixed; bottom: 90px; left: 24px; right: 80px;
-  max-width: 1180px;
-  /* REAL FIX (this pass): was max-height:70vh, a height that's relative
-     to the VIEWPORT, not the panel's own fixed position. Once dragging
-     (see _makeDraggable below) sets an explicit top/left and clears
-     bottom, the panel's actual available vertical space between its new
-     top and the viewport's bottom edge changes depending on WHERE it was
-     dragged to — which is exactly the "dragging resizes the tray" bug
-     Joel reported. A real, fixed height (not viewport-relative) means
-     the panel is always the same real size no matter where it sits.
-     Also taller per Joel's explicit request ("make the whole tray
-     taller vertically") — 640px comfortably fits a multi-image strip +
-     caption + hashtags + post button without needing to scroll on most
-     real screens, while still leaving room above/below on a normal
-     1080p+ display. */
-  height: 640px;
-  background: rgba(15,10,30,0.97); border: 1px solid rgba(167,139,250,0.4);
-  border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  /* REAL, full redesign: fixed to the right edge, spans the ENTIRE
+     viewport height (top:0 to bottom:0), and overlays everything else
+     (including the brain/kb/proj button stack) rather than sharing
+     space with it — all per Joel's explicit request. Slides in/out via
+     transform, not display:none, so the transition animates smoothly. */
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(480px, 92vw);
+  background: rgba(15,10,30,0.98); border-left: 1px solid rgba(167,139,250,0.4);
+  box-shadow: -12px 0 40px rgba(0,0,0,0.5);
   z-index: 9999; display: flex; flex-direction: column;
   font-family: system-ui, sans-serif; color: #e5e7eb;
   overflow: hidden;
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
 }
+#content-lab-panel.cl-open { transform: translateX(0); }
+
 #content-lab-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 16px; border-bottom: 1px solid rgba(167,139,250,0.25);
-  cursor: move; user-select: none; background: rgba(167,139,250,0.08);
+  padding: 14px 16px; border-bottom: 1px solid rgba(167,139,250,0.25);
+  user-select: none; background: rgba(167,139,250,0.08);
   flex-shrink: 0;
 }
 #content-lab-header h3 { margin: 0; font-size: 14px; font-weight: 700; color: #a78bfa; letter-spacing: .03em; }
+#cl-mic-btn {
+  background: none; border: 1px solid rgba(167,139,250,0.35); border-radius: 8px;
+  color: #d8d4ff; font-size: 14px; cursor: pointer; padding: 4px 8px;
+  margin-left: auto; margin-right: 8px;
+}
+#cl-mic-btn:hover { background: rgba(167,139,250,0.15); }
+#cl-mic-btn.cl-mic-active {
+  background: rgba(248,113,113,0.2); border-color: rgba(248,113,113,0.5); color: #f87171;
+  animation: cl-mic-pulse 1.2s ease-in-out infinite;
+}
+@keyframes cl-mic-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 #content-lab-close { background: none; border: none; color: #9ca3af; font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 6px; }
 #content-lab-close:hover { color: #f87171; }
 
@@ -327,28 +347,19 @@ function _injectStyles() {
   border-bottom: 1px solid rgba(167,139,250,0.15);
 }
 
-/* REAL LAYOUT FIX: horizontal row of platform cards, not a vertical
-   stack — scrolls sideways if it overflows the panel width. */
+/* REAL LAYOUT CHANGE: the tray is now narrow and TALL (not wide and
+   short like the old floating panel), so platform cards stack
+   VERTICALLY in a scrollable column instead of a horizontal row — a
+   direct consequence of Joel's "taper vertically" request. */
 #cl-platforms-row {
-  display: flex; gap: 12px; padding: 14px 16px; overflow-x: auto;
-  overflow-y: hidden; flex: 1; align-items: stretch;
-  /* REAL BUG FIX: was align-items: flex-start, which means each card's
-     height is its own content height, NOT the row's real height. That
-     made .cl-platform-card's "max-height: 100%" resolve against an
-     undefined/content-based parent height instead of a real, bounded
-     one — so a card with enough content (multi-image strip + caption +
-     hashtags + post button) could genuinely grow taller than the
-     visible panel with no reliable way to scroll down to the cut-off
-     button, exactly matching the bug Joel reported. align-items:
-     stretch makes every card the row's REAL full height, so
-     max-height:100% on the card now resolves against a real number and
-     the card's own overflow-y:auto genuinely engages and scrolls.
-     min-height:0 below is required alongside stretch so a flex child
-     can actually shrink/scroll instead of being forced to grow to fit
-     its content regardless of the parent's real bound. */
+  display: flex; flex-direction: column; gap: 12px; padding: 14px 16px;
+  overflow-y: auto; overflow-x: hidden; flex: 1;
+  /* min-height:0 lets this flex child actually shrink/scroll within the
+     tray's fixed height rather than being forced to grow to fit all
+     cards' combined content. */
   min-height: 0;
 }
-#cl-platforms-row::-webkit-scrollbar { height: 6px; }
+#cl-platforms-row::-webkit-scrollbar { width: 6px; }
 #cl-platforms-row::-webkit-scrollbar-track { background: transparent; }
 #cl-platforms-row::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.3); border-radius: 3px; }
 #cl-platforms-row::-webkit-scrollbar-thumb:hover { background: rgba(167,139,250,0.5); }
@@ -375,89 +386,71 @@ select.cl-input, select.cl-input option {
   background: #1a1330; color: #e5e7eb;
 }
 .cl-platform-card {
-  /* REAL FIX: cards are a fixed 240px width, but platforms have
-     different real aspect ratios (TikTok 9:16 vs Bluesky 16:9 vs
-     Instagram 4:5) — without a cap, a 9:16 image at 240px wide would
-     render ~426px tall, making that ONE card visually tower over its
-     16:9/4:5 neighbors in the same horizontal row. max-height + a
-     scrollable card body keeps every card the same real, predictable
-     footprint regardless of which platform's image is showing.
-     REAL FIX (this pass): max-height:100% now resolves against a real
-     number since the parent row is align-items:stretch (was
-     flex-start), and min-height:0 lets this flex-column child actually
-     shrink to that bound instead of growing to fit its content — the
-     real, confirmed cause of the Post button being cut off with no way
-     to scroll to it. */
-  flex: 0 0 240px; max-height: 100%; min-height: 0;
+  /* REAL, full redesign for the vertical-stack tray layout: cards are
+     now full-width (not a fixed 240px column) and grow to their natural
+     content height in a scrollable vertical list, rather than being
+     squeezed into a fixed-height horizontal row. This also directly
+     replaces the old hover-zoom approach — Joel called it "whack" and
+     asked for it removed — since a full-width card in a vertical list
+     is naturally readable without needing a hover trick at all. */
+  width: 100%; flex-shrink: 0;
   border: 1px solid rgba(167,139,250,0.2);
-  border-radius: 10px; padding: 10px; background: rgba(255,255,255,0.02);
-  display: flex; flex-direction: column; overflow-y: auto;
-  /* REAL, Joel-requested: noticeably bigger on hover so content is
-     readable without clicking. transform-origin:top keeps the card
-     anchored to the row rather than growing both up and down (which
-     would visually overlap the row above it). z-index lift ensures the
-     enlarged card renders above its neighbors instead of being clipped
-     by their normal stacking order. transition is on transform only
-     (not all properties) so this stays smooth without fighting the
-     scrollbar/overflow behavior. */
-  transition: transform 0.15s ease;
-  transform-origin: top center;
-  position: relative;
+  border-radius: 10px; padding: 12px; background: rgba(255,255,255,0.02);
+  display: flex; flex-direction: column;
 }
-.cl-platform-card:hover {
-  transform: scale(1.35);
-  z-index: 10;
-  box-shadow: 0 8px 28px rgba(0,0,0,0.55);
-  background: rgba(20,14,40,0.98); /* real, solid-enough background so enlarged content doesn't show the row behind it through transparency */
-}
-.cl-platform-card::-webkit-scrollbar { width: 4px; }
-.cl-platform-card::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.3); border-radius: 2px; }
 .cl-platform-card.disabled { opacity: 0.7; }
 .cl-platform-title { font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
 .cl-badge-live { color: #4ade80; font-size: 9px; border: 1px solid rgba(74,222,128,0.4); border-radius: 10px; padding: 1px 7px; flex-shrink: 0; }
 .cl-badge-soon { color: #9ca3af; font-size: 9px; border: 1px solid rgba(156,163,175,0.4); border-radius: 10px; padding: 1px 7px; flex-shrink: 0; }
 .cl-image-strip {
-  display: flex; gap: 6px; overflow-x: auto; margin-top: 8px;
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
   flex-shrink: 0;
 }
-.cl-image-strip::-webkit-scrollbar { height: 4px; }
-.cl-image-strip::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.3); border-radius: 2px; }
 .cl-image-strip .cl-preview-img {
-  flex: 0 0 120px; width: 120px; margin-top: 0;
+  /* REAL, bigger images per Joel's "see the contents clearly" request —
+     two per row in the tray's real available width, rather than the old
+     tiny 120px horizontal-scroll thumbnails. calc() accounts for the
+     8px gap between two images. */
+  flex: 0 0 calc(50% - 4px); width: calc(50% - 4px); margin-top: 0;
 }
 .cl-preview-img {
   /* REAL FIX: cap displayed height regardless of the real aspect ratio,
      so a tall 9:16 image never blows out the card — object-fit:cover
      crops rather than distorts, keeping every card's image area a
      consistent, predictable size. */
-  width: 100%; max-height: 220px; object-fit: cover; border-radius: 8px; margin-top: 8px; flex-shrink: 0;
+  width: 100%; max-height: 260px; object-fit: cover; border-radius: 8px; margin-top: 8px; flex-shrink: 0;
 }
 .cl-preview-video {
   width: 100%; max-height: 220px; border-radius: 8px; margin-top: 8px;
   flex-shrink: 0; background: #000;
 }
 .cl-caption {
-  font-size: 11px; color: rgba(255,255,255,0.75); white-space: pre-wrap;
-  margin-top: 6px; max-height: 90px; overflow-y: auto;
-  word-wrap: break-word; overflow-wrap: anywhere; /* REAL FIX: a single long word/URL with no spaces could previously overflow the card's fixed width instead of wrapping */
+  font-size: 11px; color: rgba(255,255,255,0.85); font-family: inherit;
+  margin-top: 8px; resize: vertical; width: 100%; box-sizing: border-box;
+  padding: 8px; border-radius: 8px; border: 1px solid rgba(167,139,250,0.25);
+  background: rgba(255,255,255,0.03);
 }
+.cl-caption:focus { outline: none; border-color: rgba(167,139,250,0.6); background: rgba(255,255,255,0.05); }
 /* REAL, Joel-requested template slots — permanent placeholders that fill
    in as real content becomes ready, instead of content appearing all at
-   once with no visible structure beforehand. */
-.cl-slot-empty {
-  color: rgba(255,255,255,0.3) !important;
-  font-style: italic;
-  display: flex; align-items: center; justify-content: center;
-  text-align: center;
-}
+   once with no visible structure beforehand. Now real form elements
+   (textarea/input) rather than static text — the placeholder attribute
+   itself provides the dimmed "will appear here" hint text, so
+   cl-slot-empty only needs to handle the image slot's own placeholder
+   styling below. */
+.cl-slot-empty { /* real, minimal — actual placeholder styling for text inputs comes from ::placeholder below */ }
+.cl-caption::placeholder, .cl-hashtags::placeholder { color: rgba(255,255,255,0.3); font-style: italic; }
 .cl-image-strip.cl-slot-empty {
-  min-height: 100px; border: 1px dashed rgba(167,139,250,0.2); border-radius: 8px;
+  min-height: 140px; border: 1px dashed rgba(167,139,250,0.2); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  color: rgba(255,255,255,0.3); font-style: italic;
 }
 .cl-hashtags {
-  font-size: 10px; color: #a78bfa; margin-top: 4px;
-  word-wrap: break-word; overflow-wrap: anywhere; /* REAL FIX: previously had no overflow protection at all */
-  max-height: 40px; overflow-y: auto;
+  font-size: 11px; color: #a78bfa; margin-top: 6px; width: 100%; box-sizing: border-box;
+  padding: 7px 8px; border-radius: 8px; border: 1px solid rgba(167,139,250,0.25);
+  background: rgba(255,255,255,0.03); font-family: inherit;
 }
+.cl-hashtags:focus { outline: none; border-color: rgba(167,139,250,0.6); background: rgba(255,255,255,0.05); }
 .cl-post-all-btn {
   margin: 0 16px 14px; padding: 11px; border-radius: 10px; flex-shrink: 0;
   border: 1px solid rgba(74,222,128,0.4); background: rgba(74,222,128,0.15);
@@ -502,24 +495,9 @@ select.cl-input, select.cl-input option {
   document.head.appendChild(style);
 }
 
-// ── Real drag-to-move ────────────────────────────────────────────────────
-function _makeDraggable(panel, handle) {
-  let dragging = false, offX = 0, offY = 0;
-  handle.addEventListener("mousedown", (e) => {
-    dragging = true;
-    offX = e.clientX - panel.getBoundingClientRect().left;
-    offY = e.clientY - panel.getBoundingClientRect().top;
-  });
-  document.addEventListener("mousemove", (e) => {
-    if (!dragging) return;
-    panel.style.left = `${e.clientX - offX}px`;
-    panel.style.top  = `${e.clientY - offY}px`;
-    panel.style.right = "auto";
-    panel.style.bottom = "auto";
-    panel.style.transform = "none";
-  });
-  document.addEventListener("mouseup", () => { dragging = false; });
-}
+// REAL, drag-to-move removed entirely this pass — the tray is now
+// anchored to the right edge and slides in/out (see #content-lab-panel
+// CSS above), which doesn't need or make sense with free repositioning.
 
 // ── Real, in-card prompt replacement ─────────────────────────────────────
 // window.prompt() is confirmed unsupported in Electron's renderer.
@@ -656,14 +634,30 @@ function _renderPlatformCard(platform, container) {
   imageSlot.textContent = "🖼️ Image will appear here";
   card.appendChild(imageSlot);
 
-  const captionSlot = document.createElement("div");
+  const captionSlot = document.createElement("textarea");
   captionSlot.className = "cl-caption cl-slot-empty";
-  captionSlot.textContent = "✍️ Caption will appear here";
+  captionSlot.placeholder = "✍️ Caption will appear here — editable once generated";
+  captionSlot.rows = 3;
+  // REAL, Joel-requested: caption is genuinely editable — typing here
+  // writes straight back into state.caption, so whatever he changes it
+  // to is exactly what gets posted, not just a display copy.
+  captionSlot.addEventListener("input", () => {
+    state.caption = captionSlot.value;
+    captionSlot.classList.toggle("cl-slot-empty", !captionSlot.value.trim());
+  });
   card.appendChild(captionSlot);
 
-  const hashtagSlot = document.createElement("div");
+  const hashtagSlot = document.createElement("input");
+  hashtagSlot.type = "text";
   hashtagSlot.className = "cl-hashtags cl-slot-empty";
-  hashtagSlot.textContent = "#️⃣ Hashtags will appear here";
+  hashtagSlot.placeholder = "#️⃣ Hashtags will appear here — editable once generated";
+  // REAL, Joel-requested: hashtags are genuinely editable — typing here
+  // parses the raw text back into state.hashtags (splitting on # and/or
+  // whitespace), so edits actually persist into what gets posted.
+  hashtagSlot.addEventListener("input", () => {
+    state.hashtags = hashtagSlot.value.split(/[\s,]+/).map(t => t.replace(/^#/, "").trim()).filter(Boolean);
+    hashtagSlot.classList.toggle("cl-slot-empty", !hashtagSlot.value.trim());
+  });
   card.appendChild(hashtagSlot);
 
   const postBtnSlot = document.createElement("div"); // real, empty container — post button mounts inside this, never removed/recreated itself
@@ -709,22 +703,23 @@ function _renderPlatformCard(platform, container) {
       imageSlot.textContent = "🖼️ Image will appear here";
     }
 
-    // ── Caption slot ──
+    // ── Caption slot (real, editable textarea) ──
     if (state.caption) {
       captionSlot.classList.remove("cl-slot-empty");
-      captionSlot.textContent = state.caption;
+      if (captionSlot.value !== state.caption) captionSlot.value = state.caption;
     } else {
       captionSlot.classList.add("cl-slot-empty");
-      captionSlot.textContent = "✍️ Caption will appear here";
+      captionSlot.value = "";
     }
 
-    // ── Hashtags slot ──
+    // ── Hashtags slot (real, editable text input) ──
     if (state.hashtags && state.hashtags.length) {
       hashtagSlot.classList.remove("cl-slot-empty");
-      hashtagSlot.textContent = state.hashtags.map(t => `#${t.replace(/^#/, "")}`).join("  ");
+      const joined = state.hashtags.map(t => `#${t.replace(/^#/, "")}`).join("  ");
+      if (hashtagSlot.value !== joined) hashtagSlot.value = joined;
     } else {
       hashtagSlot.classList.add("cl-slot-empty");
-      hashtagSlot.textContent = "#️⃣ Hashtags will appear here";
+      hashtagSlot.value = "";
     }
 
     // ── Post button — mounted inside its own permanent container slot ──
@@ -968,7 +963,7 @@ async function _handlePostToAll(platformCards, statusOutput, setStatus) {
 // REAL FIX: this used to call _chat.add(...), leaking results into the
 // main chat log. Now everything renders inside Content Lab's own
 // #cl-create-output area instead.
-function _renderCreateResult(outputEl, { title, body, imgUrl }) {
+function _renderCreateResult(outputEl, { title, body, imgUrl, videoUrl }) {
   const wrap = document.createElement("div");
   wrap.className = "cl-create-result";
   const t = document.createElement("div");
@@ -981,9 +976,21 @@ function _renderCreateResult(outputEl, { title, body, imgUrl }) {
     img.src = imgUrl;
     wrap.appendChild(img);
   }
+  if (videoUrl) {
+    const vid = document.createElement("video");
+    vid.className = "cl-preview-video";
+    vid.src = videoUrl;
+    vid.controls = true;
+    vid.loop = true;
+    wrap.appendChild(vid);
+  }
   if (body) {
+    // Real, plain read-only display — NOT the .cl-caption class, since
+    // that's now styled as an editable textarea (border, background,
+    // focus state) which would look wrong for this static quick-action
+    // result summary.
     const b = document.createElement("div");
-    b.className = "cl-caption";
+    b.style.cssText = "font-size:11px;color:rgba(255,255,255,0.75);white-space:pre-wrap;margin-top:6px;word-wrap:break-word;overflow-wrap:anywhere;";
     b.textContent = body;
     wrap.appendChild(b);
   }
@@ -991,9 +998,22 @@ function _renderCreateResult(outputEl, { title, body, imgUrl }) {
 }
 
 // ── Real, complete entry point ───────────────────────────────────────────
+// REAL, redesigned this pass: previously destroyed and rebuilt the ENTIRE
+// panel from scratch every single open/close toggle (`if (_panelEl) {
+// closeContentLab(); return; }`), which also made a real slide-in
+// animation impossible — you can't transform-animate an element that
+// gets removed and recreated each time. Now the panel is built ONCE on
+// first open and persists in the DOM; opening/closing just toggles the
+// .cl-open class, letting the CSS transition (see #content-lab-panel
+// above) actually animate smoothly.
 export function openContentLab() {
-  if (_panelEl) { closeContentLab(); return; }
   _injectStyles();
+
+  if (_panelEl) {
+    _panelEl.classList.add("cl-open");
+    document.getElementById("content-lab-tray-tab")?.classList.add("cl-tray-open");
+    return;
+  }
 
   const panel = document.createElement("div");
   panel.id = "content-lab-panel";
@@ -1001,6 +1021,30 @@ export function openContentLab() {
   const header = document.createElement("div");
   header.id = "content-lab-header";
   header.innerHTML = `<h3>🧪 Content Lab</h3>`;
+
+  // REAL, Joel-requested: the tray gets its own mic button, so voice
+  // control/dictation works without needing to reach the main chat
+  // input while the tray is open and possibly covering it. Reuses the
+  // exact same Electron dictation bridge app.js's main mic button uses
+  // — no separate voice logic needed here.
+  const micBtn = document.createElement("button");
+  micBtn.id = "cl-mic-btn";
+  micBtn.title = "Voice input for Content Lab";
+  micBtn.textContent = "🎤";
+  micBtn.onclick = async () => {
+    if (!window.__flowElectron?.dictation) {
+      _speak("Voice input needs the Electron desktop app.");
+      return;
+    }
+    micBtn.classList.add("cl-mic-active");
+    window.__flowElectron.dictation.onFinal((text) => {
+      micBtn.classList.remove("cl-mic-active");
+      if (text && text.trim()) _handleVoiceCommand(text.trim());
+    });
+    await window.__flowElectron.dictation.start();
+  };
+  header.appendChild(micBtn);
+
   const closeBtn = document.createElement("button");
   closeBtn.id = "content-lab-close";
   closeBtn.textContent = "✕";
@@ -1022,8 +1066,24 @@ export function openContentLab() {
   videoBtn.onclick = async () => {
     const prompt = await _realPrompt("What should the video show?");
     if (!prompt) return;
-    _renderCreateResult(createOutput, { title: "🎬 Video — generating in the background, check your videos area when ready.", body: prompt });
-    await generateVideo(prompt); // real, existing pipeline — this one genuinely does need to surface in the app's normal video area, not duplicated here
+    const resultWrap = document.createElement("div");
+    resultWrap.className = "cl-create-result";
+    resultWrap.textContent = "🎬 Generating video (30s-2min, shared free GPU queue)...";
+    createOutput.prepend(resultWrap);
+    try {
+      // REAL FIX: previously called generateVideo(prompt) with no
+      // options, which — same real bug as the per-card video button —
+      // unconditionally wrote its progress message AND finished video
+      // straight into the main chat log, meaning this "quick action"
+      // button always leaked out of Content Lab. silent:true keeps it
+      // contained here, matching Joel's explicit "don't let it leak to
+      // chat" request.
+      const result = await generateVideo(prompt, { silent: true });
+      resultWrap.remove();
+      _renderCreateResult(createOutput, { title: "🎬 Video", videoUrl: result.videoUrl });
+    } catch (e) {
+      resultWrap.textContent = `❌ ${e.message}`;
+    }
   };
 
   const imageBtn = document.createElement("button");
@@ -1124,34 +1184,45 @@ export function openContentLab() {
   panel.appendChild(statusDrawer);
 
   document.body.appendChild(panel);
-  _makeDraggable(panel, header);
   _panelEl = panel;
 
-  const toggleBtn = document.getElementById("content-lab-toggle-btn");
-  if (toggleBtn) toggleBtn.classList.add("active");
+  // Real, triggers the slide-in transition (panel starts at
+  // transform:translateX(100%) per the CSS above; adding .cl-open
+  // animates it to translateX(0)). Uses requestAnimationFrame so the
+  // browser registers the initial transform before the class flips —
+  // otherwise the transition can get skipped on the very first open
+  // since the element was just added to the DOM in the same frame.
+  requestAnimationFrame(() => panel.classList.add("cl-open"));
+  document.getElementById("content-lab-tray-tab")?.classList.add("cl-tray-open");
 }
 
 export function closeContentLab() {
-  if (_panelEl) { _panelEl.remove(); _panelEl = null; }
-  const btn = document.getElementById("content-lab-toggle-btn");
-  if (btn) btn.classList.remove("active");
+  if (_panelEl) _panelEl.classList.remove("cl-open");
+  document.getElementById("content-lab-tray-tab")?.classList.remove("cl-tray-open");
 }
 
+// REAL FIX: previously `!!_panelEl` — correct back when the panel was
+// destroyed on close, but now that it persists in the DOM (needed for
+// the slide animation), _panelEl is truthy even while closed. Checks the
+// real, visible open state via the .cl-open class instead.
 export function isContentLabOpen() {
-  return !!_panelEl;
+  return !!_panelEl?.classList.contains("cl-open");
 }
 
-// Real button, matching kb-btn/proj-btn's exact creation pattern.
+// REAL, full redesign — replaces the old square button with a small
+// vertical tab anchored to the right edge, per Joel's explicit request.
+// Tapping it opens/closes the slide-in tray; the arrow flips direction
+// to show open/closed state.
 function _buildToggleButton() {
-  const btn = document.createElement("div");
-  btn.id = "content-lab-toggle-btn";
-  btn.title = "Content Lab";
-  btn.textContent = "🧪";
-  btn.addEventListener("click", () => {
+  const tab = document.createElement("div");
+  tab.id = "content-lab-tray-tab";
+  tab.title = "Content Lab";
+  tab.innerHTML = `<span class="cl-tab-arrow">◀</span>`;
+  tab.addEventListener("click", () => {
     if (isContentLabOpen()) closeContentLab();
     else openContentLab();
   });
-  document.body.appendChild(btn);
+  document.body.appendChild(tab);
 }
 
 // ═══════════════════════════════════════════
