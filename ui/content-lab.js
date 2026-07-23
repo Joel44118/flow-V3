@@ -54,7 +54,7 @@ const PLATFORMS = [
   { id: "bluesky",   label: "Bluesky",   live: true,  width: 1200, height: 675,  charLimit: 300  },
   { id: "tiktok",    label: "TikTok",    live: false, width: 1080, height: 1920, charLimit: 2200 },
   { id: "x",         label: "X",         live: false, width: 1600, height: 900,  charLimit: 280  },
-  { id: "youtube",   label: "YouTube",   live: false, width: 1080, height: 1920, charLimit: 5000 },
+  { id: "youtube",   label: "YouTube",   live: true,  width: 1080, height: 1920, charLimit: 5000 },
   { id: "instagram", label: "Instagram", live: false, width: 1080, height: 1350, charLimit: 2200 },
   { id: "threads",   label: "Threads",   live: false, width: 1080, height: 1350, charLimit: 500  },
 ];
@@ -631,7 +631,9 @@ function _renderPlatformCard(platform, container) {
   // regardless of what's filled in yet.
   const imageSlot = document.createElement("div");
   imageSlot.className = "cl-image-strip cl-slot-empty";
-  imageSlot.textContent = "🖼️ Image will appear here";
+  imageSlot.textContent = platform.id === "youtube"
+    ? "🎬 Use the Video button — YouTube posts need an actual video, not the image Generate produces"
+    : "🖼️ Image will appear here";
   card.appendChild(imageSlot);
 
   const captionSlot = document.createElement("textarea");
@@ -700,7 +702,9 @@ function _renderPlatformCard(platform, container) {
     } else {
       imageSlot.classList.add("cl-slot-empty");
       imageSlot.innerHTML = "";
-      imageSlot.textContent = "🖼️ Image will appear here";
+      imageSlot.textContent = platform.id === "youtube"
+        ? "🎬 Use the Video button — YouTube posts need an actual video, not the image Generate produces"
+        : "🖼️ Image will appear here";
     }
 
     // ── Caption slot (real, editable textarea) ──
@@ -723,8 +727,14 @@ function _renderPlatformCard(platform, container) {
     }
 
     // ── Post button — mounted inside its own permanent container slot ──
+    // REAL, platform-aware: Bluesky posts an IMAGE (needs state.blobs),
+    // YouTube posts a VIDEO (needs state.videoUrl) — genuinely different
+    // real requirements per platform, not a one-size-fits-all check.
     postBtnSlot.innerHTML = "";
-    if (platform.live && state.blobs && state.blobs.length && state.caption) {
+    const canPostBluesky = platform.id === "bluesky" && state.blobs && state.blobs.length && state.caption;
+    const canPostYouTube = platform.id === "youtube" && state.videoUrl && state.caption;
+
+    if (platform.live && (canPostBluesky || canPostYouTube)) {
       const postBtn = document.createElement("button");
       postBtn.className = "cl-btn cl-post-btn";
       postBtn.style.width = "100%";
@@ -732,27 +742,62 @@ function _renderPlatformCard(platform, container) {
       postBtn.style.background = "rgba(74,222,128,0.15)";
       postBtn.style.borderColor = "rgba(74,222,128,0.4)";
       postBtn.style.color = "#4ade80";
-      // Real, honest label — Bluesky posting today only sends the
-      // FIRST generated image (api/social.js's existing handler takes
-      // a single imageBase64, never confirmed to support multiple
-      // images per post, so not guessing that it does).
-      postBtn.textContent = state.blobs.length > 1 ? `Post to ${platform.label} (1st image)` : `Post to ${platform.label}`;
-      postBtn.onclick = async () => {
-        postBtn.disabled = true;
-        postBtn.textContent = "Posting...";
-        try {
-          const compressed = await _compressForBluesky(state.blobs[0]);
-          const base64 = await _blobToBase64(compressed);
-          const result = await _postToBluesky(state.caption, base64);
-          if (!result.ok) throw new Error(result.error);
-          statusEl.textContent = `✅ Posted`;
-          postBtn.textContent = "Posted ✓";
-        } catch (e) {
-          statusEl.textContent = `❌ ${e.message}`;
-          postBtn.disabled = false;
-          postBtn.textContent = `Post to ${platform.label}`;
-        }
-      };
+
+      if (canPostBluesky) {
+        // Real, honest label — Bluesky posting today only sends the
+        // FIRST generated image (api/social.js's existing handler takes
+        // a single imageBase64, never confirmed to support multiple
+        // images per post, so not guessing that it does).
+        postBtn.textContent = state.blobs.length > 1 ? `Post to ${platform.label} (1st image)` : `Post to ${platform.label}`;
+        postBtn.onclick = async () => {
+          postBtn.disabled = true;
+          postBtn.textContent = "Posting...";
+          try {
+            const compressed = await _compressForBluesky(state.blobs[0]);
+            const base64 = await _blobToBase64(compressed);
+            const result = await _postToBluesky(state.caption, base64);
+            if (!result.ok) throw new Error(result.error);
+            statusEl.textContent = `✅ Posted`;
+            postBtn.textContent = "Posted ✓";
+          } catch (e) {
+            statusEl.textContent = `❌ ${e.message}`;
+            postBtn.disabled = false;
+            postBtn.textContent = `Post to ${platform.label}`;
+          }
+        };
+      } else if (canPostYouTube) {
+        postBtn.textContent = `Post to ${platform.label}`;
+        postBtn.onclick = async () => {
+          postBtn.disabled = true;
+          postBtn.textContent = "Uploading... (can take a minute for real video processing)";
+          try {
+            // Real, actual video upload — fetches the blob from the
+            // video's own URL (generateVideo returns a real hosted URL,
+            // not a local blob), converts to base64 for the API's
+            // expected body shape.
+            const videoRes = await fetch(state.videoUrl);
+            const videoBlob = await videoRes.blob();
+            const videoBase64 = await _blobToBase64(videoBlob);
+            const res = await fetch("/api/social?platform=youtube", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                title: state.caption.slice(0, 100),
+                description: `${state.caption}\n\n${(state.hashtags || []).map(t => `#${t}`).join(" ")}`,
+                videoBase64,
+              }),
+            });
+            const result = await res.json();
+            if (!result.ok) throw new Error(result.error);
+            statusEl.textContent = `✅ Posted — ${result.url}`;
+            postBtn.textContent = "Posted ✓";
+          } catch (e) {
+            statusEl.textContent = `❌ ${e.message}`;
+            postBtn.disabled = false;
+            postBtn.textContent = `Post to ${platform.label}`;
+          }
+        };
+      }
       postBtnSlot.appendChild(postBtn);
     }
   }
