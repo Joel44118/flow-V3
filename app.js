@@ -31,6 +31,7 @@ import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
 import { initVideoGen, generateVideo, generateVideoFromImage } from "./ui/videogen.js";
 import { initMarketing, generateMarketingPost } from "./ui/marketing.js";
 import { initContentLab, openContentLab, closeContentLab, isContentLabOpen } from "./ui/content-lab.js";
+import { initThoughtLog } from "./ui/thought-log.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -542,6 +543,7 @@ initImagine(Chat, Orb);
 initVideoGen(Chat, Orb);
 initMarketing(Chat, Orb);
 initContentLab(Chat, Orb);
+initThoughtLog();
 initKnowledge(Chat);
 initProjects(Chat, (t) => sendToAI(t));
 
