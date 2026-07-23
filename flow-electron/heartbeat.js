@@ -321,37 +321,48 @@ ${recentActions.map(a => `- ${a.text}`).join('\n')}`;
 }
 
 // ── The real tick ────────────────────────────────────────────────────────
-async function _tick() {
-  console.log('[Heartbeat] Real tick at', new Date().toLocaleTimeString());
+// isFirstTick param: REAL, Joel-requested fix — he explicitly said he
+// doesn't want a marketing/posting reminder the moment he opens the app,
+// but DOES want the self-diagnostic that runs afterward. The first tick
+// (fired 60s after boot, before the normal interval even starts) skips
+// the _reasonAboutTick() decision path entirely — which is genuinely
+// where the marketing nudge and other self-initiated "message" actions
+// come from — while _selfCheck() still runs every time, including this
+// first tick, exactly as requested.
+async function _tick(isFirstTick = false) {
+  console.log('[Heartbeat] Real tick at', new Date().toLocaleTimeString(), isFirstTick ? '(first tick — reasoning/marketing skipped)' : '');
   try {
-    const decision = await _reasonAboutTick();
-    if (decision.action === "message" && decision.text) {
-      await sendSelfInitiatedMessage(decision.text);
-      await memoryStore.remember(decision.text, "decision", { selfInitiated: true });
-      // REAL, CORRECTED FIX: the previous version's real bug — confirmed
-      // by Joel still seeing repeated reminders even after the 48h
-      // cooldown was deployed — was assuming ANY unprompted message sent
-      // while the marketing angle was merely "available" must have been
-      // a marketing nudge, and starting the cooldown based on that
-      // assumption alone. That's wrong: Flow could send a genuinely
-      // unrelated message (a different reminder, a self-check) while the
-      // angle happened to be available, silently consuming the cooldown
-      // for something that was never actually about marketing — leaving
-      // the REAL marketing-nudge cooldown never properly triggered at
-      // the right moment, which is exactly the repeat Joel kept seeing.
-      //
-      // Real fix: check the actual message TEXT for real marketing/
-      // posting-related language before starting the cooldown — not an
-      // assumption based on timing alone.
-      const looksLikeMarketingNudge = /\b(marketing post|social media|bluesky|linkedin|twitter|content lab|last (real )?post|posting cadence|getting seen|visibility|share (a|an|your))\b/i.test(decision.text);
-      if (looksLikeMarketingNudge) _recordMarketingSuggestion();
-    } else if (decision.action === "scratchpad" && decision.text) {
-      await _writeScratchpad(decision.text);
-    } else if (decision.action === "self_check" && decision.text) {
-      await sendSelfInitiatedMessage(decision.text);
+    if (!isFirstTick) {
+      const decision = await _reasonAboutTick();
+      if (decision.action === "message" && decision.text) {
+        await sendSelfInitiatedMessage(decision.text);
+        await memoryStore.remember(decision.text, "decision", { selfInitiated: true });
+        // REAL, CORRECTED FIX: the previous version's real bug — confirmed
+        // by Joel still seeing repeated reminders even after the 48h
+        // cooldown was deployed — was assuming ANY unprompted message sent
+        // while the marketing angle was merely "available" must have been
+        // a marketing nudge, and starting the cooldown based on that
+        // assumption alone. That's wrong: Flow could send a genuinely
+        // unrelated message (a different reminder, a self-check) while the
+        // angle happened to be available, silently consuming the cooldown
+        // for something that was never actually about marketing — leaving
+        // the REAL marketing-nudge cooldown never properly triggered at
+        // the right moment, which is exactly the repeat Joel kept seeing.
+        //
+        // Real fix: check the actual message TEXT for real marketing/
+        // posting-related language before starting the cooldown — not an
+        // assumption based on timing alone.
+        const looksLikeMarketingNudge = /\b(marketing post|social media|bluesky|linkedin|twitter|content lab|last (real )?post|posting cadence|getting seen|visibility|share (a|an|your))\b/i.test(decision.text);
+        if (looksLikeMarketingNudge) _recordMarketingSuggestion();
+      } else if (decision.action === "scratchpad" && decision.text) {
+        await _writeScratchpad(decision.text);
+      } else if (decision.action === "self_check" && decision.text) {
+        await sendSelfInitiatedMessage(decision.text);
+      }
     }
     // Real, separate self-monitoring pass — runs every tick regardless
-    // of what the main reasoning pass decided, so it isn't crowded out.
+    // of what the main reasoning pass decided (or was skipped on the
+    // first tick), so Joel still sees this even right after opening Flow.
     await _selfCheck();
   } catch (e) {
     console.error('[Heartbeat] Real tick failure:', e.message);
@@ -364,8 +375,11 @@ function startHeartbeat() {
   _heartbeatTimer = setInterval(_tick, HEARTBEAT_INTERVAL_MS);
   // Real, deliberate: also fire one tick shortly after boot, not just
   // after the first full interval — so a fresh restart doesn't feel
-  // dormant for 15 minutes before anything happens.
-  setTimeout(_tick, 60 * 1000);
+  // dormant for 15 minutes before anything happens. Passes true so this
+  // specific tick skips the marketing/reasoning decision (Joel's real
+  // request: no reminder the moment he opens the app) while still
+  // running the self-check diagnostic he wants to keep.
+  setTimeout(() => _tick(true), 60 * 1000);
 }
 
 function stopHeartbeat() {
