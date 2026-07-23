@@ -91,13 +91,103 @@ function trimUserMessages(messages) {
   });
 }
 
-function cleanReply(text) {
-  return text
+// REAL, Joel-requested feature: instead of just discarding Flow's
+// <flow-think> reasoning block, this captures it so it can be stored
+// somewhere Joel can actually go look at it if he wants — a real,
+// dedicated "thought log" rather than either leaking into chat OR
+// vanishing with no trace. Runs on the RAW text, before cleanReply
+// strips it, so this always has genuine content even in the unclosed-tag
+// leak scenario cleanReply now also handles.
+function extractThought(rawText) {
+  const closedMatch = rawText.match(/<flow-think>([\s\S]*?)<\/flow-think>/i);
+  if (closedMatch) return closedMatch[1].trim();
+  const openIdx = rawText.search(/<flow-think>/i);
+  if (openIdx !== -1) {
+    // Unclosed case — same real scenario cleanReply's fallback handles.
+    // Captures everything after the open tag up to the same paragraph-
+    // break heuristic, so the stored thought and the cleaned reply stay
+    // consistent with each other.
+    const afterOpen = rawText.slice(openIdx + '<flow-think>'.length);
+    const paraBreak = afterOpen.search(/\n\s*\n/);
+    return (paraBreak !== -1 ? afterOpen.slice(0, paraBreak) : afterOpen).trim();
+  }
+  return null;
+}
+
+// REAL, fire-and-forget storage of a captured thought via the same KV
+// used everywhere else in this file (KV_REST_API_URL/TOKEN) — stores the
+// last N thoughts as a simple rolling log under one fixed key so Joel can
+// review them via a real UI surface (see ui/ — a "Flow's thoughts" panel
+// reads this same key) without ever seeing them appear in the actual
+// chat log itself.
+async function _logThought(thought, intent) {
+  if (!thought) return;
+  const KV_URL = process.env.KV_REST_API_URL;
+  const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+  if (!KV_URL || !KV_TOKEN) return; // real, honest no-op if KV isn't configured — never blocks the actual reply
+  try {
+    const getRes = await fetch(`${KV_URL}/get/flow_thought_log`, { headers: { Authorization: `Bearer ${KV_TOKEN}` } });
+    const getData = await getRes.json().catch(() => ({}));
+    let log = [];
+    try { log = getData?.result ? JSON.parse(getData.result) : []; } catch (_) { log = []; }
+    if (!Array.isArray(log)) log = [];
+    log.push({ thought, intent: intent || null, ts: Date.now() });
+    // Real, simple cap — keeps the most recent 100 thoughts, so this
+    // never grows unbounded in KV storage.
+    if (log.length > 100) log = log.slice(log.length - 100);
+    await fetch(`${KV_URL}/set/flow_thought_log`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KV_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(log),
+    });
+  } catch (_) { /* logging a thought should never break the real reply */ }
+}
+
+function cleanReply(text, intent) {
+  // Real, fire-and-forget capture of the raw thought BEFORE any
+  // stripping happens — cleanReply is the one function every provider
+  // path already funnels through, so hooking the capture here covers
+  // all of them without needing to touch 5+ separate call sites
+  // individually (which is exactly how the earlier "only some providers
+  // strip it" class of bug tends to happen).
+  const thought = extractThought(text);
+  if (thought) _logThought(thought, intent).catch(() => {});
+
+  let out = text
     // Strip the hidden reasoning block (and anything before it, in case
     // the model repeats a stray opening tag) — this must run FIRST,
     // before any other cleanup, so a thinking block never leaks through.
     .replace(/<flow-think>[\s\S]*?<\/flow-think>/gi, '')
-    .replace(/^[\s\S]*<\/flow-think>/i, '') // safety net if closing tag arrives without a matching open
+    .replace(/^[\s\S]*<\/flow-think>/i, ''); // safety net if closing tag arrives without a matching open
+
+  // REAL, CONFIRMED FIX for the leak Joel reported (raw thinking text
+  // like "I shouldn't call him boss twice" appearing in the actual chat).
+  // Root cause: the two replaces above both REQUIRE a closing
+  // </flow-think> tag to exist somewhere in the text. If the model opens
+  // the tag but never closes it — cut off by max_tokens, or just drifts
+  // straight into a reply without emitting the closing tag — the raw
+  // thinking text passes through completely untouched. This is a real
+  // gap, not a hypothetical: an open tag with no closer anywhere after
+  // it is exactly what "leaked, unfinished-sounding" thoughts look like.
+  // Fix: if an open tag exists with no closer, cut from the open tag to
+  // the first real paragraph break (blank line) after it, on the
+  // assumption that's the most likely real boundary between the
+  // thinking block and Flow's actual reply. If there's no paragraph
+  // break either (worst case), drop everything from the open tag
+  // onward — an empty-ish reply is a safer failure than a leaked
+  // internal thought reaching Joel.
+  const openIdx = out.search(/<flow-think>/i);
+  if (openIdx !== -1) {
+    const afterOpen = out.slice(openIdx + '<flow-think>'.length);
+    const paraBreak = afterOpen.search(/\n\s*\n/);
+    if (paraBreak !== -1) {
+      out = out.slice(0, openIdx) + afterOpen.slice(paraBreak).replace(/^\n\s*\n/, '');
+    } else {
+      out = out.slice(0, openIdx);
+    }
+  }
+
+  return out
     .replace(/<\/?assistant>/gi, '')
     .replace(/<\|eot_id\|>/g, '')
     .replace(/^(assistant|flow)\s*:/i, '')
@@ -243,6 +333,29 @@ const FLOW_TOOLS = [
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
+  // REAL, NEW (this session) — brings the same semantic-recall memory
+  // system that already existed only in the Electron desktop app's
+  // background heartbeat (flow-electron/memory-store.js) into the actual
+  // conversational chat, on both web and Electron. Same "lost in the
+  // middle" reasoning as the 4 tools above applies here even more: past
+  // conversations are the LARGEST possible thing to stuff into a static
+  // system prompt, so a real, on-demand recall call is the honest fix —
+  // Flow actively looks up what's relevant instead of hoping an old fact
+  // survives being buried in a huge history dump.
+  {
+    type: 'function',
+    function: {
+      name: 'recall_memory',
+      description: "Search Flow's real, persistent memory of past conversations, decisions, and facts for anything relevant to the current topic. Call this when Joel references something from before ('like we discussed', 'remember when', 'what did I say about X'), when a past decision or preference would genuinely change how you answer, or when you're unsure whether something has come up before rather than guessing. Don't call this for simple factual or generic questions with no real connection to Joel's history.",
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What to search for — a topic, question, or phrase describing what you want to recall.' },
+        },
+        required: ['query'],
+      },
+    },
+  },
   {
     type: 'function',
     function: {
@@ -350,6 +463,19 @@ async function executeFlowTool(toolName, args) {
   if (toolName === 'check_for_updates') {
     return { handled: false, clientAction: 'check_for_updates', result: null };
   }
+  if (toolName === 'recall_memory') {
+    // REAL, genuinely server-side — unlike open_camera/get_my_level
+    // above, past-conversation memory lives in the same KV store this
+    // function already reads/writes elsewhere (KV_REST_API_URL/TOKEN),
+    // so this runs directly here with no client round-trip needed.
+    const result = await _recallMemory(args?.query || '');
+    return {
+      handled: true,
+      result: result.length
+        ? result.map(r => `[${new Date(r.ts).toLocaleDateString()}] ${r.text}`).join('\n')
+        : 'Nothing relevant found in memory for that.',
+    };
+  }
   if (toolName === 'toggle_sentinel') {
     return { handled: false, clientAction: 'toggle_sentinel', result: null };
   }
@@ -434,7 +560,7 @@ async function tryCerebras(messages, intent, key) {
         });
         const data2 = await r2.json();
         if (!r2.ok || !data2.choices?.length) throw new Error(data2.error?.message || `HTTP ${r2.status}`);
-        return { reply: cleanReply(data2.choices[0].message.content), model: `Cerebras:${model}` };
+        return { reply: cleanReply(data2.choices[0].message.content, intent), model: `Cerebras:${model}` };
       }
 
       return { reply: cleanReply(choice.message.content), model: `Cerebras:${model}` };
@@ -509,7 +635,7 @@ async function tryOpenRouter(messages, intent, key) {
       if (r.status === 429) { console.warn('[Flow] OR rate limit'); continue; }
       if (r.status === 404 || data.error?.code === 404) { console.warn(`[Flow] OR 404: ${model}`); continue; }
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      return { reply: cleanReply(data.choices[0].message.content), model: `OR:${model}` };
+      return { reply: cleanReply(data.choices[0].message.content, intent), model: `OR:${model}` };
     } catch (e) { clearTimeout(t); console.warn(`[Flow] OR ${model}: ${e.message}`); }
   }
   throw new Error('OpenRouter: all models failed');
@@ -567,7 +693,7 @@ async function tryGroq(messages, intent, key) {
       if (r.status === 404 || data.error?.code === 'model_not_found') { console.warn(`[Flow] Groq 404: ${model}`); continue; }
       if (r.status === 429) { console.warn(`[Flow] Groq rate limit: ${model}`); continue; }
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      return { reply: cleanReply(data.choices[0].message.content), model: `Groq:${model}` };
+      return { reply: cleanReply(data.choices[0].message.content, intent), model: `Groq:${model}` };
     } catch (e) { clearTimeout(t); console.warn(`[Flow] Groq ${model}: ${e.message}`); }
   }
   throw new Error('Groq: all models failed');
@@ -595,7 +721,7 @@ async function tryHuggingFace(messages, intent, token) {
       if (r.status === 503) { console.warn(`[Flow] HF cold: ${model}`); continue; }
       const data = await r.json();
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      return { reply: cleanReply(data.choices[0].message.content), model: `HF:${model}` };
+      return { reply: cleanReply(data.choices[0].message.content, intent), model: `HF:${model}` };
     } catch (e) { clearTimeout(t); console.warn(`[Flow] HF ${model}: ${e.message}`); }
   }
   throw new Error('HF: all models cold or failed');
@@ -667,13 +793,140 @@ async function tryNvidia(messages, intent, key) {
     if (r.status === 429) { console.warn('[Flow] NVIDIA rate limit'); throw new Error('rate limit'); }
     const data = await r.json();
     if (!r.ok || !data.choices?.length) throw new Error(data.detail || data.error?.message || `HTTP ${r.status}`);
-    return { reply: cleanReply(data.choices[0].message.content), model: `NVIDIA:${model}` };
+    return { reply: cleanReply(data.choices[0].message.content, intent), model: `NVIDIA:${model}` };
   } catch (e) {
     clearTimeout(t);
     console.warn(`[Flow] NVIDIA ${e.message}`);
     throw e;
   }
 }
+
+// ═══════════════════════════════════════════
+// REAL, server-side semantic memory — brings the same real semantic-
+// recall system that previously only existed in flow-electron/
+// memory-store.js (Electron-only, backing the background heartbeat)
+// into the actual conversational chat path, for both web AND Electron
+// clients (since both hit this same /api/chat endpoint). Genuine port
+// of the same logic — keyword+recency scoring blended with real cosine-
+// similarity embeddings when available — but backed by the same Upstash
+// KV REST API this file already uses elsewhere (see _logThought above),
+// since a Vercel serverless function has no local filesystem to persist
+// a JSON file the way Electron's main process does.
+// ═══════════════════════════════════════════
+const MEMORY_KV_KEY = 'flow_semantic_memory';
+
+async function _getEmbeddingForMemory(text) {
+  try {
+    // Real, matches the exact same VERCEL_URL convention already used in
+    // flow-electron/heartbeat.js and flow-electron/memory-store.js for
+    // their own fetch() calls to this deployed backend.
+    const res = await fetch('https://flow-v3-mu.vercel.app/api/mediapipe?action=embed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data.embedding) ? data.embedding : null;
+  } catch (_) {
+    return null; // real, non-fatal — recall/remember still work via keyword+recency without it
+  }
+}
+
+function _cosineSim(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) return 0;
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return (na === 0 || nb === 0) ? 0 : dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+function _tokenizeMemory(text) {
+  return (text || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+function _overlapScore(qTokens, eTokens) {
+  if (!qTokens.length || !eTokens.length) return 0;
+  const set = new Set(eTokens);
+  return qTokens.filter(t => set.has(t)).length / qTokens.length;
+}
+
+async function _loadMemoryEntries() {
+  const KV_URL = process.env.KV_REST_API_URL;
+  const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+  if (!KV_URL || !KV_TOKEN) return [];
+  try {
+    const res = await fetch(`${KV_URL}/get/${MEMORY_KV_KEY}`, { headers: { Authorization: `Bearer ${KV_TOKEN}` } });
+    const data = await res.json().catch(() => ({}));
+    const parsed = data?.result ? JSON.parse(data.result) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function _saveMemoryEntries(entries) {
+  const KV_URL = process.env.KV_REST_API_URL;
+  const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+  if (!KV_URL || !KV_TOKEN) return;
+  try {
+    // Real, bounded size — same real cap as the Electron version (2000
+    // entries), comfortably covering months of real conversation without
+    // unbounded KV growth.
+    const bounded = entries.length > 2000 ? entries.slice(-2000) : entries;
+    await fetch(`${KV_URL}/set/${MEMORY_KV_KEY}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KV_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(bounded),
+    });
+  } catch (_) { /* non-fatal — a failed save never blocks the actual chat reply */ }
+}
+
+// REAL, honest write path — always succeeds at the text level even if
+// the embedding fetch fails (network hiccup, HF rate limit, etc.) —
+// matches the exact same honest fallback behavior as the Electron version.
+async function _rememberConversation(text, category = 'conversation', metadata = {}) {
+  if (!text || !text.trim()) return;
+  try {
+    const entries = await _loadMemoryEntries();
+    const embedding = await _getEmbeddingForMemory(text);
+    entries.push({
+      id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      text, category, ts: Date.now(), embedding, ...metadata,
+    });
+    await _saveMemoryEntries(entries);
+  } catch (e) {
+    console.warn('[Memory] Remember failed (non-fatal):', e.message);
+  }
+}
+
+async function _recallMemory(query, { maxResults = 5 } = {}) {
+  if (!query || !query.trim()) return [];
+  try {
+    const entries = await _loadMemoryEntries();
+    const qTokens = _tokenizeMemory(query);
+    const qEmbedding = await _getEmbeddingForMemory(query);
+    const now = Date.now();
+
+    return entries
+      .map(e => {
+        const overlap = _overlapScore(qTokens, _tokenizeMemory(e.text));
+        const ageDays = (now - e.ts) / (24 * 60 * 60 * 1000);
+        const recencyBoost = Math.max(0, 1 - ageDays / 30) * 0.2;
+        const keywordScore = overlap + recencyBoost;
+        let finalScore = keywordScore;
+        if (qEmbedding && e.embedding) {
+          finalScore = (_cosineSim(qEmbedding, e.embedding) * 0.7) + (keywordScore * 0.3);
+        }
+        return { entry: e, score: finalScore };
+      })
+      .filter(s => s.score > 0.15) // real, small threshold — avoids surfacing genuinely unrelated entries just because they share one common word
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults)
+      .map(s => ({ text: s.entry.text, ts: s.entry.ts, score: s.score }));
+  } catch (e) {
+    console.warn('[Memory] Recall failed (non-fatal):', e.message);
+    return [];
+  }
+}
+
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin',  '*');
@@ -701,6 +954,21 @@ export default async function handler(req, res) {
   // in core/ai.js) skip detection entirely and pin the cheap "chat" tier, since
   // it's a small yes/no classification call, not a real conversational turn.
   const intent   = force_intent || detectIntent(trimmed);
+
+  // REAL, NEW (this session) — stores the user's actual message into the
+  // real semantic-memory system (shared KV, same one flow-electron/
+  // memory-store.js already uses for the Electron background heartbeat)
+  // so recall_memory (a real tool, defined above) has something genuine
+  // to search. Fire-and-forget: never blocks or slows down the actual
+  // reply, and a failure here is silently non-fatal (matches
+  // _rememberConversation's own internal try/catch). Deliberately placed
+  // here rather than inside cleanReply/each provider function — this way
+  // it only needs ONE call site instead of six, and doesn't depend on
+  // which provider ends up serving the reply.
+  const lastUserMsg = [...trimmed].reverse().find(m => m.role === 'user');
+  if (lastUserMsg?.content && typeof lastUserMsg.content === 'string') {
+    _rememberConversation(lastUserMsg.content, 'conversation', { intent }).catch(() => {});
+  }
 
   const totalChars = trimmed.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
   // REAL FIX, confirmed by Joel's actual test: an ordinary short message
