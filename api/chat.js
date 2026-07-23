@@ -161,6 +161,16 @@ async function _logThought(thought, intent) {
   } catch (_) { /* logging a thought should never break the real reply */ }
 }
 
+// REAL, Joel-requested proactive-idea feature — extracts an OPTIONAL
+// <flow-idea> block (see identity.js's "PROACTIVE IDEAS" instruction).
+// Unlike flow-think, this is meant to be RARE and is surfaced to Joel
+// separately (not stripped/hidden) — most replies will have none at all,
+// which is by design, not a bug.
+function extractIdea(rawText) {
+  const match = rawText.match(/<flow-idea>([\s\S]*?)<\/flow-idea>/i);
+  return match ? match[1].trim() : null;
+}
+
 function cleanReply(text, intent) {
   // Real, fire-and-forget capture of the raw thought BEFORE any
   // stripping happens — cleanReply is the one function every provider
@@ -171,12 +181,21 @@ function cleanReply(text, intent) {
   const thought = extractThought(text);
   if (thought) _logThought(thought, intent).catch(() => {});
 
+  // REAL, Joel-requested — captures the optional proactive idea (if the
+  // model included one) BEFORE stripping, same reasoning as thought
+  // capture above.
+  const idea = extractIdea(text);
+
   let out = text
     // Strip the hidden reasoning block (and anything before it, in case
     // the model repeats a stray opening tag) — this must run FIRST,
     // before any other cleanup, so a thinking block never leaks through.
     .replace(/<flow-think>[\s\S]*?<\/flow-think>/gi, '')
-    .replace(/^[\s\S]*<\/flow-think>/i, ''); // safety net if closing tag arrives without a matching open
+    .replace(/^[\s\S]*<\/flow-think>/i, '') // safety net if closing tag arrives without a matching open
+    // Real, also strip the idea block from the main reply text — it's
+    // surfaced separately (see the `idea` return value below), not
+    // shown inline as part of the normal reply.
+    .replace(/<flow-idea>[\s\S]*?<\/flow-idea>/gi, '');
 
   // REAL, CONFIRMED FIX for the leak Joel reported (raw thinking text
   // like "I shouldn't call him boss twice" appearing in the actual chat).
@@ -205,13 +224,18 @@ function cleanReply(text, intent) {
     }
   }
 
-  return out
+  const reply = out
     .replace(/<\/?assistant>/gi, '')
     .replace(/<\|eot_id\|>/g, '')
     .replace(/^(assistant|flow)\s*:/i, '')
     .replace(/\*\*/g, '')
     .replace(/^#+\s/gm, '')
     .trim();
+
+  // REAL, changed return shape: was a bare string, now {reply, idea} so
+  // the proactive idea can travel alongside the reply without needing a
+  // second round-trip. All 5 call sites updated accordingly.
+  return { reply, idea };
 }
 
 const STOP4 = ['</s>', '<|eot_id|>', 'Human:', 'User:'];
@@ -578,7 +602,7 @@ async function tryCerebras(messages, intent, key) {
         });
         const data2 = await r2.json();
         if (!r2.ok || !data2.choices?.length) throw new Error(data2.error?.message || `HTTP ${r2.status}`);
-        return { reply: cleanReply(data2.choices[0].message.content, intent), model: `Cerebras:${model}` };
+        const cleaned = cleanReply(data2.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `Cerebras:${model}` };
       }
 
       return { reply: cleanReply(choice.message.content), model: `Cerebras:${model}` };
@@ -653,7 +677,7 @@ async function tryOpenRouter(messages, intent, key) {
       if (r.status === 429) { console.warn('[Flow] OR rate limit'); continue; }
       if (r.status === 404 || data.error?.code === 404) { console.warn(`[Flow] OR 404: ${model}`); continue; }
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      return { reply: cleanReply(data.choices[0].message.content, intent), model: `OR:${model}` };
+      const cleaned = cleanReply(data.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `OR:${model}` };
     } catch (e) { clearTimeout(t); console.warn(`[Flow] OR ${model}: ${e.message}`); }
   }
   throw new Error('OpenRouter: all models failed');
@@ -711,7 +735,7 @@ async function tryGroq(messages, intent, key) {
       if (r.status === 404 || data.error?.code === 'model_not_found') { console.warn(`[Flow] Groq 404: ${model}`); continue; }
       if (r.status === 429) { console.warn(`[Flow] Groq rate limit: ${model}`); continue; }
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      return { reply: cleanReply(data.choices[0].message.content, intent), model: `Groq:${model}` };
+      const cleaned = cleanReply(data.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `Groq:${model}` };
     } catch (e) { clearTimeout(t); console.warn(`[Flow] Groq ${model}: ${e.message}`); }
   }
   throw new Error('Groq: all models failed');
@@ -739,7 +763,7 @@ async function tryHuggingFace(messages, intent, token) {
       if (r.status === 503) { console.warn(`[Flow] HF cold: ${model}`); continue; }
       const data = await r.json();
       if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      return { reply: cleanReply(data.choices[0].message.content, intent), model: `HF:${model}` };
+      const cleaned = cleanReply(data.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `HF:${model}` };
     } catch (e) { clearTimeout(t); console.warn(`[Flow] HF ${model}: ${e.message}`); }
   }
   throw new Error('HF: all models cold or failed');
@@ -811,7 +835,7 @@ async function tryNvidia(messages, intent, key) {
     if (r.status === 429) { console.warn('[Flow] NVIDIA rate limit'); throw new Error('rate limit'); }
     const data = await r.json();
     if (!r.ok || !data.choices?.length) throw new Error(data.detail || data.error?.message || `HTTP ${r.status}`);
-    return { reply: cleanReply(data.choices[0].message.content, intent), model: `NVIDIA:${model}` };
+    const cleaned = cleanReply(data.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `NVIDIA:${model}` };
   } catch (e) {
     clearTimeout(t);
     console.warn(`[Flow] NVIDIA ${e.message}`);
