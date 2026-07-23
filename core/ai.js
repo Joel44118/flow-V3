@@ -35,6 +35,51 @@ export function setUI(chat, orb) { _chat = chat; _orb = orb; }
 // trigger — see the clientAction handling in sendMessage below.
 export function setClientActionHandler(fn) { _onClientAction = fn; }
 
+// REAL, Joel-requested proactive-idea feature — shows a small, distinct
+// floating notice (NOT a normal chat bubble) when the model includes an
+// optional <flow-idea> block (see identity.js's "PROACTIVE IDEAS"
+// instruction, and chat.js's extractIdea/cleanReply). Deliberately kept
+// as a self-contained, separate UI element rather than routed through
+// Chat.add — this should read as a distinct "Flow noticed something"
+// notice, not blend into the normal conversation flow, and building it
+// standalone here avoids any risk of disrupting Chat's existing
+// rendering/role handling.
+function _showProactiveIdea(idea) {
+  if (!idea) return;
+  if (document.getElementById("flow-idea-style") === null) {
+    const style = document.createElement("style");
+    style.id = "flow-idea-style";
+    style.textContent = `
+#flow-idea-toast {
+  position: fixed; bottom: 90px; left: 24px; max-width: 360px;
+  background: rgba(30,20,55,0.97); border: 1px solid rgba(167,139,250,0.5);
+  border-radius: 12px; padding: 12px 14px; box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+  z-index: 9995; font-family: system-ui, sans-serif; color: #e5e7eb;
+  animation: flow-idea-in 0.25s ease;
+}
+@keyframes flow-idea-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+#flow-idea-toast .fi-label { font-size: 10px; font-weight: 700; color: #a78bfa; letter-spacing: .04em; margin-bottom: 6px; display:flex; justify-content:space-between; align-items:center; }
+#flow-idea-toast .fi-close { cursor: pointer; color: #9ca3af; font-size: 14px; }
+#flow-idea-toast .fi-close:hover { color: #f87171; }
+#flow-idea-toast .fi-text { font-size: 12px; line-height: 1.4; color: rgba(255,255,255,0.85); }
+`;
+    document.head.appendChild(style);
+  }
+  // Real, only ever one at a time — a new idea replaces any still-shown
+  // one rather than stacking multiple toasts.
+  document.getElementById("flow-idea-toast")?.remove();
+  const toast = document.createElement("div");
+  toast.id = "flow-idea-toast";
+  toast.innerHTML = `<div class="fi-label"><span>💡 FLOW HAD A THOUGHT</span><span class="fi-close">✕</span></div><div class="fi-text"></div>`;
+  toast.querySelector(".fi-text").textContent = idea;
+  toast.querySelector(".fi-close").onclick = () => toast.remove();
+  document.body.appendChild(toast);
+  // Real, auto-dismiss after a while so it doesn't linger forever if
+  // Joel doesn't interact with it — doesn't demand attention, just a
+  // passing notice he can catch if he's looking.
+  setTimeout(() => toast.remove(), 25000);
+}
+
 // REAL BUG FIXED: identity.js's REASONING STEP instructs the model to
 // think inside a <flow-think>...</flow-think> block before its real
 // reply, with an explicit note that this block "is stripped before
@@ -323,6 +368,9 @@ export async function sendMessage(overrideText, opts = {}) {
 
     const data = await res.json();
     data.reply = stripFlowThink(data.reply); // REAL FIX — see stripFlowThink above
+    // REAL, Joel-requested — surfaces an optional proactive idea the
+    // model noticed, in its own distinct notice, separate from the reply.
+    _showProactiveIdea(data.idea);
     // REAL BUG FIXED: a successful tool-call response legitimately has an
     // EMPTY reply string by design (api/chat.js returns `reply:
     // choice.message.content || ''` when the model calls a client-side
@@ -523,6 +571,9 @@ export async function sendToAI(text) {
     }
     const data = await res.json();
     data.reply = stripFlowThink(data.reply); // REAL FIX — same leak as sendMessage
+    // REAL, Joel-requested — surfaces an optional proactive idea the
+    // model noticed, in its own distinct notice, separate from the reply.
+    _showProactiveIdea(data.idea);
     // Same real bug fix as sendMessage above — empty reply + a
     // clientAction is a legitimate successful tool-call response, not an
     // error.
