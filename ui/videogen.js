@@ -138,10 +138,10 @@ export async function generateVideo(promptText, opts = {}) {
   const duration = Math.min(8.5, Math.max(0.3, opts.duration || 4));
   const negativePrompt = opts.negativePrompt || DEFAULT_NEGATIVE;
 
-  _chat?.add(
+  _chat?.add ? (!opts.silent && _chat.add(
     `🎬 Generating a ${aspect} video — "${cleanPrompt}"...\n\nThis runs on a free shared GPU queue, so it can take anywhere from 30 seconds to a couple of minutes. I'll post it here the moment it's ready.`,
     "bot"
-  );
+  )) : null;
   _orb?.setState("thinking");
 
   try {
@@ -172,8 +172,19 @@ export async function generateVideo(promptText, opts = {}) {
     }
 
     console.log(`[VideoGen] ✓ LTX-Video (Lightricks Space) — seed ${result?.data?.[1]}`);
-    _renderCard(videoUrl, cleanPrompt, "LTX-Video");
-    Speech.speak("Video's ready, Boss.");
+    // REAL, Joel-requested fix: Content Lab's own video button was
+    // calling this exact same function, which unconditionally wrote into
+    // the main chat log (#col-left) via _renderCard below — meaning a
+    // video generated FROM Content Lab always leaked into the chat
+    // instead of staying inside its own card, with no way to redirect it.
+    // opts.silent (set by content-lab.js) skips both the chat progress
+    // message above and the chat card here; the real video data is
+    // returned either way so the caller can render it wherever it
+    // actually belongs.
+    if (!opts.silent) {
+      _renderCard(videoUrl, cleanPrompt, "LTX-Video");
+      Speech.speak("Video's ready, Boss.");
+    }
     _orb?.setState("idle");
     return { videoUrl, seed: result?.data?.[1] };
   } catch (e) {
@@ -183,7 +194,9 @@ export async function generateVideo(promptText, opts = {}) {
     const message = /queue|busy|wait/i.test(e.message || "")
       ? "The free queue is busy right now — this Space runs on shared GPU time, so real wait happens. Worth trying again in a bit."
       : `Video generation failed: ${e.message}`;
-    _chat?.addError ? _chat.addError(message) : _chat?.add(message, "bot");
+    if (!opts.silent) {
+      _chat?.addError ? _chat.addError(message) : _chat?.add(message, "bot");
+    }
     throw new Error(message);
   }
 }
