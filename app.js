@@ -706,7 +706,50 @@ sendBtn.addEventListener("click", doSend);
 // listener below. Web/browser builds still rely on click-to-record only,
 // since a browser tab can't keep a mic hot in the background.
 let _isRecording = false;
+let _isDictating = false;
+
+// REAL, Joel-requested: live dictation via Electron's voice-engine.js —
+// text streams into the actual visible input box as he talks, and
+// auto-sends once ~3-4s of real silence is detected. Only available in
+// the Electron build (window.__flowElectron.dictation exists there —
+// see preload.js); web/browser builds fall through to the existing
+// click-to-record HF-Whisper flow below, unchanged.
+async function _startDictationMode() {
+  _isDictating = true;
+  micBtn.classList.add("recording");
+  Orb.setState("listening");
+  window.__flowElectron.dictation.onUpdate((text) => {
+    if (_inputEl) _inputEl.value = text;
+  });
+  window.__flowElectron.dictation.onFinal((text) => {
+    _isDictating = false;
+    micBtn.classList.remove("recording");
+    Orb.setState("idle");
+    if (_inputEl) _inputEl.value = "";
+    if (text && text.trim()) flowSend(text.trim());
+  });
+  await window.__flowElectron.dictation.start();
+}
+
 micBtn.addEventListener("click", async () => {
+  // REAL, mode-aware dispatch: Electron gets real live dictation;
+  // web/browser keeps the existing click-to-record-then-transcribe flow
+  // completely unchanged below.
+  if (window.__flowElectron?.dictation) {
+    if (_isDictating) {
+      await window.__flowElectron.dictation.stop(); // real, forces early finalization — onFinal above still fires normally
+      return;
+    }
+    try {
+      await _startDictationMode();
+    } catch (e) {
+      _isDictating = false;
+      micBtn.classList.remove("recording");
+      Chat.addError?.(`Couldn't start dictation: ${e.message}`);
+    }
+    return;
+  }
+
   if (!_isRecording) {
     try {
       await startRecording();
