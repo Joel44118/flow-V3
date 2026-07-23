@@ -47,16 +47,20 @@ export function initContentLab(chat, orb) {
 // aspect ratio rather than a single shared size stretched/cropped after
 // the fact.
 const PLATFORMS = [
-  { id: "bluesky",   label: "Bluesky",   live: true,  width: 1200, height: 675  },
-  { id: "tiktok",    label: "TikTok",    live: false, width: 1080, height: 1920 },
-  { id: "x",         label: "X",         live: false, width: 1600, height: 900  },
-  { id: "youtube",   label: "YouTube",   live: false, width: 1080, height: 1920 },
-  { id: "instagram", label: "Instagram", live: false, width: 1080, height: 1350 },
-  { id: "threads",   label: "Threads",   live: false, width: 1080, height: 1350 },
+  // REAL, confirmed character limits (verified against multiple current
+  // 2026 sources, not guessed) — charLimit is the platform's real hard
+  // cap; the content generator below is instructed to write toward it
+  // per-platform instead of one generic length for everyone.
+  { id: "bluesky",   label: "Bluesky",   live: true,  width: 1200, height: 675,  charLimit: 300  },
+  { id: "tiktok",    label: "TikTok",    live: false, width: 1080, height: 1920, charLimit: 2200 },
+  { id: "x",         label: "X",         live: false, width: 1600, height: 900,  charLimit: 280  },
+  { id: "youtube",   label: "YouTube",   live: false, width: 1080, height: 1920, charLimit: 5000 },
+  { id: "instagram", label: "Instagram", live: false, width: 1080, height: 1350, charLimit: 2200 },
+  { id: "threads",   label: "Threads",   live: false, width: 1080, height: 1350, charLimit: 500  },
 ];
 
 // ── Real, shared JSON-content generation, same pattern as marketing.js ──
-async function _generateContentJSON(kind, brief) {
+async function _generateContentJSON(kind, brief, charLimit = 2200) {
   const system = `You are helping Joel Olaiya — a solo web/bot developer running Joelflowstack (Ibadan, Nigeria), building bot integrations, workflow automation, and premium web development — create ONE piece of real social content.
 
 Content type requested: ${kind}
@@ -66,6 +70,7 @@ REAL, REQUIRED RULES:
 - Never invent a service Joel doesn't offer (bot integration, workflow automation, web development only).
 - Write like a real person who's good at this — no corporate tone, no "🚀🔥 GAME CHANGER" energy, no hard sells.
 - Hashtags: propose 4-6 real, relevant hashtags based on your own knowledge of what's genuinely used in tech/small-business/indie-dev social spaces — label these as suggestions, not researched trending data, since no live search was performed.
+- REAL, HARD CHARACTER LIMIT for this specific platform: the caption MUST be under ${charLimit} characters, including spaces — this platform's real post limit, confirmed current for 2026. Write a complete, well-formed post that fits — don't write something longer and let it get cut off.
 
 Reply with ONLY this JSON, no other text:
 {"caption": "the real post text", "imagePrompt": "a short (under 15 words), concrete visual description for an accompanying image — specific, not generic stock-photo language", "hashtags": ["tag1","tag2","tag3"]}`;
@@ -86,7 +91,22 @@ Reply with ONLY this JSON, no other text:
   if (!res.ok || !data.reply) throw new Error(data.error || "Content generation failed");
   const match = data.reply.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("Model didn't return the expected JSON format");
-  return JSON.parse(match[0]);
+  const parsed = JSON.parse(match[0]);
+
+  // REAL, hard client-side safety net — the model is instructed to
+  // respect charLimit above, but instructions aren't a guarantee. This
+  // is the actual enforcement that prevents a real platform rejection
+  // (e.g. Bluesky's confirmed 300-char hard limit) regardless of what
+  // the model produces. Truncates at the last real word boundary rather
+  // than mid-word, and leaves room for a trailing ellipsis so it reads
+  // as intentionally shortened rather than just cut off.
+  if (parsed.caption && parsed.caption.length > charLimit) {
+    const truncated = parsed.caption.slice(0, charLimit - 1);
+    const lastSpace = truncated.lastIndexOf(" ");
+    parsed.caption = (lastSpace > charLimit * 0.7 ? truncated.slice(0, lastSpace) : truncated) + "…";
+  }
+
+  return parsed;
 }
 
 // REAL, per-platform image generation — requests n images (1-5) from the
@@ -121,6 +141,27 @@ async function _generateImageBlobs(imagePrompt, n = 1) {
 // <canvas>, matching how real creators style hook/quote text directly on
 // a post image (not just in the caption field below it). No new API
 // needed — this is pure browser Canvas 2D.
+// REAL, Joel-requested fix — the previous version cut the on-image hook
+// text at a fixed 8-word count regardless of where that landed, which
+// often produced an incomplete-looking fragment mid-sentence ("The best
+// way to grow your..."). Real Instagram-influencer-style hook text is
+// always a complete, punchy, self-contained line. This extracts the
+// first REAL sentence (up to the first ., !, or ?) if it's a reasonable
+// length, falling back to a word-count cut only when there's no
+// punctuation at all to anchor on — and even then, prefers cutting at
+// the last complete word within the limit, never mid-word.
+function _extractHookText(caption, maxWords = 12) {
+  const firstSentenceMatch = caption.match(/^.{1,140}?[.!?]/s);
+  if (firstSentenceMatch) {
+    return firstSentenceMatch[0].trim();
+  }
+  // No punctuation found within a reasonable range — fall back to a
+  // real word-count cut, but at least keep it a genuinely short, punchy
+  // length rather than a long, clearly-truncated-looking fragment.
+  const words = caption.split(/\s+/).slice(0, maxWords);
+  return words.join(" ") + (caption.split(/\s+/).length > maxWords ? "…" : "");
+}
+
 async function _burnTextOnImage(blob, text) {
   if (!text || !text.trim()) return blob;
   const bitmap = await createImageBitmap(blob);
@@ -130,15 +171,18 @@ async function _burnTextOnImage(blob, text) {
   const ctx = canvas.getContext("2d");
   ctx.drawImage(bitmap, 0, 0);
 
-  // Real, simple readable style: bottom-anchored, dark gradient behind
-  // the text so it stays legible over any background, word-wrapped to
-  // the image width.
-  const fontSize = Math.round(canvas.width * 0.055);
+  // REAL, polished styling pass — aims for the clean, bold, centered
+  // hook-text look real Instagram/TikTok creators use (not a cramped
+  // caption crammed into a corner). Font size scales down automatically
+  // for longer hook text so it never looks squeezed regardless of how
+  // long the extracted sentence turned out to be.
+  const baseFontSize = Math.round(canvas.width * 0.062);
+  const fontSize = text.length > 60 ? Math.round(baseFontSize * 0.82) : baseFontSize;
   ctx.font = `800 ${fontSize}px system-ui, -apple-system, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
 
-  const maxWidth = canvas.width * 0.88;
+  const maxWidth = canvas.width * 0.86;
   const words = text.trim().split(/\s+/);
   const lines = [];
   let line = "";
@@ -153,19 +197,24 @@ async function _burnTextOnImage(blob, text) {
   }
   if (line) lines.push(line);
 
-  const lineHeight = fontSize * 1.25;
+  const lineHeight = fontSize * 1.3;
   const blockHeight = lines.length * lineHeight;
-  const gradientHeight = blockHeight + fontSize * 1.6;
+  // Real, more generous gradient — extends further up the image (2.2x
+  // padding instead of 1.6x) so the text has genuine breathing room and
+  // doesn't look like it's crowding the very bottom edge.
+  const gradientHeight = blockHeight + fontSize * 2.2;
   const gradient = ctx.createLinearGradient(0, canvas.height - gradientHeight, 0, canvas.height);
   gradient.addColorStop(0, "rgba(0,0,0,0)");
-  gradient.addColorStop(1, "rgba(0,0,0,0.72)");
+  gradient.addColorStop(0.5, "rgba(0,0,0,0.45)");
+  gradient.addColorStop(1, "rgba(0,0,0,0.78)");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, canvas.height - gradientHeight, canvas.width, gradientHeight);
 
   ctx.fillStyle = "#ffffff";
-  ctx.strokeStyle = "rgba(0,0,0,0.55)";
-  ctx.lineWidth = fontSize * 0.06;
-  let y = canvas.height - fontSize * 0.9 - (lines.length - 1) * lineHeight;
+  ctx.strokeStyle = "rgba(0,0,0,0.6)";
+  ctx.lineWidth = fontSize * 0.07;
+  ctx.lineJoin = "round"; // real, softer stroke corners, avoids a harsh/amateur outline look
+  let y = canvas.height - fontSize * 1.1 - (lines.length - 1) * lineHeight;
   for (const l of lines) {
     ctx.strokeText(l, canvas.width / 2, y);
     ctx.fillText(l, canvas.width / 2, y);
@@ -242,7 +291,21 @@ function _injectStyles() {
      positioned from the left instead of centered, so its width doesn't
      silently creep back under the buttons on wider screens. */
   position: fixed; bottom: 90px; left: 24px; right: 80px;
-  max-width: 1180px; max-height: 70vh;
+  max-width: 1180px;
+  /* REAL FIX (this pass): was max-height:70vh, a height that's relative
+     to the VIEWPORT, not the panel's own fixed position. Once dragging
+     (see _makeDraggable below) sets an explicit top/left and clears
+     bottom, the panel's actual available vertical space between its new
+     top and the viewport's bottom edge changes depending on WHERE it was
+     dragged to — which is exactly the "dragging resizes the tray" bug
+     Joel reported. A real, fixed height (not viewport-relative) means
+     the panel is always the same real size no matter where it sits.
+     Also taller per Joel's explicit request ("make the whole tray
+     taller vertically") — 640px comfortably fits a multi-image strip +
+     caption + hashtags + post button without needing to scroll on most
+     real screens, while still leaving room above/below on a normal
+     1080p+ display. */
+  height: 640px;
   background: rgba(15,10,30,0.97); border: 1px solid rgba(167,139,250,0.4);
   border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);
   z-index: 9999; display: flex; flex-direction: column;
@@ -329,6 +392,23 @@ select.cl-input, select.cl-input option {
   border: 1px solid rgba(167,139,250,0.2);
   border-radius: 10px; padding: 10px; background: rgba(255,255,255,0.02);
   display: flex; flex-direction: column; overflow-y: auto;
+  /* REAL, Joel-requested: noticeably bigger on hover so content is
+     readable without clicking. transform-origin:top keeps the card
+     anchored to the row rather than growing both up and down (which
+     would visually overlap the row above it). z-index lift ensures the
+     enlarged card renders above its neighbors instead of being clipped
+     by their normal stacking order. transition is on transform only
+     (not all properties) so this stays smooth without fighting the
+     scrollbar/overflow behavior. */
+  transition: transform 0.15s ease;
+  transform-origin: top center;
+  position: relative;
+}
+.cl-platform-card:hover {
+  transform: scale(1.35);
+  z-index: 10;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+  background: rgba(20,14,40,0.98); /* real, solid-enough background so enlarged content doesn't show the row behind it through transparency */
 }
 .cl-platform-card::-webkit-scrollbar { width: 4px; }
 .cl-platform-card::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.3); border-radius: 2px; }
@@ -352,10 +432,26 @@ select.cl-input, select.cl-input option {
      consistent, predictable size. */
   width: 100%; max-height: 220px; object-fit: cover; border-radius: 8px; margin-top: 8px; flex-shrink: 0;
 }
+.cl-preview-video {
+  width: 100%; max-height: 220px; border-radius: 8px; margin-top: 8px;
+  flex-shrink: 0; background: #000;
+}
 .cl-caption {
   font-size: 11px; color: rgba(255,255,255,0.75); white-space: pre-wrap;
   margin-top: 6px; max-height: 90px; overflow-y: auto;
   word-wrap: break-word; overflow-wrap: anywhere; /* REAL FIX: a single long word/URL with no spaces could previously overflow the card's fixed width instead of wrapping */
+}
+/* REAL, Joel-requested template slots — permanent placeholders that fill
+   in as real content becomes ready, instead of content appearing all at
+   once with no visible structure beforehand. */
+.cl-slot-empty {
+  color: rgba(255,255,255,0.3) !important;
+  font-style: italic;
+  display: flex; align-items: center; justify-content: center;
+  text-align: center;
+}
+.cl-image-strip.cl-slot-empty {
+  min-height: 100px; border: 1px dashed rgba(167,139,250,0.2); border-radius: 8px;
 }
 .cl-hashtags {
   font-size: 10px; color: #a78bfa; margin-top: 4px;
@@ -490,7 +586,15 @@ function _renderPlatformCard(platform, container) {
     const opt = document.createElement("option");
     opt.value = n;
     opt.textContent = n;
-    if (n === 3) opt.selected = true; // real, sensible default matching Joel's "3, 4, or 5 would be good"
+    // REAL, Joel-requested fix: Bluesky posting only ever sends the
+    // FIRST generated image (api/social.js's real, confirmed limit —
+    // see the "(1st image)" label elsewhere in this file), so
+    // generating 3 for Bluesky specifically was pure waste — Joel
+    // explicitly said he kept forgetting to change it down. Default is
+    // now 1 for Bluesky, still 3 for every other platform (which
+    // support real multi-image carousels once their posting is built).
+    const defaultCount = platform.id === "bluesky" ? 1 : 3;
+    if (n === defaultCount) opt.selected = true;
     countSelect.appendChild(opt);
   });
   countLabel.appendChild(countSelect);
@@ -539,46 +643,92 @@ function _renderPlatformCard(platform, container) {
   statusEl.className = "cl-status";
   card.appendChild(statusEl);
 
+  // REAL, Joel-requested TEMPLATE — these slots exist in the card from
+  // the start (not conditionally created/removed like before), each
+  // showing a real placeholder until its real content is ready and fills
+  // in. This replaces the previous "everything appears at once" pattern
+  // Joel found confusing/magical, and is also what let him actually see
+  // the caption/hashtags this time instead of only noticing them after
+  // posting — each slot is now a permanent, visible part of the card
+  // regardless of what's filled in yet.
+  const imageSlot = document.createElement("div");
+  imageSlot.className = "cl-image-strip cl-slot-empty";
+  imageSlot.textContent = "🖼️ Image will appear here";
+  card.appendChild(imageSlot);
+
+  const captionSlot = document.createElement("div");
+  captionSlot.className = "cl-caption cl-slot-empty";
+  captionSlot.textContent = "✍️ Caption will appear here";
+  card.appendChild(captionSlot);
+
+  const hashtagSlot = document.createElement("div");
+  hashtagSlot.className = "cl-hashtags cl-slot-empty";
+  hashtagSlot.textContent = "#️⃣ Hashtags will appear here";
+  card.appendChild(hashtagSlot);
+
+  const postBtnSlot = document.createElement("div"); // real, empty container — post button mounts inside this, never removed/recreated itself
+  card.appendChild(postBtnSlot);
+
   // REAL, persistent per-card state — lets any individual button update
   // just its own piece while keeping everything else exactly as it was.
   // caption/hashtags/imagePrompt come from the same content-JSON call;
   // blobs are the generated (and possibly text-burned) images.
-  const state = { caption: null, hashtags: null, imagePrompt: null, blobs: null };
+  const state = { caption: null, hashtags: null, imagePrompt: null, blobs: null, videoUrl: null };
 
-  // Real, single render function — redraws the card's output area from
-  // current `state`, called after ANY individual or full generation so
-  // the visible card always reflects exactly what's actually stored,
-  // never a stale mix of old and new pieces.
+  // Real, single render function — fills the REAL, PERMANENT template
+  // slots above from current `state`, rather than removing and
+  // recreating DOM elements each time. Each slot independently shows its
+  // own real placeholder until its own piece of state is actually ready
+  // — so Joel can watch image/caption/hashtags fill in as they complete,
+  // instead of everything appearing to happen all at once with no
+  // visible progress.
   function _renderFromState() {
-    card.querySelectorAll(".cl-image-strip, .cl-caption, .cl-hashtags, .cl-post-btn").forEach(el => el.remove());
-
-    if (state.blobs && state.blobs.length) {
-      const strip = document.createElement("div");
-      strip.className = "cl-image-strip";
+    // ── Image/video slot ──
+    if (state.videoUrl) {
+      imageSlot.classList.remove("cl-slot-empty");
+      imageSlot.innerHTML = "";
+      const vid = document.createElement("video");
+      vid.className = "cl-preview-video";
+      vid.src = state.videoUrl;
+      vid.controls = true;
+      vid.loop = true;
+      imageSlot.appendChild(vid);
+    } else if (state.blobs && state.blobs.length) {
+      imageSlot.classList.remove("cl-slot-empty");
+      imageSlot.innerHTML = "";
       state.blobs.forEach((blob) => {
         const img = document.createElement("img");
         img.className = "cl-preview-img";
         img.style.aspectRatio = `${platform.width} / ${platform.height}`;
         img.src = URL.createObjectURL(blob);
-        strip.appendChild(img);
+        imageSlot.appendChild(img);
       });
-      card.appendChild(strip);
+    } else {
+      imageSlot.classList.add("cl-slot-empty");
+      imageSlot.innerHTML = "";
+      imageSlot.textContent = "🖼️ Image will appear here";
     }
 
+    // ── Caption slot ──
     if (state.caption) {
-      const cap = document.createElement("div");
-      cap.className = "cl-caption";
-      cap.textContent = state.caption;
-      card.appendChild(cap);
+      captionSlot.classList.remove("cl-slot-empty");
+      captionSlot.textContent = state.caption;
+    } else {
+      captionSlot.classList.add("cl-slot-empty");
+      captionSlot.textContent = "✍️ Caption will appear here";
     }
 
-    if (state.hashtags) {
-      const tags = document.createElement("div");
-      tags.className = "cl-hashtags";
-      tags.textContent = state.hashtags.map(t => `#${t.replace(/^#/, "")}`).join("  ");
-      card.appendChild(tags);
+    // ── Hashtags slot ──
+    if (state.hashtags && state.hashtags.length) {
+      hashtagSlot.classList.remove("cl-slot-empty");
+      hashtagSlot.textContent = state.hashtags.map(t => `#${t.replace(/^#/, "")}`).join("  ");
+    } else {
+      hashtagSlot.classList.add("cl-slot-empty");
+      hashtagSlot.textContent = "#️⃣ Hashtags will appear here";
     }
 
+    // ── Post button — mounted inside its own permanent container slot ──
+    postBtnSlot.innerHTML = "";
     if (platform.live && state.blobs && state.blobs.length && state.caption) {
       const postBtn = document.createElement("button");
       postBtn.className = "cl-btn cl-post-btn";
@@ -608,7 +758,7 @@ function _renderPlatformCard(platform, container) {
           postBtn.textContent = `Post to ${platform.label}`;
         }
       };
-      card.appendChild(postBtn);
+      postBtnSlot.appendChild(postBtn);
     }
   }
 
@@ -619,7 +769,7 @@ function _renderPlatformCard(platform, container) {
   async function _ensureContent() {
     if (state.caption && state.imagePrompt) return;
     const brief = briefInput.value.trim();
-    const content = await _generateContentJSON(`a ${platform.label} post`, brief);
+    const content = await _generateContentJSON(`a ${platform.label} post`, brief, platform.charLimit);
     state.caption = content.caption;
     state.hashtags = content.hashtags || [];
     state.imagePrompt = content.imagePrompt;
@@ -640,7 +790,7 @@ function _renderPlatformCard(platform, container) {
       const brief = briefInput.value.trim();
       const n = Number(countSelect.value) || 1;
       const burnText = burnCheckbox.checked;
-      const content = await _generateContentJSON(`a ${platform.label} post`, brief);
+      const content = await _generateContentJSON(`a ${platform.label} post`, brief, platform.charLimit);
       state.caption = content.caption;
       state.hashtags = content.hashtags || [];
       state.imagePrompt = content.imagePrompt;
@@ -651,7 +801,7 @@ function _renderPlatformCard(platform, container) {
         // Real, short hook text burned onto each image — reuses the
         // first ~8 words of the caption as the on-image hook, matching
         // how a real caption/hook split typically works for creators.
-        const hook = state.caption.split(/\s+/).slice(0, 8).join(" ");
+        const hook = _extractHookText(state.caption);
         blobs = await Promise.all(blobs.map((b) => _burnTextOnImage(b, hook)));
       }
       state.blobs = blobs;
@@ -678,7 +828,7 @@ function _renderPlatformCard(platform, container) {
       const burnText = burnCheckbox.checked;
       let blobs = await _generateImageBlobs(state.imagePrompt, n);
       if (burnText) {
-        const hook = state.caption.split(/\s+/).slice(0, 8).join(" ");
+        const hook = _extractHookText(state.caption);
         blobs = await Promise.all(blobs.map((b) => _burnTextOnImage(b, hook)));
       }
       state.blobs = blobs;
@@ -696,10 +846,22 @@ function _renderPlatformCard(platform, container) {
   // to this platform's brief.
   videoOnlyBtn.onclick = async () => {
     const restore = _setBusy(videoOnlyBtn, "...");
-    statusEl.textContent = "Generating video in the background — check your videos area when ready.";
+    statusEl.textContent = "Generating video (30s-2min, shared free GPU queue)...";
     try {
       await _ensureContent();
-      await generateVideo(state.imagePrompt);
+      // REAL FIX, per Joel's explicit request: generateVideo used to
+      // always write its progress message AND finished video card
+      // straight into the main chat log (ui/videogen.js's _renderCard,
+      // hardwired to #col-left) — meaning a video made from inside
+      // Content Lab always leaked out into the chat instead of staying
+      // in its own card. silent:true (a new option added to
+      // generateVideo this session) skips both of those; the real video
+      // URL still comes back in the return value so it can be rendered
+      // right here, inside this card, where it actually belongs.
+      const result = await generateVideo(state.imagePrompt, { silent: true });
+      state.videoUrl = result.videoUrl;
+      _renderFromState();
+      statusEl.textContent = "Video ready.";
     } catch (e) {
       statusEl.textContent = `❌ ${e.message}`;
     } finally {
@@ -716,7 +878,7 @@ function _renderPlatformCard(platform, container) {
     statusEl.textContent = "Generating text...";
     try {
       const brief = briefInput.value.trim();
-      const content = await _generateContentJSON(`a ${platform.label} post`, brief);
+      const content = await _generateContentJSON(`a ${platform.label} post`, brief, platform.charLimit);
       state.caption = content.caption;
       state.imagePrompt = content.imagePrompt;
       // Real, deliberate choice: text-only regen keeps whatever
@@ -740,7 +902,7 @@ function _renderPlatformCard(platform, container) {
     statusEl.textContent = "Generating tags...";
     try {
       const brief = briefInput.value.trim();
-      const content = await _generateContentJSON(`a ${platform.label} post`, brief);
+      const content = await _generateContentJSON(`a ${platform.label} post`, brief, platform.charLimit);
       state.hashtags = content.hashtags || [];
       _renderFromState();
       statusEl.textContent = "Ready.";
@@ -751,6 +913,7 @@ function _renderPlatformCard(platform, container) {
     }
   };
 
+  _renderFromState(); // real, initial render — shows the empty-state template placeholders immediately
   container.appendChild(card);
   // REAL, for voice control: exposes the same actions the buttons above
   // trigger, as plain functions — the voice command router (below, module
