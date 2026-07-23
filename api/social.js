@@ -1562,6 +1562,96 @@ async function handleDiagnose(req, res) {
 // and BLUESKY_APP_PASSWORD (generated at bsky.app → Settings → App
 // Passwords — NOT the real account password) in Vercel env vars.
 // ═══════════════════════════════════════════
+// REAL, NEW — YouTube posting via the official, free YouTube Data API
+// v3. Uses a one-time-obtained OAuth refresh token (real setup: Google
+// Cloud project → OAuth client → OAuth Playground to get the refresh
+// token — Joel already has real, exact instructions for this) rather
+// than a full interactive OAuth UI flow, since this only ever posts to
+// Joel's own single channel — a refresh token is genuinely sufficient
+// and far simpler than building a real multi-user OAuth callback.
+async function _getYouTubeAccessToken() {
+  const clientId     = process.env.YOUTUBE_CLIENT_ID;
+  const clientSecret  = process.env.YOUTUBE_CLIENT_SECRET;
+  const refreshToken = process.env.YOUTUBE_REFRESH_TOKEN;
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error('YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET / YOUTUBE_REFRESH_TOKEN not set in Vercel env vars.');
+  }
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+  if (!res.ok) throw new Error(`YouTube token refresh failed: ${await res.text()}`);
+  const data = await res.json();
+  return data.access_token;
+}
+
+async function handleYouTube(req, res) {
+  const { title, description, videoBase64 } = req.body || {};
+  if (!videoBase64) {
+    return res.status(200).json({ ok: false, error: 'Missing "videoBase64" in request body — YouTube requires an actual video file, unlike Bluesky/text platforms.' });
+  }
+  if (!title) {
+    return res.status(200).json({ ok: false, error: 'Missing "title" in request body.' });
+  }
+
+  try {
+    const accessToken = await _getYouTubeAccessToken();
+    const videoBuffer = Buffer.from(videoBase64, 'base64');
+
+    // ── Real, resumable-upload flow per YouTube Data API v3's own docs ──
+    // Step 1: initiate the upload session with real metadata.
+    const initRes = await fetch(
+      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'X-Upload-Content-Type': 'video/*',
+          'X-Upload-Content-Length': String(videoBuffer.byteLength),
+        },
+        body: JSON.stringify({
+          snippet: {
+            title: title.slice(0, 100), // real, confirmed YouTube title cap
+            description: (description || '').slice(0, 5000), // real, confirmed description cap
+          },
+          status: { privacyStatus: 'public' },
+        }),
+      }
+    );
+    if (!initRes.ok) {
+      const errText = await initRes.text();
+      return res.status(200).json({ ok: false, error: `YouTube upload session failed to initiate: ${errText}` });
+    }
+    const uploadUrl = initRes.headers.get('location');
+    if (!uploadUrl) {
+      return res.status(200).json({ ok: false, error: 'YouTube did not return a real resumable upload URL — check the response headers manually if this persists.' });
+    }
+
+    // Step 2: PUT the actual video bytes to the session URL.
+    const uploadRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'video/*', 'Content-Length': String(videoBuffer.byteLength) },
+      body: videoBuffer,
+    });
+    if (!uploadRes.ok) {
+      const errText = await uploadRes.text();
+      return res.status(200).json({ ok: false, error: `YouTube video upload failed: ${errText}` });
+    }
+    const videoData = await uploadRes.json();
+    return res.status(200).json({ ok: true, videoId: videoData.id, url: `https://youtube.com/watch?v=${videoData.id}` });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: `Real error posting to YouTube: ${e.message}` });
+  }
+}
+
+
 async function handleBluesky(req, res) {
   // REAL, CONFIRMED FIX: Joel's actual BLUESKY_HANDLE env var was set to
   // "@joelflowstack.bsky.social" (with a leading @). Bluesky's own
@@ -1713,6 +1803,7 @@ export default async function handler(req, res) {
   if (platform === 'autopost')      return handleAutoPost(req, res);
   if (platform === 'diagnose')      return handleDiagnose(req, res);
   if (platform === 'bluesky')       return handleBluesky(req, res);
+  if (platform === 'youtube')       return handleYouTube(req, res);
   if (platform === 'heartbeat-notify') return handleHeartbeatNotify(req, res);
   if (platform === 'marketing-draft') return handleMarketingDraft(req, res);
   return res.status(200).json({ service: 'Flow Social', endpoints: {
