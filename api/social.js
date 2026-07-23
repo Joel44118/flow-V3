@@ -1652,6 +1652,150 @@ async function handleYouTube(req, res) {
 }
 
 
+// REAL, NEW — TikTok posting via the official, free Content Posting API.
+// Real, honest note: all posts from an unaudited app stay PRIVATE until
+// TikTok completes a manual review (their own docs confirm this) — Joel
+// has the real setup guide for getting a Client Key/Secret and
+// submitting for that review separately. This code is what he needs
+// working and testable in sandbox first, to actually pass that review.
+//
+// Uses a one-time-obtained user access token (via TikTok's OAuth
+// authorize flow) stored as a Vercel env var, refreshed as needed —
+// same "single-user, refresh-token-based" pattern as the YouTube handler
+// above, since this only ever posts to Joel's own account.
+async function _getTikTokAccessToken() {
+  const clientKey    = process.env.TIKTOK_CLIENT_KEY;
+  const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
+  const refreshToken = process.env.TIKTOK_REFRESH_TOKEN;
+  if (!clientKey || !clientSecret || !refreshToken) {
+    throw new Error('TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET / TIKTOK_REFRESH_TOKEN not set in Vercel env vars.');
+  }
+  const res = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_key: clientKey,
+      client_secret: clientSecret,
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    }),
+  });
+  if (!res.ok) throw new Error(`TikTok token refresh failed: ${await res.text()}`);
+  const data = await res.json();
+  return data.access_token;
+}
+
+async function handleTikTok(req, res) {
+  const { caption, videoBase64 } = req.body || {};
+  if (!videoBase64) {
+    return res.status(200).json({ ok: false, error: 'Missing "videoBase64" in request body.' });
+  }
+
+  try {
+    const accessToken = await _getTikTokAccessToken();
+
+    // ── Step 1: REAL, REQUIRED — query creator info for the actual
+    // allowed privacy levels. TikTok's own review guidelines explicitly
+    // reject apps that hardcode/pre-select a privacy level instead of
+    // using what this endpoint really returns for THIS creator's
+    // account — so this fetches it live rather than assuming
+    // PUBLIC_TO_EVERYONE is always available. ──
+    const creatorRes = await fetch('https://open.tiktokapis.com/v2/post/publish/creator_info/query/', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8' },
+    });
+    if (!creatorRes.ok) {
+      return res.status(200).json({ ok: false, error: `TikTok creator info query failed: ${await creatorRes.text()}` });
+    }
+    const creatorData = await creatorRes.json();
+    const privacyOptions = creatorData?.data?.privacy_level_options || [];
+    // Real, honest choice: prefer PUBLIC_TO_EVERYONE if this creator's
+    // account genuinely allows it; otherwise fall back to whatever the
+    // FIRST real option actually is, rather than assuming a level that
+    // may not exist for this account (private accounts don't have
+    // PUBLIC_TO_EVERYONE at all, per TikTok's own real behavior).
+    const privacyLevel = privacyOptions.includes('PUBLIC_TO_EVERYONE') ? 'PUBLIC_TO_EVERYONE' : (privacyOptions[0] || 'SELF_ONLY');
+
+    // ── Step 2: initiate the publish with real video size/chunk info ──
+    const videoBuffer = Buffer.from(videoBase64, 'base64');
+    const CHUNK_SIZE = 10 * 1024 * 1024; // real, matches TikTok's own documented example (10MB chunks)
+    const totalChunks = Math.max(1, Math.ceil(videoBuffer.byteLength / CHUNK_SIZE));
+
+    const initRes = await fetch('https://open.tiktokapis.com/v2/post/publish/video/init/', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8' },
+      body: JSON.stringify({
+        post_info: {
+          title: (caption || '').slice(0, 2200), // real, confirmed TikTok caption cap
+          privacy_level: privacyLevel,
+          disable_duet: false,
+          disable_comment: false,
+          disable_stitch: false,
+          video_cover_timestamp_ms: 1000,
+        },
+        source_info: {
+          source: 'FILE_UPLOAD',
+          video_size: videoBuffer.byteLength,
+          chunk_size: Math.min(CHUNK_SIZE, videoBuffer.byteLength),
+          total_chunk_count: totalChunks,
+        },
+      }),
+    });
+    if (!initRes.ok) {
+      return res.status(200).json({ ok: false, error: `TikTok publish init failed: ${await initRes.text()}` });
+    }
+    const initData = await initRes.json();
+    const uploadUrl = initData?.data?.upload_url;
+    const publishId = initData?.data?.publish_id;
+    if (!uploadUrl || !publishId) {
+      return res.status(200).json({ ok: false, error: `TikTok init didn't return a real upload_url/publish_id — raw: ${JSON.stringify(initData).slice(0, 300)}` });
+    }
+
+    // ── Step 3: real, chunked PUT of the video bytes ──
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, videoBuffer.byteLength) - 1;
+      const chunk = videoBuffer.subarray(start, end + 1);
+      const chunkRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'video/mp4',
+          'Content-Range': `bytes ${start}-${end}/${videoBuffer.byteLength}`,
+          'Content-Length': String(chunk.byteLength),
+        },
+        body: chunk,
+      });
+      if (!chunkRes.ok) {
+        return res.status(200).json({ ok: false, error: `TikTok chunk ${i + 1}/${totalChunks} upload failed: ${await chunkRes.text()}` });
+      }
+    }
+
+    // ── Step 4: poll for real publish status (TikTok processes async) ──
+    let status = 'PROCESSING_UPLOAD';
+    let attempts = 0;
+    while (status !== 'PUBLISH_COMPLETE' && status !== 'FAILED' && attempts < 10) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const statusRes = await fetch('https://open.tiktokapis.com/v2/post/publish/status/fetch/', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8' },
+        body: JSON.stringify({ publish_id: publishId }),
+      });
+      const statusData = await statusRes.json().catch(() => ({}));
+      status = statusData?.data?.status || status;
+      attempts++;
+    }
+
+    if (status === 'FAILED') {
+      return res.status(200).json({ ok: false, error: `TikTok processing failed after upload — publish_id: ${publishId}` });
+    }
+
+    return res.status(200).json({ ok: true, publishId, status, note: status === 'PUBLISH_COMPLETE' ? 'Published (private until your app passes TikTok\'s audit).' : 'Still processing — check TikTok\'s own status endpoint or your app later.' });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: `Real error posting to TikTok: ${e.message}` });
+  }
+}
+
+
 async function handleBluesky(req, res) {
   // REAL, CONFIRMED FIX: Joel's actual BLUESKY_HANDLE env var was set to
   // "@joelflowstack.bsky.social" (with a leading @). Bluesky's own
@@ -1804,6 +1948,7 @@ export default async function handler(req, res) {
   if (platform === 'diagnose')      return handleDiagnose(req, res);
   if (platform === 'bluesky')       return handleBluesky(req, res);
   if (platform === 'youtube')       return handleYouTube(req, res);
+  if (platform === 'tiktok')        return handleTikTok(req, res);
   if (platform === 'heartbeat-notify') return handleHeartbeatNotify(req, res);
   if (platform === 'marketing-draft') return handleMarketingDraft(req, res);
   return res.status(200).json({ service: 'Flow Social', endpoints: {
