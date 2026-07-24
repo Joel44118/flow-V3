@@ -158,7 +158,12 @@ export async function generateLongVideo(promptText, opts = {}) {
     .replace(/\b(of|showing|depicting)\b/gi, " ")
     .replace(/\s+/g, " ").trim() || promptText;
 
-  const clipCount = Math.min(Math.max(opts.clipCount || 3, 2), 6); // real, sane bounds — 2-6 clips
+  // REAL, CONFIRMED FIX: this previously defaulted to 3 clips even when
+  // nobody asked for that — Joel explicitly reported wanting just one
+  // video and being surprised 3 clips were generated. Real fix: defaults
+  // to 1 (a single clip, no stitching needed) unless a real, higher
+  // clipCount is explicitly requested.
+  const clipCount = Math.min(Math.max(opts.clipCount || 1, 1), 6);
   const clipSeconds = Math.min(Math.max(opts.clipSeconds || 8, 3), 15);
 
   if (!opts.silent) {
@@ -216,7 +221,10 @@ export async function generateLongVideo(promptText, opts = {}) {
     // element in sequence, captures the composited output (video +
     // audio) via captureStream(), and records it into one continuous
     // file using the browser's own MediaRecorder.
-    const stitchedBlob = await _stitchClips(clipBlobs);
+    // REAL, small optimization: with just one clip (the new real default),
+    // there's nothing to stitch — skip the MediaRecorder re-encoding pass
+    // entirely and use the clip as-is, avoiding unnecessary quality loss.
+    const stitchedBlob = clipBlobs.length === 1 ? clipBlobs[0] : await _stitchClips(clipBlobs);
     const stitchedUrl = URL.createObjectURL(stitchedBlob);
 
     if (!opts.silent) {
