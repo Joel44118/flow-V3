@@ -17,7 +17,7 @@ function _injectStyles() {
   style.id = "thought-log-style";
   style.textContent = `
 #thought-log-tab {
-  position: fixed; top: 50%; right: 0; transform: translateY(calc(-50% + 100px));
+  position: fixed; top: 180px; right: 0;
   width: 24px; height: 64px;
   background: rgba(30,20,55,0.9); border: 1px solid rgba(167,139,250,0.3);
   border-right: none; border-radius: 10px 0 0 10px;
@@ -111,7 +111,7 @@ export function openThoughtLog() {
 
   const header = document.createElement("div");
   header.id = "thought-log-header";
-  header.innerHTML = `<h3>🧠 Flow's Thoughts</h3>`;
+  header.innerHTML = `<h3>💭 Flow's Thoughts</h3>`;
 
   const refreshBtn = document.createElement("button");
   refreshBtn.id = "thought-log-refresh";
@@ -152,7 +152,7 @@ export function initThoughtLog() {
   const tab = document.createElement("div");
   tab.id = "thought-log-tab";
   tab.title = "Flow's Thoughts";
-  tab.textContent = "🧠";
+  tab.textContent = "💭";
   tab.addEventListener("click", () => {
     if (isThoughtLogOpen()) closeThoughtLog();
     else openThoughtLog();
