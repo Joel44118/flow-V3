@@ -88,7 +88,12 @@ If the samples don't show a clear consistent pattern yet, say so plainly instead
     });
     if (!r.ok) return;
     const data = await r.json();
-    if (!data.reply) return;
+    // REAL, DEFENSIVE FIX: same class of bug as memextract.js —
+    // `if (!data.reply) return;` only protects against falsy values, not
+    // a non-string truthy one (which would pass this check and then
+    // crash on data.reply.trim() below with "data.reply.trim is not a
+    // function"). Explicit typeof check closes that gap.
+    if (!data.reply || typeof data.reply !== "string") return;
     await kvSet(siteUrl, PROFILE_KEY, {
       description: data.reply.trim(),
       updatedAt:   Date.now(),
