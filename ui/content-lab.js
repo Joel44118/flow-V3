@@ -86,7 +86,7 @@ REAL, REQUIRED RULES:
 - REAL, PLATFORM-SAFETY RULE: never write anything that reads as engagement-bait ("like and share to win"), fake urgency/scarcity, a financial scheme, or fabricated metrics/testimonials Joel hasn't actually told you about. Automated moderation on these platforms scrutinizes AI-generated content harder than manual posts — a post that's honest and genuinely useful is also the one least likely to get flagged.
 
 Reply with ONLY this JSON, no other text:
-{"caption": "the real post text", "imagePrompt": "a short (under 20 words), concrete visual description for an accompanying image. Write it like a professional photography brief: describe the actual subject/scene, then add 2-3 real style cues (e.g. 'natural lighting', 'shallow depth of field', 'clean minimal background', 'shot on a modern desk setup', 'soft morning light') so it reads as a polished, professional photo rather than generic clipart or stock-photo cliché.", "hashtags": ["tag1","tag2","tag3"]}`;
+{"caption": "the real post text", "imagePrompt": "a short (under 20 words), concrete visual description for an accompanying image or video. REAL, REQUIRED: this must visually connect to Joel's actual business — web development, bot automation, or workflow automation — not a generic, unrelated scene. Show something that reads as tech/development/automation work: a screen with real-looking code or a dashboard, a developer's desk setup, an automation/workflow diagram, a bot/chat interface, etc. Write it like a professional photography brief: describe the actual subject/scene, then add 2-3 real style cues (e.g. 'natural lighting', 'shallow depth of field', 'clean minimal background', 'shot on a modern desk setup', 'soft morning light') so it reads as a polished, professional shot rather than generic clipart, stock-photo cliché, or an unrelated random scene.", "hashtags": ["tag1","tag2","tag3"]}`;
 
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -570,21 +570,41 @@ function _renderPlatformCard(platform, container) {
   // video-first (TikTok, YouTube) and Image for the rest. This changes
   // what the all-in-one Generate button actually does, and hides the
   // now-irrelevant image-count/text-on-image options when Video is
-  // selected, since those only apply to images.
+  // REAL, Joel-requested: platforms that ONLY make sense as video (right
+  // now just YouTube — TikTok could theoretically post a static image
+  // post too, so it keeps the real choice) don't even show the
+  // Image/Video selector at all — it's locked to video and hidden,
+  // rather than just defaulting to video while still letting Image be
+  // selected (which would be a real, confusing dead option for YouTube).
+  const VIDEO_ONLY_PLATFORMS = ["youtube"];
   const VIDEO_FIRST_PLATFORMS = ["tiktok", "youtube"];
+  const isVideoOnlyPlatform = VIDEO_ONLY_PLATFORMS.includes(platform.id);
   const modeLabel = document.createElement("label");
   modeLabel.style.cssText = "font-size:10px;color:#9ca3af;display:flex;align-items:center;gap:4px;";
   modeLabel.textContent = "Media:";
   const modeSelect = document.createElement("select");
   modeSelect.className = "cl-input";
   modeSelect.style.cssText = "width:auto;padding:4px 6px;font-size:11px;";
-  ["Image", "Video"].forEach((label) => {
+  if (isVideoOnlyPlatform) {
+    // Real, single locked option — no real choice to make, so no
+    // dropdown interaction needed; modeSelect.value still reads "video"
+    // everywhere else in this function that checks it.
     const opt = document.createElement("option");
-    opt.value = label.toLowerCase();
-    opt.textContent = label;
-    if (label.toLowerCase() === (VIDEO_FIRST_PLATFORMS.includes(platform.id) ? "video" : "image")) opt.selected = true;
+    opt.value = "video";
+    opt.textContent = "Video";
+    opt.selected = true;
     modeSelect.appendChild(opt);
-  });
+    modeLabel.style.display = "none";
+    modeSelect.style.display = "none";
+  } else {
+    ["Image", "Video"].forEach((label) => {
+      const opt = document.createElement("option");
+      opt.value = label.toLowerCase();
+      opt.textContent = label;
+      if (label.toLowerCase() === (VIDEO_FIRST_PLATFORMS.includes(platform.id) ? "video" : "image")) opt.selected = true;
+      modeSelect.appendChild(opt);
+    });
+  }
   modeLabel.appendChild(modeSelect);
 
   const optsRow = document.createElement("div");
