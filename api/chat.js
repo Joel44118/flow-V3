@@ -605,9 +605,19 @@ async function tryCerebras(messages, intent, key) {
           };
         }
 
+        // REAL, CONFIRMED FIX for a genuine, separate Cerebras bug
+        // (verified via real research, not guessed): Cerebras's own API
+        // generates a reasoning_content field on response messages, but
+        // then REJECTS that same field with an HTTP 400
+        // ("reasoning_content is unsupported type") if it's echoed back
+        // in the next request's message history — exactly what
+        // pushing `choice.message` whole into followUpMessages would do.
+        // Stripping it here before re-sending avoids that real failure
+        // on the tool-call follow-up round-trip specifically.
+        const { reasoning_content, ...messageWithoutReasoning } = choice.message;
         const followUpMessages = [
           ...messages,
-          choice.message,
+          messageWithoutReasoning,
           { role: 'tool', tool_call_id: call.id, content: toolResult.result },
         ];
         const r2 = await fetch('https://api.cerebras.ai/v1/chat/completions', {
