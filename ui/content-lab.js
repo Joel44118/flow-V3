@@ -101,7 +101,8 @@ Reply with ONLY this JSON, no other text:
     }),
   });
   const data = await res.json();
-  if (!res.ok || !data.reply || typeof data.reply !== "string") throw new Error(data.error || "Content generation failed");
+  if (!res.ok) throw new Error(data.error || `Content generation request failed — server returned HTTP ${res.status}.`);
+  if (!data.reply || typeof data.reply !== "string") throw new Error(data.error || "Content generation returned an empty or malformed reply — this may be a real, temporary AI provider issue. Try again.");
   const match = data.reply.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("Model didn't return the expected JSON format");
   const parsed = JSON.parse(match[0]);
