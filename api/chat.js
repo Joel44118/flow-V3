@@ -620,7 +620,19 @@ async function tryCerebras(messages, intent, key) {
         const cleaned = cleanReply(data2.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `Cerebras:${model}` };
       }
 
-      return { reply: cleanReply(choice.message.content), model: `Cerebras:${model}` };
+      // REAL, CONFIRMED FIX — this is the actual, direct cause of plain
+      // messages (e.g. "wassup") failing even outside any tool-call
+      // scenario. This line uses a differently-named variable
+      // (choice.message.content, not data.choices[0].message.content)
+      // than the other 5 call sites, so it was silently skipped by the
+      // earlier bulk-fix that updated those to destructure cleanReply's
+      // {reply, idea} return shape. Without this fix, `reply` was being
+      // set to the ENTIRE {reply, idea} object instead of the real
+      // string — exactly the "server responded, but didn't return a
+      // usable reply" / "text.replace is not a function" class of bug,
+      // on literally every normal (non-tool-call) Cerebras response.
+      const cleanedPlain = cleanReply(choice.message.content, intent);
+      return { reply: cleanedPlain.reply, idea: cleanedPlain.idea, model: `Cerebras:${model}` };
     } catch (e) { clearTimeout(t); console.warn(`[Flow] Cerebras ${model}: ${e.message}`); }
   }
   throw new Error('Cerebras: all models failed');
