@@ -172,6 +172,21 @@ function extractIdea(rawText) {
 }
 
 function cleanReply(text, intent) {
+  // REAL, CONFIRMED FIX for a real, active bug: when a provider (most
+  // often seen with Cerebras in Joel's real testing) returns a pure
+  // tool-call with no accompanying text, message.content arrives as
+  // null/undefined — a completely normal, valid case for tool-calling
+  // models, not an error. Every downstream function here (extractThought,
+  // extractIdea, the .replace() chain below) assumed text was always a
+  // real string and had no guard for this, so a null content value
+  // crashed with "text.replace is not a function" / ".match is not a
+  // function" and killed the ENTIRE request — explaining exactly why
+  // Cerebras replies sometimes silently failed while NVIDIA (which
+  // apparently never hit this exact null-content case in Joel's testing)
+  // kept working. Coercing to '' here fixes it at the one shared entry
+  // point every provider path already funnels through.
+  text = text || '';
+
   // Real, fire-and-forget capture of the raw thought BEFORE any
   // stripping happens — cleanReply is the one function every provider
   // path already funnels through, so hooking the capture here covers
