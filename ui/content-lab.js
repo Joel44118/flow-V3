@@ -101,7 +101,7 @@ Reply with ONLY this JSON, no other text:
     }),
   });
   const data = await res.json();
-  if (!res.ok || !data.reply) throw new Error(data.error || "Content generation failed");
+  if (!res.ok || !data.reply || typeof data.reply !== "string") throw new Error(data.error || "Content generation failed");
   const match = data.reply.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("Model didn't return the expected JSON format");
   const parsed = JSON.parse(match[0]);
