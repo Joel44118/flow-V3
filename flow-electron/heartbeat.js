@@ -276,7 +276,12 @@ Respond with ONLY a JSON object, no other text:
       body: JSON.stringify({ messages: [{ role: 'user', content: prompt }], force_intent: 'pdf', max_tokens: 400 }),
     });
     const data = await res.json();
-    if (!data.reply) return { action: "none" };
+    // REAL, DEFENSIVE FIX: same class of bug found and fixed across
+    // core/ai.js, core/memextract.js, core/persona.js this session —
+    // `if (!data.reply) return...` only protects against a falsy value,
+    // not a non-string truthy one, which would pass this check and then
+    // crash on data.reply.match(...) below.
+    if (!data.reply || typeof data.reply !== 'string') return { action: "none" };
     const match = data.reply.match(/\{[\s\S]*\}/); // real, tolerant of the model wrapping JSON in stray text despite the instruction
     if (!match) return { action: "none" };
     return JSON.parse(match[0]);
@@ -309,7 +314,10 @@ ${recentActions.map(a => `- ${a.text}`).join('\n')}`;
       body: JSON.stringify({ messages: [{ role: 'user', content: prompt }], force_intent: 'pdf', max_tokens: 200 }),
     });
     const data = await res.json();
-    const match = data.reply?.match(/\{[\s\S]*\}/);
+    // Real, same fix as _reasonAboutTick above — ?. alone only guards
+    // against null/undefined, not a non-string truthy value.
+    if (typeof data.reply !== 'string') return;
+    const match = data.reply.match(/\{[\s\S]*\}/);
     if (!match) return;
     const parsed = JSON.parse(match[0]);
     if (parsed.issue) {
