@@ -27,7 +27,7 @@
 // posting is genuinely not connected yet — shown honestly as
 // "Coming soon", not faked.
 // ═══════════════════════════════════════════
-import { generateVideo } from "./videogen.js";
+import { generateVideo, generateLongVideo } from "./videogen.js";
 import { Speech } from "../core/speech.js";
 
 let _chat = null;
@@ -624,13 +624,28 @@ function _renderPlatformCard(platform, container) {
   burnLabel.appendChild(document.createTextNode("Text on image"));
   optsRow.appendChild(burnLabel);
 
+  // REAL, Joel-requested — "longer video with sound" option, shown only
+  // in Video mode. Uses generateLongVideo (multi-clip stitching pipeline
+  // via the real, confirmed LTX-2.3 Space) instead of the single-clip
+  // generateVideo when checked.
+  const longLabel = document.createElement("label");
+  longLabel.style.cssText = "font-size:10px;color:#9ca3af;display:flex;align-items:center;gap:4px;";
+  const longCheckbox = document.createElement("input");
+  longCheckbox.type = "checkbox";
+  longCheckbox.checked = false; // real, off by default — takes several real minutes, opt-in
+  longLabel.appendChild(longCheckbox);
+  longLabel.appendChild(document.createTextNode("Longer (with sound)"));
+  optsRow.appendChild(longLabel);
+
   // REAL, image-only options (count, text-on-image) are hidden entirely
   // when Video mode is selected, since neither applies to video output —
-  // showing them anyway would be confusing dead UI.
+  // showing them anyway would be confusing dead UI. Longer/sound option
+  // is the inverse — only relevant in Video mode.
   function _syncModeVisibility() {
     const isVideo = modeSelect.value === "video";
     countLabel.style.display = isVideo ? "none" : "flex";
     burnLabel.style.display = isVideo ? "none" : "flex";
+    longLabel.style.display = isVideo ? "flex" : "none";
   }
   modeSelect.addEventListener("change", _syncModeVisibility);
   _syncModeVisibility();
@@ -879,12 +894,19 @@ function _renderPlatformCard(platform, container) {
 
       if (modeSelect.value === "video") {
         // REAL, Joel-requested — Generate now respects the per-card
-        // media-mode selector. Video mode calls the same real,
-        // non-leaking video pipeline as the dedicated Video button
-        // (silent:true keeps it contained in this card, not the chat).
-        statusEl.textContent = "Generating video (30s-2min, shared free GPU queue)...";
-        const result = await generateVideo(state.imagePrompt, { silent: true });
-        state.videoUrl = result.videoUrl;
+        // media-mode selector, and the Longer (with sound) checkbox.
+        if (longCheckbox.checked) {
+          statusEl.textContent = "Generating a longer video with sound (several minutes)...";
+          const result = await generateLongVideo(state.imagePrompt, {
+            silent: true,
+            onProgress: (i, total) => { statusEl.textContent = `Generating clip ${i}/${total}...`; },
+          });
+          state.videoUrl = result.videoUrl;
+        } else {
+          statusEl.textContent = "Generating video (30s-2min, shared free GPU queue)...";
+          const result = await generateVideo(state.imagePrompt, { silent: true });
+          state.videoUrl = result.videoUrl;
+        }
         state.blobs = null; // real, mutually exclusive — a card shows either its image set or its video, not both, matching what actually gets posted
       } else {
         const n = Number(countSelect.value) || 1;
@@ -942,20 +964,29 @@ function _renderPlatformCard(platform, container) {
   // to this platform's brief.
   videoOnlyBtn.onclick = async () => {
     const restore = _setBusy(videoOnlyBtn, "...");
-    statusEl.textContent = "Generating video (30s-2min, shared free GPU queue)...";
     try {
       await _ensureContent();
-      // REAL FIX, per Joel's explicit request: generateVideo used to
-      // always write its progress message AND finished video card
-      // straight into the main chat log (ui/videogen.js's _renderCard,
-      // hardwired to #col-left) — meaning a video made from inside
-      // Content Lab always leaked out into the chat instead of staying
-      // in its own card. silent:true (a new option added to
-      // generateVideo this session) skips both of those; the real video
-      // URL still comes back in the return value so it can be rendered
-      // right here, inside this card, where it actually belongs.
-      const result = await generateVideo(state.imagePrompt, { silent: true });
-      state.videoUrl = result.videoUrl;
+      if (longCheckbox.checked) {
+        statusEl.textContent = "Generating a longer video with sound (several minutes — multiple clips on a shared free GPU queue)...";
+        const result = await generateLongVideo(state.imagePrompt, {
+          silent: true,
+          onProgress: (i, total) => { statusEl.textContent = `Generating clip ${i}/${total}...`; },
+        });
+        state.videoUrl = result.videoUrl;
+      } else {
+        statusEl.textContent = "Generating video (30s-2min, shared free GPU queue)...";
+        // REAL FIX, per Joel's explicit request: generateVideo used to
+        // always write its progress message AND finished video card
+        // straight into the main chat log (ui/videogen.js's _renderCard,
+        // hardwired to #col-left) — meaning a video made from inside
+        // Content Lab always leaked out into the chat instead of staying
+        // in its own card. silent:true (a new option added to
+        // generateVideo this session) skips both of those; the real video
+        // URL still comes back in the return value so it can be rendered
+        // right here, inside this card, where it actually belongs.
+        const result = await generateVideo(state.imagePrompt, { silent: true });
+        state.videoUrl = result.videoUrl;
+      }
       _renderFromState();
       statusEl.textContent = "Video ready.";
     } catch (e) {
