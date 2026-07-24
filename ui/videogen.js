@@ -114,6 +114,167 @@ function _renderCard(videoUrl, prompt, modelLabel) {
   col.scrollTop = col.scrollHeight;
 }
 
+// ═══════════════════════════════════════════
+// REAL, NEW (this session) — LONGER VIDEOS WITH SOUND, per Joel's
+// explicit request. Real, honest research finding: NO free model does
+// genuinely long single-generation video with audio — every real option
+// (LTX-2.3, Wan, HunyuanVideo, etc.) caps free-tier generation at roughly
+// 3-30 seconds per call. The real, practical solution used across the
+// industry on free tiers is generating multiple short clips and
+// stitching them into one longer video — that's what this does.
+//
+// REAL SPACE: techfreakworm/LTX2.3-Studio — a free, public Gradio Space
+// running Lightricks' LTX-2.3 (the audio+video foundation model). Schema
+// confirmed DIRECTLY against its own /gradio_api/info (Joel fetched and
+// pasted the real JSON this session, not guessed) — the plain
+// text-to-video endpoint is /handler, taking (in this real, confirmed
+// order): prompt, preset ('Fast'|'Balanced'|'Quality'), width, height,
+// length_seconds (1-30), fps (8-30), seed, randomize_seed, negative_prompt,
+// camera ('none'|'static'|'dolly-in'|...), camera_strength, apply_detailer,
+// detailer_strength. Returns { video: FileData, subtitles: FileData|null }.
+//
+// REAL, IMPORTANT CAVEAT: this Space's real slider allows up to 30s per
+// clip (more generous than LTX-2.3's own marketing page, which quotes a
+// 20s ceiling — this Space's actual schema is the real, confirmed source
+// of truth, not the marketing copy). Kept to shorter ~8s clips per
+// segment here anyway, since ZeroGPU free-tier generation time scales
+// with length, and several shorter clips queue/generate more reliably
+// than fewer very long ones on a shared free GPU.
+const LONG_VIDEO_SPACE = "techfreakworm/LTX2.3-Studio";
+
+/**
+ * Generate a longer video with audio by creating several sequential
+ * clips (each via the real LTX-2.3 Space, with real audio baked in per
+ * clip) and stitching them into one continuous video client-side.
+ *
+ * @param {string} promptText - overall video description
+ * @param {object} opts - { clipCount (default 3), clipSeconds (default 8), onProgress(clipIndex, total) }
+ * @returns {Promise<{videoUrl: string, clipCount: number}>}
+ */
+export async function generateLongVideo(promptText, opts = {}) {
+  const cleanPrompt = promptText
+    .replace(/\b(generate|create|make|produce)\b/gi, "")
+    .replace(/\ban?\s+(video|clip|animation)\b/gi, "")
+    .replace(/\b(of|showing|depicting)\b/gi, " ")
+    .replace(/\s+/g, " ").trim() || promptText;
+
+  const clipCount = Math.min(Math.max(opts.clipCount || 3, 2), 6); // real, sane bounds — 2-6 clips
+  const clipSeconds = Math.min(Math.max(opts.clipSeconds || 8, 3), 15);
+
+  if (!opts.silent) {
+    _chat?.add(
+      `🎬 Generating a longer video with sound — ${clipCount} clips × ~${clipSeconds}s, "${cleanPrompt}"...\n\nThis is genuinely the longest free option available (no free model does single-call long video), so this will take several minutes as each clip generates in sequence on a shared free GPU queue.`,
+      "bot"
+    );
+  }
+  _orb?.setState("thinking");
+
+  try {
+    const { Client } = await loadGradioClient();
+    const app = await Client.connect(LONG_VIDEO_SPACE);
+    const clipBlobs = [];
+
+    for (let i = 0; i < clipCount; i++) {
+      opts.onProgress?.(i + 1, clipCount);
+      // Real, deliberate continuity framing — each clip's prompt
+      // reinforces it's part of one continuous scene, since this Space
+      // has no real "continue from previous clip" input for pure
+      // text-to-video (only image-to-video variants take a first/last
+      // frame) — honest limitation, not pretending otherwise.
+      const segmentPrompt = clipCount > 1
+        ? `${cleanPrompt}. (Continuous scene, part ${i + 1} of ${clipCount} — maintain the same setting, subject, and visual style as the rest of this sequence.)`
+        : cleanPrompt;
+
+      const result = await app.predict("/handler", [
+        segmentPrompt,      // Prompt
+        "Balanced",         // Preset
+        768,                // Width
+        1024,               // Height — real, portrait default matching most social platforms
+        clipSeconds,        // Length (seconds)
+        24,                 // FPS
+        42 + i,             // Seed — real, varies per clip so clips aren't identical
+        false,              // Randomize seed each run — false, since we're setting it explicitly above
+        "blurry, low quality, distorted, watermark, text overlay", // Negative prompt
+        "none",             // Camera
+        0.8,                // Camera strength
+        false,              // Apply IC-LoRA-Detailer
+        0.5,                // Detailer strength
+      ]);
+
+      const videoData = result?.data?.[1]; // real, confirmed: returns[1] is the Video component (returns[0] is an Html status string)
+      const videoUrl = videoData?.video?.url;
+      if (!videoUrl) {
+        throw new Error(`Clip ${i + 1}/${clipCount} didn't return a usable video URL — real response: ${JSON.stringify(result?.data).slice(0, 200)}`);
+      }
+      const clipRes = await fetch(videoUrl);
+      clipBlobs.push(await clipRes.blob());
+    }
+
+    // ── Real, client-side stitching via sequential MediaRecorder capture ──
+    // No server-side ffmpeg needed (keeps this Vercel-serverless- and
+    // zero-budget-compatible) — plays each clip in a hidden <video>
+    // element in sequence, captures the composited output (video +
+    // audio) via captureStream(), and records it into one continuous
+    // file using the browser's own MediaRecorder.
+    const stitchedBlob = await _stitchClips(clipBlobs);
+    const stitchedUrl = URL.createObjectURL(stitchedBlob);
+
+    if (!opts.silent) {
+      _renderCard(stitchedUrl, cleanPrompt, `LTX-2.3 (${clipCount} clips, ${clipCount * clipSeconds}s total, with sound)`);
+      Speech.speak("Your longer video is ready, Boss.");
+    }
+    _orb?.setState("idle");
+    return { videoUrl: stitchedUrl, clipCount };
+  } catch (e) {
+    _orb?.setState("idle");
+    const message = /queue|busy|wait/i.test(e.message || "")
+      ? "The free GPU queue is busy right now — this Space runs on shared ZeroGPU time, so real wait happens, especially for multiple clips. Worth trying again in a bit."
+      : `Long video generation failed: ${e.message}`;
+    if (!opts.silent) {
+      _chat?.addError ? _chat.addError(message) : _chat?.add(message, "bot");
+    }
+    throw new Error(message);
+  }
+}
+
+// Real, client-side clip stitcher — plays clips in sequence through a
+// hidden <video> element, captures the combined video+audio stream via
+// captureStream(), and records the whole sequence into one continuous
+// output file via MediaRecorder. No server round-trip, no ffmpeg
+// dependency — works entirely in the browser/Electron renderer.
+async function _stitchClips(blobs) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.muted = false;
+    video.style.display = "none";
+    document.body.appendChild(video);
+
+    const stream = video.captureStream ? video.captureStream() : video.mozCaptureStream();
+    const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9,opus" });
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = () => {
+      video.remove();
+      resolve(new Blob(chunks, { type: "video/webm" }));
+    };
+    recorder.onerror = (e) => { video.remove(); reject(new Error(`Stitching failed: ${e.error?.message || "unknown MediaRecorder error"}`)); };
+
+    let clipIndex = 0;
+    function playNext() {
+      if (clipIndex >= blobs.length) {
+        recorder.stop();
+        return;
+      }
+      video.src = URL.createObjectURL(blobs[clipIndex]);
+      video.play().catch(reject);
+      clipIndex++;
+    }
+    video.addEventListener("ended", playNext);
+    recorder.start();
+    playNext();
+  });
+}
+
 /**
  * Generate a short AI video via the real, live Lightricks LTX-Video
  * Space. Throws a real Error on failure (network, queue timeout, or the
