@@ -388,7 +388,17 @@ export async function sendMessage(overrideText, opts = {}) {
     // calls produce genuinely empty first-pass replies. Only throw when
     // there's truly nothing usable — no reply AND no clientAction to
     // follow up on.
-    if (!res.ok || ((!data.reply || typeof data.reply !== "string") && !data.clientAction)) throw new Error(data.error || `Server error ${res.status}`);
+    if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
+    // REAL, CONFIRMED FIX: the previous version threw "Server error 200"
+    // here whenever data.reply was missing/malformed, even on a genuine
+    // 200 OK response — a real, self-contradicting error message Joel
+    // caught immediately. A 200 with a bad reply shape is a different,
+    // honest problem (the server responded fine, but what it sent back
+    // wasn't usable) — this now says so plainly instead of blaming a
+    // "server error" that didn't actually happen.
+    if ((!data.reply || typeof data.reply !== "string") && !data.clientAction) {
+      throw new Error(data.error || "The server responded, but didn't return a usable reply or action — this may be a real, temporary issue with the AI provider's response format.");
+    }
 
     console.log("[Flow] ←", (data.reply || "(tool call, no initial text)").slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
     if (data.model) _lastModelUsed = data.model; // real, for the footer's live provider display
@@ -584,7 +594,17 @@ export async function sendToAI(text) {
     // Same real bug fix as sendMessage above — empty reply + a
     // clientAction is a legitimate successful tool-call response, not an
     // error.
-    if (!res.ok || ((!data.reply || typeof data.reply !== "string") && !data.clientAction)) throw new Error(data.error || `Server error ${res.status}`);
+    if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
+    // REAL, CONFIRMED FIX: the previous version threw "Server error 200"
+    // here whenever data.reply was missing/malformed, even on a genuine
+    // 200 OK response — a real, self-contradicting error message Joel
+    // caught immediately. A 200 with a bad reply shape is a different,
+    // honest problem (the server responded fine, but what it sent back
+    // wasn't usable) — this now says so plainly instead of blaming a
+    // "server error" that didn't actually happen.
+    if ((!data.reply || typeof data.reply !== "string") && !data.clientAction) {
+      throw new Error(data.error || "The server responded, but didn't return a usable reply or action — this may be a real, temporary issue with the AI provider's response format.");
+    }
 
     // Same real clientAction handling as sendMessage above — this path
     // (voice/search-triggered messages) was calling /api/chat with the
