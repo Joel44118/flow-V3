@@ -96,7 +96,14 @@ function _showProactiveIdea(idea) {
 // stray whitespace/newlines — real model output isn't always
 // byte-perfect to the instructed format.
 function stripFlowThink(text) {
-  if (!text) return text;
+  // REAL, DEFENSIVE FIX: same class of bug found and fixed in
+  // memextract.js and persona.js this session — `if (!text) return text;`
+  // only protects against null/undefined/empty-string, not a non-string
+  // truthy value (e.g. an object), which would pass this check and then
+  // crash on text.replace(...) below with "text.replace is not a
+  // function" — exactly the real, repeated error Joel saw across
+  // multiple files tonight.
+  if (!text || typeof text !== "string") return typeof text === "string" ? text : "";
   let cleaned = text.replace(/<flow-think>[\s\S]*?<\/flow-think>/gi, "").trim();
 
   // SECOND LAYER, real and necessary: Joel's actual pasted leak did not
@@ -381,7 +388,7 @@ export async function sendMessage(overrideText, opts = {}) {
     // calls produce genuinely empty first-pass replies. Only throw when
     // there's truly nothing usable — no reply AND no clientAction to
     // follow up on.
-    if (!res.ok || (!data.reply && !data.clientAction)) throw new Error(data.error || `Server error ${res.status}`);
+    if (!res.ok || ((!data.reply || typeof data.reply !== "string") && !data.clientAction)) throw new Error(data.error || `Server error ${res.status}`);
 
     console.log("[Flow] ←", (data.reply || "(tool call, no initial text)").slice(0,60), `(${data.model}, intent: ${data.intent || "?"})`);
     if (data.model) _lastModelUsed = data.model; // real, for the footer's live provider display
@@ -577,7 +584,7 @@ export async function sendToAI(text) {
     // Same real bug fix as sendMessage above — empty reply + a
     // clientAction is a legitimate successful tool-call response, not an
     // error.
-    if (!res.ok || (!data.reply && !data.clientAction)) throw new Error(data.error || `Server error ${res.status}`);
+    if (!res.ok || ((!data.reply || typeof data.reply !== "string") && !data.clientAction)) throw new Error(data.error || `Server error ${res.status}`);
 
     // Same real clientAction handling as sendMessage above — this path
     // (voice/search-triggered messages) was calling /api/chat with the
