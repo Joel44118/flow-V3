@@ -85,7 +85,15 @@ Return only the JSON object.`
 
     if (!res.ok) return;
     const data = await res.json();
-    const raw  = data.reply || data.content || "";
+    // REAL, DEFENSIVE FIX: previously `data.reply || data.content || ""`
+    // only protects against null/undefined/empty-string — if data.reply
+    // somehow arrived as a non-string truthy value (an object, for
+    // instance, from an upstream response-shape bug), it would pass this
+    // check and then crash on raw.replace(...) below with exactly
+    // "raw.replace is not a function". Explicit typeof check ensures raw
+    // is always a real string before anything touches it.
+    let raw = data.reply || data.content || "";
+    if (typeof raw !== "string") raw = "";
     if (!raw) return;
 
     // Parse the extracted JSON. Real fix for the "Expected ',' or '}'"
