@@ -38,6 +38,18 @@ let _platformCards = []; // module-scope so the voice command router can reach a
 export function initContentLab(chat, orb) {
   _chat = chat;
   _orb  = orb;
+  // REAL, CONFIRMED FIX: _injectStyles() was previously only called
+  // inside openContentLab() — meaning the tray tab (_buildToggleButton,
+  // right below) got created and appended to the DOM with ZERO CSS
+  // applied until the tray was opened for the first time. An unstyled
+  // div containing just "◀" with no position:fixed/right:0 falls into
+  // normal document flow, rendering near the top-left of the page —
+  // exactly the "arrow with no button around it, top-left corner"
+  // symptom Joel described, and exactly why it "disappeared" (reverted
+  // to a real, positioned button) only after actually opening Content
+  // Lab once via a command. Calling it here, before the tab is created,
+  // fixes this for good.
+  _injectStyles();
   _buildToggleButton();
 }
 
@@ -291,7 +303,7 @@ function _injectStyles() {
    doesn't need repositioning, which also permanently kills the
    drag-resize bug from before since there's no more dragging at all. */
 #content-lab-tray-tab {
-  position: fixed; top: 50%; right: 0; transform: translateY(-50%);
+  position: fixed; top: 90px; right: 0;
   width: 28px; height: 84px;
   background: rgba(30,20,55,0.95); border: 1px solid rgba(167,139,250,0.4);
   border-right: none; border-radius: 10px 0 0 10px;
@@ -552,8 +564,32 @@ function _renderPlatformCard(platform, container) {
   briefInput.placeholder = "Optional brief...";
   card.appendChild(briefInput);
 
+  // REAL, Joel-requested: media-mode selector — lets each card choose
+  // whether "Generate" (the all-in-one button) produces an IMAGE or a
+  // VIDEO, defaulting to Video for platforms that are primarily
+  // video-first (TikTok, YouTube) and Image for the rest. This changes
+  // what the all-in-one Generate button actually does, and hides the
+  // now-irrelevant image-count/text-on-image options when Video is
+  // selected, since those only apply to images.
+  const VIDEO_FIRST_PLATFORMS = ["tiktok", "youtube"];
+  const modeLabel = document.createElement("label");
+  modeLabel.style.cssText = "font-size:10px;color:#9ca3af;display:flex;align-items:center;gap:4px;";
+  modeLabel.textContent = "Media:";
+  const modeSelect = document.createElement("select");
+  modeSelect.className = "cl-input";
+  modeSelect.style.cssText = "width:auto;padding:4px 6px;font-size:11px;";
+  ["Image", "Video"].forEach((label) => {
+    const opt = document.createElement("option");
+    opt.value = label.toLowerCase();
+    opt.textContent = label;
+    if (label.toLowerCase() === (VIDEO_FIRST_PLATFORMS.includes(platform.id) ? "video" : "image")) opt.selected = true;
+    modeSelect.appendChild(opt);
+  });
+  modeLabel.appendChild(modeSelect);
+
   const optsRow = document.createElement("div");
-  optsRow.style.cssText = "display:flex;gap:6px;margin-top:8px;align-items:center;";
+  optsRow.style.cssText = "display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap;";
+  optsRow.appendChild(modeLabel);
 
   const countLabel = document.createElement("label");
   countLabel.style.cssText = "font-size:10px;color:#9ca3af;display:flex;align-items:center;gap:4px;";
@@ -587,6 +623,17 @@ function _renderPlatformCard(platform, container) {
   burnLabel.appendChild(burnCheckbox);
   burnLabel.appendChild(document.createTextNode("Text on image"));
   optsRow.appendChild(burnLabel);
+
+  // REAL, image-only options (count, text-on-image) are hidden entirely
+  // when Video mode is selected, since neither applies to video output —
+  // showing them anyway would be confusing dead UI.
+  function _syncModeVisibility() {
+    const isVideo = modeSelect.value === "video";
+    countLabel.style.display = isVideo ? "none" : "flex";
+    burnLabel.style.display = isVideo ? "none" : "flex";
+  }
+  modeSelect.addEventListener("change", _syncModeVisibility);
+  _syncModeVisibility();
 
   card.appendChild(optsRow);
 
@@ -632,9 +679,7 @@ function _renderPlatformCard(platform, container) {
   // regardless of what's filled in yet.
   const imageSlot = document.createElement("div");
   imageSlot.className = "cl-image-strip cl-slot-empty";
-  imageSlot.textContent = platform.id === "youtube"
-    ? "🎬 Use the Video button — YouTube posts need an actual video, not the image Generate produces"
-    : "🖼️ Image will appear here";
+  imageSlot.textContent = "🖼️🎬 Image/video will appear here";
   card.appendChild(imageSlot);
 
   const captionSlot = document.createElement("textarea");
@@ -703,9 +748,7 @@ function _renderPlatformCard(platform, container) {
     } else {
       imageSlot.classList.add("cl-slot-empty");
       imageSlot.innerHTML = "";
-      imageSlot.textContent = platform.id === "youtube"
-        ? "🎬 Use the Video button — YouTube posts need an actual video, not the image Generate produces"
-        : "🖼️ Image will appear here";
+      imageSlot.textContent = "🖼️🎬 Image/video will appear here";
     }
 
     // ── Caption slot (real, editable textarea) ──
@@ -829,23 +872,35 @@ function _renderPlatformCard(platform, container) {
     statusEl.textContent = "Generating content...";
     try {
       const brief = briefInput.value.trim();
-      const n = Number(countSelect.value) || 1;
-      const burnText = burnCheckbox.checked;
       const content = await _generateContentJSON(`a ${platform.label} post`, brief, platform.charLimit);
       state.caption = content.caption;
       state.hashtags = content.hashtags || [];
       state.imagePrompt = content.imagePrompt;
 
-      statusEl.textContent = `Generating ${n} image${n > 1 ? "s" : ""} (${platform.width}×${platform.height})...`;
-      let blobs = await _generateImageBlobs(state.imagePrompt, n);
-      if (burnText) {
-        // Real, short hook text burned onto each image — reuses the
-        // first ~8 words of the caption as the on-image hook, matching
-        // how a real caption/hook split typically works for creators.
-        const hook = _extractHookText(state.caption);
-        blobs = await Promise.all(blobs.map((b) => _burnTextOnImage(b, hook)));
+      if (modeSelect.value === "video") {
+        // REAL, Joel-requested — Generate now respects the per-card
+        // media-mode selector. Video mode calls the same real,
+        // non-leaking video pipeline as the dedicated Video button
+        // (silent:true keeps it contained in this card, not the chat).
+        statusEl.textContent = "Generating video (30s-2min, shared free GPU queue)...";
+        const result = await generateVideo(state.imagePrompt, { silent: true });
+        state.videoUrl = result.videoUrl;
+        state.blobs = null; // real, mutually exclusive — a card shows either its image set or its video, not both, matching what actually gets posted
+      } else {
+        const n = Number(countSelect.value) || 1;
+        const burnText = burnCheckbox.checked;
+        statusEl.textContent = `Generating ${n} image${n > 1 ? "s" : ""} (${platform.width}×${platform.height})...`;
+        let blobs = await _generateImageBlobs(state.imagePrompt, n);
+        if (burnText) {
+          // Real, short hook text burned onto each image — reuses the
+          // first ~8 words of the caption as the on-image hook, matching
+          // how a real caption/hook split typically works for creators.
+          const hook = _extractHookText(state.caption);
+          blobs = await Promise.all(blobs.map((b) => _burnTextOnImage(b, hook)));
+        }
+        state.blobs = blobs;
+        state.videoUrl = null; // real, mutually exclusive — see note above
       }
-      state.blobs = blobs;
 
       _renderFromState();
       statusEl.textContent = "Ready.";
