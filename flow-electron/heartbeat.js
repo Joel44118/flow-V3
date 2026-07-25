@@ -337,9 +337,93 @@ ${recentActions.map(a => `- ${a.text}`).join('\n')}`;
 // where the marketing nudge and other self-initiated "message" actions
 // come from — while _selfCheck() still runs every time, including this
 // first tick, exactly as requested.
+// ═══════════════════════════════════════════
+// REAL, Joel-requested — daily social-monitor trigger, fired from
+// Electron's heartbeat (per Joel's explicit choice, not Vercel's own
+// cron), targeting 5PM WAT (UTC+1, no DST — so this is a fixed real UTC
+// hour, not something that needs seasonal adjustment).
+//
+// HONEST MECHANISM: there's no native "run once daily at exactly 5PM"
+// primitive on a 15-minute interval timer — this instead checks, on
+// EVERY regular heartbeat tick, whether it's currently 5PM-or-later WAT
+// AND today's run hasn't already happened, persisting the last-run DATE
+// (not just a boolean) to disk so a restart doesn't cause a second run
+// or a permanently-stuck skip. Real, deliberate tradeoff Joel accepted:
+// this needs Electron open at/after 5PM WAT to fire that day — if the
+// app is closed the whole day, that day's pass is simply skipped, same
+// honest limitation already stated for the rest of this file's "always
+// online" scope note above.
+// ═══════════════════════════════════════════
+const SOCIAL_MONITOR_HOUR_WAT = 17; // 5PM WAT == UTC+1, no DST — so 17 WAT is a fixed 16:00 UTC year-round
+function _socialMonitorStatePath() { return path.join(app.getPath('userData'), 'flow-social-monitor-state.json'); }
+
+function _loadSocialMonitorState() {
+  try {
+    const p = _socialMonitorStatePath();
+    if (!fs.existsSync(p)) return { lastRunDate: null };
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (e) {
+    console.warn('[Heartbeat] Social-monitor state load failed (non-fatal):', e.message);
+    return { lastRunDate: null };
+  }
+}
+
+function _saveSocialMonitorState(state) {
+  try {
+    fs.writeFileSync(_socialMonitorStatePath(), JSON.stringify(state, null, 2));
+  } catch (e) {
+    console.warn('[Heartbeat] Social-monitor state save failed (non-fatal):', e.message);
+  }
+}
+
+// Real WAT-local date string (not the machine's own locale/timezone,
+// which could be anything) — computed directly from a fixed UTC+1
+// offset, so this is correct regardless of what timezone Joel's actual
+// PC clock is set to.
+function _todayWAT() {
+  const watMs = Date.now() + 60 * 60 * 1000; // UTC+1, fixed, no DST
+  return new Date(watMs).toISOString().slice(0, 10);
+}
+
+function _currentHourWAT() {
+  const watMs = Date.now() + 60 * 60 * 1000;
+  return new Date(watMs).getUTCHours();
+}
+
+async function _maybeRunSocialMonitor() {
+  const today = _todayWAT();
+  const state = _loadSocialMonitorState();
+  if (state.lastRunDate === today) return; // already ran today, real guard
+  if (_currentHourWAT() < SOCIAL_MONITOR_HOUR_WAT) return; // not 5PM WAT yet today
+
+  console.log('[Heartbeat] Running daily social-monitor pass (5PM WAT window)...');
+  try {
+    const res = await fetch(`${VERCEL_URL}/api/social?platform=social-monitor`);
+    const data = await res.json();
+    if (!data.ok) {
+      console.warn('[Heartbeat] Social-monitor pass reported failure (non-fatal):', data.error);
+      // Deliberately still mark today as run — a real, temporary failure
+      // (e.g. content generation error) shouldn't retry every 15 minutes
+      // for the rest of the day; it'll get a fresh attempt tomorrow.
+    } else {
+      console.log('[Heartbeat] Social-monitor pass complete:', data.drafts?.length || 0, 'draft(s) sent for approval.');
+    }
+  } catch (e) {
+    console.warn('[Heartbeat] Social-monitor pass request failed (non-fatal):', e.message);
+  }
+  _saveSocialMonitorState({ lastRunDate: today });
+}
+
 async function _tick(isFirstTick = false) {
   console.log('[Heartbeat] Real tick at', new Date().toLocaleTimeString(), isFirstTick ? '(first tick — reasoning/marketing skipped)' : '');
   try {
+    // Real, deliberate: checked on EVERY tick (including the first),
+    // unlike the reasoning/marketing pass below — there's no reason to
+    // skip this on a fresh app open the way Joel wanted the chattier
+    // self-initiated-message logic skipped; if it's already past 5PM WAT
+    // when Joel opens the app, the pass should still run.
+    await _maybeRunSocialMonitor();
+
     if (!isFirstTick) {
       const decision = await _reasonAboutTick();
       if (decision.action === "message" && decision.text) {
