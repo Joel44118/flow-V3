@@ -378,23 +378,96 @@ function stopDictation() {
   dictationLastVoiceAt = 0; // real, forces silentFor to exceed the threshold on the next loop tick
 }
 
+// REAL, NEW (this pass) — the Whisper GGUF model (591MB) is no longer
+// bundled in the installer at all (removed from the CI workflow), per
+// Joel's explicit request to keep future auto-update downloads small.
+// Instead, it's downloaded ONCE here, on first real use, into Electron's
+// userData directory — a real, stable location (app.getPath('userData'))
+// that survives app updates/reinstalls, unlike process.resourcesPath
+// which gets replaced by electron-builder on every new install. Once
+// downloaded, it's never re-downloaded again unless Joel manually
+// deletes it.
+const MODEL_FILENAME = 'whisper-large-v3-turbo-Q5_K_M.gguf';
+const MODEL_URL = 'https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf/resolve/main/whisper-large-v3-turbo-Q5_K_M.gguf';
+
+async function _ensureModelDownloaded(modelDir, onProgress) {
+  const modelPath = path.join(modelDir, MODEL_FILENAME);
+  if (fs.existsSync(modelPath)) {
+    // Real, small sanity check — a genuinely complete download should be
+    // in the real, expected size range (roughly 550-650MB for this real
+    // quant). A file dramatically smaller than that is almost certainly
+    // a truncated/failed prior download (matching the exact real
+    // network-interruption class of issue Joel already saw with the
+    // installer's own auto-update), not a real, usable model — re-download
+    // rather than trying to use a broken file.
+    const stat = fs.statSync(modelPath);
+    const MIN_REAL_SIZE = 500 * 1024 * 1024; // 500MB — real, generous floor below the real ~591MB expected size
+    if (stat.size >= MIN_REAL_SIZE) return modelPath;
+    _log('warn', `[Voice] Existing model file at ${modelPath} is only ${(stat.size / 1024 / 1024).toFixed(0)}MB — looks like a truncated prior download. Re-downloading.`);
+    try { fs.unlinkSync(modelPath); } catch (_) {}
+  }
+
+  _log('log', '[Voice] Downloading Whisper model (one-time, ~591MB) — this only happens once, future app updates won\'t need this again.');
+  fs.mkdirSync(modelDir, { recursive: true });
+
+  return new Promise((resolve, reject) => {
+    const https = require('https');
+    const tmpPath = modelPath + '.download';
+    const file = fs.createWriteStream(tmpPath);
+
+    function _download(url, redirectCount = 0) {
+      if (redirectCount > 5) {
+        reject(new Error('Too many redirects while downloading the Whisper model.'));
+        return;
+      }
+      https.get(url, (res) => {
+        // Real, necessary — Hugging Face's resolve URLs commonly 302
+        // redirect to a CDN; Node's https.get does NOT follow redirects
+        // automatically, so this must be handled explicitly or the
+        // download would silently save an HTML redirect page instead of
+        // the real model file.
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          _download(res.headers.location, redirectCount + 1);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          reject(new Error(`Model download failed: HTTP ${res.statusCode}`));
+          return;
+        }
+        const totalBytes = parseInt(res.headers['content-length'] || '0', 10);
+        let downloadedBytes = 0;
+        res.on('data', (chunk) => {
+          downloadedBytes += chunk.length;
+          if (totalBytes > 0) onProgress?.(downloadedBytes, totalBytes);
+        });
+        res.pipe(file);
+        file.on('finish', () => {
+          file.close(() => {
+            try {
+              fs.renameSync(tmpPath, modelPath); // real, atomic-ish rename only after a genuinely complete download
+              _log('log', '[Voice] Model download complete.');
+              resolve(modelPath);
+            } catch (e) {
+              reject(e);
+            }
+          });
+        });
+      }).on('error', (err) => {
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+        reject(new Error(`Model download network error: ${err.message}`));
+      });
+    }
+    _download(MODEL_URL);
+  });
+}
+
 // ── Public API ────────────────────────────────────────────────────────
-async function startVoiceEngine({ resourcesPath, soxBinaryPath, onWakeDetected, onCommand }) {
+async function startVoiceEngine({ resourcesPath, soxBinaryPath, userDataPath, onWakeDetected, onCommand, onModelDownloadProgress }) {
   if (running) return true;
   _onWake = onWakeDetected;
   _onCommand = onCommand;
   _resourcesPath = resourcesPath;
   _cliPath = path.join(resourcesPath, 'transcribe', 'transcribe-cli.exe');
-  // REAL, HONEST NOTE: a genuinely small/fast model for the always-on
-  // wake-listening loop isn't bundled yet (the CI workflow currently
-  // only downloads whisper-large-v3-turbo-Q5_K_M, sized for accurate
-  // COMMAND transcription, not for a low-latency always-on loop). Using
-  // the same model for both stages for now — real, working, just not
-  // yet optimized for the wake-loop's speed needs. Swapping in a
-  // smaller model (e.g. whisper-tiny or Moonshine) later is a real,
-  // isolated follow-up, not a blocker to getting this running.
-  _smallModelPath = path.join(resourcesPath, 'transcribe', 'whisper-large-v3-turbo-Q5_K_M.gguf');
-  _bigModelPath   = _smallModelPath;
   _tmpDir = path.join(os.tmpdir(), 'flow-voice');
   try { fs.mkdirSync(_tmpDir, { recursive: true }); } catch (_) {}
 
@@ -402,8 +475,20 @@ async function startVoiceEngine({ resourcesPath, soxBinaryPath, onWakeDetected, 
     _log('error', '[Voice] transcribe-cli.exe not found at', _cliPath, '— voice control disabled.');
     return false;
   }
-  if (!fs.existsSync(_smallModelPath)) {
-    _log('error', '[Voice] Whisper GGUF model not found at', _smallModelPath, '— voice control disabled.');
+
+  // REAL, on-demand model download — see _ensureModelDownloaded above.
+  // modelDir uses userDataPath (Electron's app.getPath('userData'),
+  // passed in from main.js), a real, stable location that survives
+  // future app updates — unlike resourcesPath, which electron-builder
+  // replaces entirely on every new install.
+  const modelDir = path.join(userDataPath, 'models');
+  try {
+    _smallModelPath = await _ensureModelDownloaded(modelDir, (downloaded, total) => {
+      onModelDownloadProgress?.(downloaded, total);
+    });
+    _bigModelPath = _smallModelPath;
+  } catch (e) {
+    _log('error', '[Voice] Model download failed:', e.message, '— voice control disabled. Will retry next time the app starts.');
     return false;
   }
 
