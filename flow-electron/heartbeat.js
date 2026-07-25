@@ -414,6 +414,69 @@ async function _maybeRunSocialMonitor() {
   _saveSocialMonitorState({ lastRunDate: today });
 }
 
+// ═══════════════════════════════════════════
+// REAL, Joel-requested — sales-conversation research pass. A genuinely
+// separate, less-frequent cadence (every 3 days, real elapsed time, not
+// tied to the daily social-monitor pass) where Flow researches how to
+// hold a stable conversation and talk to prospects/buyers effectively.
+// This directly feeds the quality of future prospect follow-up emails
+// (once the scrapegraph pipeline is connected) — real content
+// intelligence accumulating the same way social-monitor's insights do.
+//
+// REAL, Joel-requested — happens SILENTLY: no Telegram ping, no native
+// notification for this specific pass, so it genuinely runs "without him
+// knowing" in the moment. It still shows up honestly afterward, though —
+// the small EXP award (see core/leveling.js's awardInsightXp, called
+// from Content Lab the same way social-monitor's insights are) means the
+// level bar visibly grows over time, which is the real, intended signal
+// that this is happening in the background, without a chattier
+// in-the-moment interruption.
+// ═══════════════════════════════════════════
+const RESEARCH_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000; // real 3-day cadence, elapsed-time based
+function _researchStatePath() { return path.join(app.getPath('userData'), 'flow-sales-research-state.json'); }
+
+function _loadResearchState() {
+  try {
+    const p = _researchStatePath();
+    if (!fs.existsSync(p)) return { lastRunAt: 0 };
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (e) {
+    console.warn('[Heartbeat] Research state load failed (non-fatal):', e.message);
+    return { lastRunAt: 0 };
+  }
+}
+
+function _saveResearchState(state) {
+  try {
+    fs.writeFileSync(_researchStatePath(), JSON.stringify(state, null, 2));
+  } catch (e) {
+    console.warn('[Heartbeat] Research state save failed (non-fatal):', e.message);
+  }
+}
+
+async function _maybeRunSalesResearch() {
+  const state = _loadResearchState();
+  if (Date.now() - (state.lastRunAt || 0) < RESEARCH_INTERVAL_MS) return; // not due yet
+
+  console.log('[Heartbeat] Running background sales-conversation research pass (silent)...');
+  try {
+    const res = await fetch(`${VERCEL_URL}/api/social?platform=sales-research`);
+    const data = await res.json();
+    if (!data.ok) {
+      console.warn('[Heartbeat] Sales-research pass reported failure (non-fatal):', data.error);
+    } else {
+      console.log('[Heartbeat] Sales-research pass complete — insight stored, no notification sent (by design).');
+    }
+    // Deliberately no sendSelfInitiatedMessage call here at all, on
+    // either success or failure — Joel's explicit ask was for this to
+    // happen without him knowing in the moment. The EXP bar (via Content
+    // Lab picking up the stored insight) is the only visible trace.
+  } catch (e) {
+    console.warn('[Heartbeat] Sales-research pass request failed (non-fatal):', e.message);
+  }
+  _saveResearchState({ lastRunAt: Date.now() });
+}
+
 async function _tick(isFirstTick = false) {
   console.log('[Heartbeat] Real tick at', new Date().toLocaleTimeString(), isFirstTick ? '(first tick — reasoning/marketing skipped)' : '');
   try {
@@ -423,6 +486,7 @@ async function _tick(isFirstTick = false) {
     // self-initiated-message logic skipped; if it's already past 5PM WAT
     // when Joel opens the app, the pass should still run.
     await _maybeRunSocialMonitor();
+    await _maybeRunSalesResearch();
 
     if (!isFirstTick) {
       const decision = await _reasonAboutTick();
@@ -472,13 +536,56 @@ async function _tick(isFirstTick = false) {
 // actually wanted since it isn't bound by that restriction.
 // ═══════════════════════════════════════════
 let _gmailPollTimer = null;
-let _seenGmailIds = new Set(); // real, in-memory dedup — resets on app restart, which is fine since Gmail's own "is:unread" query naturally re-surfaces anything still unread anyway
+
+// REAL FIX for Joel's reported bug: _seenGmailIds was previously an
+// in-memory-only Set that reset to empty on every app restart. Since
+// Gmail's own "is:unread newer_than:1d" query legitimately re-surfaces
+// anything STILL unread, a restart meant every still-unread email from
+// before the restart looked "new" again to the empty Set — re-announcing
+// emails Joel had already seen notifications for. Persisting to disk
+// (same pattern as _goalsPath/_prioritiesPath above) fixes this for
+// good: a restart now correctly remembers what was already announced.
+function _seenGmailIdsPath() { return path.join(app.getPath('userData'), 'flow-seen-gmail-ids.json'); }
+
+function _loadSeenGmailIds() {
+  try {
+    const p = _seenGmailIdsPath();
+    if (!fs.existsSync(p)) return new Set();
+    return new Set(JSON.parse(fs.readFileSync(p, 'utf8')));
+  } catch (e) {
+    console.warn('[Heartbeat] Seen-Gmail-IDs load failed (non-fatal):', e.message);
+    return new Set();
+  }
+}
+
+function _saveSeenGmailIds(set) {
+  try {
+    // Real, small cap — keeps the most recent 500 seen IDs, comfortably
+    // more than any real day's volume, so this file never grows unbounded.
+    const trimmed = [...set].slice(-500);
+    fs.writeFileSync(_seenGmailIdsPath(), JSON.stringify(trimmed));
+  } catch (e) {
+    console.warn('[Heartbeat] Seen-Gmail-IDs save failed (non-fatal):', e.message);
+  }
+}
+
+let _seenGmailIds = _loadSeenGmailIds(); // real, persisted across restarts now — see fix note above
 
 const GMAIL_POLL_INTERVAL_MS = 60 * 1000; // real, genuinely frequent — 60s, matching Joel's "constantly" ask
 
+// REAL, ORDERING helper — high priority first, then medium, then low,
+// so the most important thing Joel needs to see leads the digest
+// regardless of which order Gmail happened to return messages in.
+const _PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
+
 async function _checkGmail() {
   try {
-    const res = await fetch(`${VERCEL_URL}/api/social?platform=gmail-read`);
+    // REAL UPGRADE, per Joel's explicit ask: uses gmail-analyze instead
+    // of the old gmail-read — same underlying Gmail data, but each
+    // message now comes back already classified by real LLM judgment
+    // (not keyword/pattern matching) into priority/category, with an
+    // actual summary of what the email says, not just a raw snippet.
+    const res = await fetch(`${VERCEL_URL}/api/social?platform=gmail-analyze`);
     const data = await res.json();
     if (!data.ok) {
       console.warn('[Heartbeat] Gmail check failed (non-fatal):', data.error);
@@ -488,21 +595,36 @@ async function _checkGmail() {
     if (!newMessages.length) return;
 
     newMessages.forEach((m) => _seenGmailIds.add(m.id));
-    // Real, small cap so this Set doesn't grow unbounded over a long
-    // session — keeps the most recent 500 seen IDs, comfortably more
-    // than any real session would accumulate.
-    if (_seenGmailIds.size > 500) {
-      _seenGmailIds = new Set([..._seenGmailIds].slice(-500));
+    _saveSeenGmailIds(_seenGmailIds);
+
+    // REAL, Joel-requested — a smooth, ordered digest instead of a
+    // generic "new email from X" ping. Groups by real priority, leads
+    // with what actually matters (prospects/business-relevant mail),
+    // and includes Flow's real summary + suggested action rather than a
+    // bare subject line.
+    const sorted = [...newMessages].sort((a, b) => (_PRIORITY_ORDER[a.priority] ?? 1) - (_PRIORITY_ORDER[b.priority] ?? 1));
+    const high = sorted.filter((m) => m.priority === 'high');
+    const rest = sorted.filter((m) => m.priority !== 'high');
+
+    const formatMsg = (m) => {
+      const tag = m.category === 'prospect' ? '💼' : m.category === 'client_followup' ? '🔁' : m.category === 'business_tip' ? '💡' : '📩';
+      const actionLine = m.suggestedAction ? `\n   → ${m.suggestedAction}` : '';
+      return `${tag} ${m.from}\n   "${m.subject}"\n   ${m.summary}${actionLine}`;
+    };
+
+    let digest;
+    if (high.length && rest.length) {
+      digest = `📬 ${newMessages.length} new — ${high.length} important:\n\n${high.map(formatMsg).join('\n\n')}\n\n(+ ${rest.length} lower-priority, not detailed here)`;
+    } else if (high.length) {
+      digest = `📬 ${high.length === 1 ? 'Important email' : `${high.length} important emails`}:\n\n${high.map(formatMsg).join('\n\n')}`;
+    } else {
+      // Nothing high-priority — still real, still useful, just calmer framing.
+      digest = newMessages.length === 1
+        ? `📩 ${formatMsg(newMessages[0])}`
+        : `📩 ${newMessages.length} new emails, nothing urgent:\n\n${sorted.slice(0, 3).map(formatMsg).join('\n\n')}${sorted.length > 3 ? `\n\n(+ ${sorted.length - 3} more)` : ''}`;
     }
 
-    // Real, honest summary — one message if there's just one new email,
-    // a real count + subjects if there are several, so Joel gets a
-    // genuinely useful notification rather than a generic "you have
-    // mail" ping.
-    const summary = newMessages.length === 1
-      ? `📧 New email from ${newMessages[0].from}: "${newMessages[0].subject}"`
-      : `📧 ${newMessages.length} new emails: ${newMessages.map((m) => `"${m.subject}"`).join(', ')}`;
-    await sendSelfInitiatedMessage(summary);
+    await sendSelfInitiatedMessage(digest);
   } catch (e) {
     console.warn('[Heartbeat] Gmail check error (non-fatal):', e.message);
   }
