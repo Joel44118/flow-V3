@@ -140,7 +140,17 @@ function _renderCard(videoUrl, prompt, modelLabel) {
 // segment here anyway, since ZeroGPU free-tier generation time scales
 // with length, and several shorter clips queue/generate more reliably
 // than fewer very long ones on a shared free GPU.
-const LONG_VIDEO_SPACE = "techfreakworm/LTX2.3-Studio";
+// REAL, CONFIRMED, OFFICIAL SPACE — switched from techfreakworm's
+// community copy (which Joel confirmed failing repeatedly with a
+// generic "Generation failed" error) to Lightricks' own official Space,
+// found in Joel's real HF Spaces listing. Schema confirmed DIRECTLY
+// against its own /gradio_api/info (Joel fetched and pasted the real
+// JSON), NOT guessed — the real endpoint is /generate_video, taking (in
+// this exact confirmed order): input_image (optional FileData), prompt,
+// duration (1.0-10.0s — a real, shorter ceiling than the community
+// Space's 30s, but this is the maintained, official one), enhance_prompt,
+// seed, randomize_seed, height, width. Returns [Video, Seed].
+const LONG_VIDEO_SPACE = "Lightricks/LTX-2-3";
 
 /**
  * Generate a longer video with audio by creating several sequential
@@ -164,7 +174,10 @@ export async function generateLongVideo(promptText, opts = {}) {
   // to 1 (a single clip, no stitching needed) unless a real, higher
   // clipCount is explicitly requested.
   const clipCount = Math.min(Math.max(opts.clipCount || 1, 1), 6);
-  const clipSeconds = Math.min(Math.max(opts.clipSeconds || 8, 3), 15);
+  // REAL, confirmed bound: Lightricks/LTX-2-3's own schema caps duration
+  // at 10.0s (was up to 15 against the old, less reliable community
+  // Space) — real ceiling of the official Space we're now using.
+  const clipSeconds = Math.min(Math.max(opts.clipSeconds || 8, 1), 10);
 
   if (!opts.silent) {
     _chat?.add(
@@ -206,24 +219,28 @@ export async function generateLongVideo(promptText, opts = {}) {
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS && !clipBlob; attempt++) {
         try {
-          const result = await app.predict("/handler", [
-            segmentPrompt,      // Prompt
-            "Balanced",         // Preset
-            768,                // Width
-            1024,               // Height — real, portrait default matching most social platforms
-            clipSeconds,        // Length (seconds)
-            24,                 // FPS
-            42 + i,             // Seed — real, varies per clip so clips aren't identical
-            false,              // Randomize seed each run — false, since we're setting it explicitly above
-            "blurry, low quality, distorted, watermark, text overlay", // Negative prompt
-            "none",             // Camera
-            0.8,                // Camera strength
-            false,              // Apply IC-LoRA-Detailer
-            0.5,                // Detailer strength
-          ]);
+          // REAL, confirmed named-parameter call against
+          // Lightricks/LTX-2-3's own /generate_video schema — clip
+          // duration is capped at this Space's real 10s ceiling
+          // (enforced via Math.min below, since our own clipSeconds
+          // default/option could otherwise exceed it).
+          const result = await app.predict("/generate_video", {
+            input_image: null,           // no image — pure text-to-video
+            prompt: segmentPrompt,
+            duration: Math.min(clipSeconds, 10),
+            enhance_prompt: false,
+            seed: 42 + i,                // real, varies per clip so clips aren't identical
+            randomize_seed: false,       // false, since we're setting seed explicitly above
+            height: 1024,
+            width: 768,                  // real, portrait default matching most social platforms
+          });
 
-          const videoData = result?.data?.[1]; // real, confirmed: returns[1] is the Video component (returns[0] is an Html status string)
-          const videoUrl = videoData?.video?.url;
+          // REAL, CONFIRMED return shape per this Space's own schema:
+          // returns = [Generated Video, Seed] — Video is data[0], NOT
+          // data[1] (different from the old community Space's shape,
+          // which had an extra Html status string at index 0).
+          const videoData = result?.data?.[0];
+          const videoUrl = videoData?.url || videoData?.path;
           if (!videoUrl) {
             throw new Error(`no usable video URL — real response: ${JSON.stringify(result?.data).slice(0, 150)}`);
           }
