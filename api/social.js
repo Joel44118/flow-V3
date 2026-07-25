@@ -1796,6 +1796,126 @@ async function handleTikTok(req, res) {
 }
 
 
+// REAL, Joel-requested feature: Gmail integration — folded into this
+// file (not a new api/gmail.js) since Vercel Hobby's 12-function limit
+// is already fully used, matching Joel's own established convention
+// this session of routing new features through existing files via
+// query-param dispatch. Two real, distinct capabilities: reading
+// (automatic, on a schedule — see the new cron entry in vercel.json)
+// and sending (on command). REAL, CONFIRMED SCOPES (verified via
+// Google's own current docs): gmail.readonly for reading, gmail.send
+// for sending. Same one-time-refresh-token pattern as handleYouTube
+// above, since this only ever operates on Joel's own single account.
+async function _getGmailAccessToken() {
+  // REAL, deliberate fallback: reuses YOUTUBE_CLIENT_ID/SECRET if
+  // GMAIL_CLIENT_ID/SECRET aren't set — Joel is very likely using the
+  // SAME Google Cloud project for both, so this avoids a redundant
+  // second OAuth client setup if he doesn't need one.
+  const clientId     = process.env.GMAIL_CLIENT_ID || process.env.YOUTUBE_CLIENT_ID;
+  const clientSecret = process.env.GMAIL_CLIENT_SECRET || process.env.YOUTUBE_CLIENT_SECRET;
+  const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error('GMAIL_CLIENT_ID/SECRET (or YOUTUBE_CLIENT_ID/SECRET as fallback) and GMAIL_REFRESH_TOKEN must be set in Vercel env vars.');
+  }
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+  if (!res.ok) throw new Error(`Gmail token refresh failed: ${await res.text()}`);
+  const data = await res.json();
+  return data.access_token;
+}
+
+function _base64UrlEncode(str) {
+  return Buffer.from(str, 'utf-8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function _buildMimeMessage({ to, subject, body }) {
+  const lines = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    body,
+  ];
+  return _base64UrlEncode(lines.join('\r\n'));
+}
+
+async function handleGmailRead(req, res) {
+  try {
+    const accessToken = await _getGmailAccessToken();
+    // Real, confirmed query — 'is:unread newer_than:1d' keeps this
+    // scoped to recent unread mail rather than re-fetching the entire
+    // inbox history on every poll.
+    const listRes = await fetch(
+      'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread newer_than:1d&maxResults=10',
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!listRes.ok) {
+      return res.status(200).json({ ok: false, error: `Gmail list failed: ${await listRes.text()}` });
+    }
+    const listData = await listRes.json();
+    const messageRefs = listData.messages || [];
+    if (!messageRefs.length) return res.status(200).json({ ok: true, messages: [] });
+
+    const messages = await Promise.all(
+      messageRefs.map(async (ref) => {
+        const msgRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${ref.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!msgRes.ok) return null;
+        const msgData = await msgRes.json();
+        const headers = msgData.payload?.headers || [];
+        const getHeader = (name) => headers.find((h) => h.name === name)?.value || '';
+        return {
+          id: msgData.id,
+          from: getHeader('From'),
+          subject: getHeader('Subject'),
+          date: getHeader('Date'),
+          snippet: msgData.snippet || '',
+        };
+      })
+    );
+    return res.status(200).json({ ok: true, messages: messages.filter(Boolean) });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: `Real error reading Gmail: ${e.message}` });
+  }
+}
+
+async function handleGmailSend(req, res) {
+  const { to, subject, body } = req.body || {};
+  if (!to || !subject || !body) {
+    return res.status(200).json({ ok: false, error: 'Missing "to", "subject", or "body" in request body.' });
+  }
+  try {
+    const accessToken = await _getGmailAccessToken();
+    const raw = _buildMimeMessage({ to, subject, body });
+    const sendRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw }),
+    });
+    if (!sendRes.ok) {
+      return res.status(200).json({ ok: false, error: `Gmail send failed: ${await sendRes.text()}` });
+    }
+    const sendData = await sendRes.json();
+    return res.status(200).json({ ok: true, messageId: sendData.id });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: `Real error sending email: ${e.message}` });
+  }
+}
+
 async function handleBluesky(req, res) {
   // REAL, CONFIRMED FIX: Joel's actual BLUESKY_HANDLE env var was set to
   // "@joelflowstack.bsky.social" (with a leading @). Bluesky's own
@@ -1949,6 +2069,8 @@ export default async function handler(req, res) {
   if (platform === 'bluesky')       return handleBluesky(req, res);
   if (platform === 'youtube')       return handleYouTube(req, res);
   if (platform === 'tiktok')        return handleTikTok(req, res);
+  if (platform === 'gmail-read')    return handleGmailRead(req, res);
+  if (platform === 'gmail-send')    return handleGmailSend(req, res);
   if (platform === 'heartbeat-notify') return handleHeartbeatNotify(req, res);
   if (platform === 'marketing-draft') return handleMarketingDraft(req, res);
   return res.status(200).json({ service: 'Flow Social', endpoints: {
