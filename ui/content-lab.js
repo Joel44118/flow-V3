@@ -29,6 +29,7 @@
 // ═══════════════════════════════════════════
 import { generateVideo, generateLongVideo } from "./videogen.js";
 import { Speech } from "../core/speech.js";
+import { awardInsightXp, awardContentAppliedXp } from "../core/leveling.js";
 
 let _chat = null;
 let _orb  = null;
@@ -472,6 +473,49 @@ select.cl-input, select.cl-input option {
 }
 .cl-post-all-btn:hover { background: rgba(74,222,128,0.25); }
 .cl-status { font-size: 10px; color: #9ca3af; margin-top: 6px; word-wrap: break-word; overflow-wrap: anywhere; }
+
+/* REAL, Joel-requested — Daily Drafts section: social-monitor's 5PM-WAT
+   drafts, approvable from here in addition to Telegram. Sits above the
+   "Post to all" button, scrollable independently so a growing draft list
+   never pushes the rest of the panel out of view. */
+#cl-drafts-section {
+  flex-shrink: 0; margin: 0 16px 12px; max-height: 220px; overflow-y: auto;
+  border-top: 1px solid rgba(167,139,250,0.15); padding-top: 10px;
+}
+.cl-drafts-title {
+  font-size: 12px; font-weight: 700; color: #d8d4ff; margin-bottom: 8px;
+  letter-spacing: 0.02em;
+}
+.cl-drafts-empty {
+  font-size: 11px; color: rgba(255,255,255,0.35); font-style: italic; padding: 8px 0;
+}
+.cl-draft-card {
+  border: 1px solid rgba(167,139,250,0.2); background: rgba(255,255,255,0.03);
+  border-radius: 10px; padding: 10px; margin-bottom: 8px;
+}
+.cl-draft-header {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;
+}
+.cl-draft-platform {
+  font-size: 11px; font-weight: 700; color: #a78bfa; text-transform: capitalize;
+}
+.cl-draft-status { font-size: 10px; color: #9ca3af; }
+.cl-draft-caption {
+  font-size: 12px; color: #e5e7eb; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word;
+}
+.cl-draft-link {
+  display: inline-block; margin-top: 6px; font-size: 11px; color: #4ade80; text-decoration: none;
+}
+.cl-draft-link:hover { text-decoration: underline; }
+.cl-draft-actions { display: flex; gap: 8px; margin-top: 8px; }
+.cl-draft-approve {
+  border: 1px solid rgba(74,222,128,0.4); background: rgba(74,222,128,0.15); color: #4ade80;
+}
+.cl-draft-approve:hover { background: rgba(74,222,128,0.25); }
+.cl-draft-discard {
+  border: 1px solid rgba(248,113,113,0.35); background: rgba(248,113,113,0.12); color: #f87171;
+}
+.cl-draft-discard:hover { background: rgba(248,113,113,0.22); }
 
 /* REAL, Joel-requested feature: a collapsible drawer for post-status/
    error output, so it can never silently grow the panel and push other
@@ -1159,6 +1203,172 @@ function _renderCreateResult(outputEl, { title, body, imgUrl, videoUrl }) {
 // first open and persists in the DOM; opening/closing just toggles the
 // .cl-open class, letting the CSS transition (see #content-lab-panel
 // above) actually animate smoothly.
+// ═══════════════════════════════════════════
+// REAL, Joel-requested — Daily Drafts polling (social-monitor feature).
+// Polls /api/social?platform=social-drafts every 20s while the tray is
+// open, matching Joel's own explicit choice of interval/approach. Reads
+// the SAME KV records the Telegram approve/discard buttons use, so a
+// Telegram approval shows up here as status:"posted" on next poll rather
+// than as a second, separate pending card — no doubling up.
+//
+// EXP AWARD DEDUP: uses localStorage sets (not the drafts themselves) to
+// remember which insightIds/draftIds already triggered an award, since
+// polling happens repeatedly and an insight/post must only ever count
+// once, no matter how many polls see it.
+// ═══════════════════════════════════════════
+let _draftPollTimer = null;
+const _AWARDED_INSIGHTS_KEY = "flow_awarded_insight_ids";
+const _AWARDED_APPLIED_KEY  = "flow_awarded_applied_draft_ids";
+
+function _loadAwardedSet(key) {
+  try { return new Set(JSON.parse(localStorage.getItem(key) || "[]")); } catch (_) { return new Set(); }
+}
+function _saveAwardedSet(key, set) {
+  try { localStorage.setItem(key, JSON.stringify([...set].slice(-200))); } catch (_) {}
+}
+
+async function _pollSocialDrafts(listEl) {
+  try {
+    const res = await fetch("/api/social?platform=social-drafts");
+    const data = await res.json();
+    if (!data.ok) return;
+    const drafts = data.drafts || [];
+
+    // ── Real EXP award pass — small XP for any genuinely new insightId
+    // seen for the first time (a real social-monitor analysis pass ran),
+    // big XP for any draft that flipped to status:"posted" with a real
+    // insightId attached (that analysis actually became a live post).
+    const awardedInsights = _loadAwardedSet(_AWARDED_INSIGHTS_KEY);
+    const awardedApplied  = _loadAwardedSet(_AWARDED_APPLIED_KEY);
+    let changed = false;
+
+    for (const d of drafts) {
+      if (d.insightId && !awardedInsights.has(d.insightId)) {
+        awardedInsights.add(d.insightId);
+        awardInsightXp(d.platform);
+        changed = true;
+      }
+      if (d.status === "posted" && d.insightId && !awardedApplied.has(d.draftId)) {
+        awardedApplied.add(d.draftId);
+        awardContentAppliedXp(d.platform, d.caption);
+        changed = true;
+      }
+    }
+    if (changed) {
+      _saveAwardedSet(_AWARDED_INSIGHTS_KEY, awardedInsights);
+      _saveAwardedSet(_AWARDED_APPLIED_KEY, awardedApplied);
+    }
+
+    _renderDraftCards(listEl, drafts);
+  } catch (e) {
+    console.warn("[ContentLab] Draft poll failed (non-fatal):", e.message);
+  }
+}
+
+function _renderDraftCards(listEl, drafts) {
+  if (!drafts.length) {
+    listEl.innerHTML = `<div class="cl-drafts-empty">No drafts yet — the next social-monitor pass runs at 5PM WAT.</div>`;
+    return;
+  }
+  listEl.innerHTML = "";
+  // Real, deliberate order: pending first (needs Joel's attention), then
+  // posted, most recent first within each group.
+  const sorted = [...drafts].sort((a, b) => {
+    if (a.status === "pending" && b.status !== "pending") return -1;
+    if (b.status === "pending" && a.status !== "pending") return 1;
+    return (b.createdAt || 0) - (a.createdAt || 0);
+  });
+
+  for (const draft of sorted) {
+    const card = document.createElement("div");
+    card.className = "cl-draft-card";
+
+    const label = draft.status === "posted" ? "✅ Posted" : draft.status === "discarded" ? "❌ Discarded" : "⏳ Pending";
+    const header = document.createElement("div");
+    header.className = "cl-draft-header";
+    header.innerHTML = `<span class="cl-draft-platform">${draft.platform}</span><span class="cl-draft-status">${label}</span>`;
+    card.appendChild(header);
+
+    const captionEl = document.createElement("div");
+    captionEl.className = "cl-draft-caption";
+    captionEl.textContent = draft.caption || "";
+    card.appendChild(captionEl);
+
+    if (draft.status === "posted" && draft.postUrl) {
+      const link = document.createElement("a");
+      link.href = draft.postUrl;
+      link.target = "_blank";
+      link.className = "cl-draft-link";
+      link.textContent = "View post →";
+      card.appendChild(link);
+    }
+
+    if (draft.status === "pending") {
+      const actions = document.createElement("div");
+      actions.className = "cl-draft-actions";
+
+      const approveBtn = document.createElement("button");
+      approveBtn.className = "cl-btn cl-draft-approve";
+      approveBtn.textContent = "✅ Approve";
+      approveBtn.onclick = () => _approveSocialDraft(draft, listEl);
+
+      const discardBtn = document.createElement("button");
+      discardBtn.className = "cl-btn cl-draft-discard";
+      discardBtn.textContent = "❌ Discard";
+      discardBtn.onclick = () => _discardSocialDraft(draft, listEl);
+
+      actions.appendChild(approveBtn);
+      actions.appendChild(discardBtn);
+      card.appendChild(actions);
+    }
+
+    listEl.appendChild(card);
+  }
+}
+
+// REAL, HONEST NOTE: approving from Content Lab hits the same
+// callback-handling logic as Telegram's Approve button, just via a
+// direct HTTP call instead of a Telegram button tap — actually posts,
+// then updates the same KV record, so a later Telegram tap on the same
+// draft correctly sees status:"posted" rather than posting twice.
+async function _approveSocialDraft(draft, listEl) {
+  try {
+    const res = await fetch("/api/social?platform=social-draft-approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draftId: draft.draftId, decision: "yes" }),
+    });
+    const data = await res.json();
+    if (!data.ok) { alert(`Failed to post: ${data.error}`); return; }
+    await _pollSocialDrafts(listEl);
+  } catch (e) {
+    alert(`Failed to post: ${e.message}`);
+  }
+}
+
+async function _discardSocialDraft(draft, listEl) {
+  try {
+    await fetch("/api/social?platform=social-draft-approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draftId: draft.draftId, decision: "no" }),
+    });
+    await _pollSocialDrafts(listEl);
+  } catch (e) {
+    console.warn("[ContentLab] Discard failed:", e.message);
+  }
+}
+
+function _startDraftPolling(listEl) {
+  _stopDraftPolling();
+  _pollSocialDrafts(listEl); // real, immediate first load, not waiting a full 20s
+  _draftPollTimer = setInterval(() => _pollSocialDrafts(listEl), 20 * 1000);
+}
+
+function _stopDraftPolling() {
+  if (_draftPollTimer) { clearInterval(_draftPollTimer); _draftPollTimer = null; }
+}
+
 export function openContentLab() {
   _injectStyles();
 
@@ -1336,8 +1546,23 @@ export function openContentLab() {
   panel.appendChild(postAllBtn);
   panel.appendChild(statusDrawer);
 
+  // ── Real, Joel-requested — Daily Drafts section: shows the
+  // social-monitor's 5PM-WAT drafts as approvable cards, the SAME KV
+  // records the Telegram approve/discard buttons read and write. This is
+  // the second surface for the exact same drafts — approving from either
+  // Telegram or here converges on one record, so nothing ever doubles up.
+  const draftsSection = document.createElement("div");
+  draftsSection.id = "cl-drafts-section";
+  draftsSection.innerHTML = `<div class="cl-drafts-title">📊 Daily Drafts</div>`;
+  const draftsList = document.createElement("div");
+  draftsList.id = "cl-drafts-list";
+  draftsSection.appendChild(draftsList);
+  panel.insertBefore(draftsSection, postAllBtn);
+
   document.body.appendChild(panel);
   _panelEl = panel;
+
+  _startDraftPolling(draftsList);
 
   // Real, triggers the slide-in transition (panel starts at
   // transform:translateX(100%) per the CSS above; adding .cl-open
@@ -1352,6 +1577,7 @@ export function openContentLab() {
 export function closeContentLab() {
   if (_panelEl) _panelEl.classList.remove("cl-open");
   document.getElementById("content-lab-tray-tab")?.classList.remove("cl-tray-open");
+  _stopDraftPolling();
 }
 
 // REAL FIX: previously `!!_panelEl` — correct back when the panel was
