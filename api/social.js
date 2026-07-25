@@ -976,6 +976,18 @@ async function _loadRecentInsights(n = 5) {
   return insights.filter(Boolean);
 }
 
+// ── Real, read-only endpoint Content Lab polls for XP purposes — covers
+// ALL stored insights (both social-monitor's content patterns AND the
+// sales-research pass's conversation patterns, since both are saved
+// through the same _saveInsight system). This is separate from
+// social-drafts polling because a sales-research insight is never
+// attached to any draft — it needs its own path to still register the
+// small "analysis happened" XP award.
+async function handleInsights(req, res) {
+  const insights = await _loadRecentInsights(30);
+  return res.status(200).json({ ok: true, insights });
+}
+
 // ── Real self-performance pull — Bluesky's own public AT Protocol feed
 // endpoint, no extra auth beyond the same session used for posting.
 async function _getBlueskyOwnPerformance() {
@@ -1101,6 +1113,63 @@ ${insight ? `Apply this real, recently-learned content pattern if it genuinely f
   const caption = data.reply?.trim();
   if (!caption) throw new Error(`Caption generation failed for ${platform}`);
   return caption;
+}
+
+// ═══════════════════════════════════════════
+// REAL, NEW — Sales-conversation research pass. Genuinely separate from
+// social-monitor's niche-content research above: this specifically
+// researches how to hold a stable, effective conversation with prospects
+// and buyers (not social content patterns), and stores the result as a
+// real insight using the SAME storage system social-monitor already
+// uses — so it accumulates in the same growing pool of content
+// intelligence, and future prospect-outreach drafts (once scrapegraph is
+// connected) can draw on it the same way social drafts already do.
+//
+// Called on its own 3-day cadence from the Electron heartbeat, silently
+// (no Telegram/native notification by design — see heartbeat.js).
+// ═══════════════════════════════════════════
+async function _researchSalesConversation() {
+  const results = await Promise.all([
+    fetch(`${SITE}/api/search?q=${encodeURIComponent('how to have effective sales conversations with prospects 2026')}&mode=deep`).then(r => r.json()).catch(() => ({ results: [] })),
+    fetch(`${SITE}/api/search?q=${encodeURIComponent('best practices following up with leads over email without being pushy')}&mode=deep`).then(r => r.json()).catch(() => ({ results: [] })),
+  ]);
+  const combined = results.flatMap(r => (r.results || []).slice(0, 4).map(x => ({ title: x.title, snippet: (x.snippet || '').slice(0, 300) })));
+  return combined;
+}
+
+async function handleSalesResearch(req, res) {
+  try {
+    const searchResults = await _researchSalesConversation();
+
+    const system = `You are extracting ONE genuinely useful, specific pattern about how to talk to prospects/buyers effectively — for Joel Olaiya, a solo web dev/bot integration/workflow automation freelancer (Joelflowstack) who follows up with leads and maintains client conversations over email. Not a summary — one real, actionable insight he can apply the next time he emails a prospect or client.
+
+Reply with ONLY this JSON, no other text:
+{"pattern": "one concise sentence describing the real conversational/sales pattern you found", "platform_hint": "email_outreach", "confidence": "low"|"medium"|"high"}`;
+
+    const dataDump = JSON.stringify(searchResults, null, 2).slice(0, 5000);
+    const chatRes = await fetch(`${SITE}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: `Real research to analyze:\n${dataDump}` },
+        ],
+        max_tokens: 200,
+      }),
+    });
+    const chatData = await chatRes.json();
+    if (!chatData.reply || typeof chatData.reply !== 'string') throw new Error('Sales-research insight extraction returned an empty or malformed reply.');
+    const match = chatData.reply.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('Sales-research insight extraction did not return the expected JSON format.');
+    const insight = JSON.parse(match[0]);
+
+    const insightId = await _saveInsight(insight);
+    return res.status(200).json({ ok: true, insightId, insight });
+  } catch (e) {
+    console.error('[SalesResearch] Real failure:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
 }
 
 async function handleSocialMonitor(req, res) {
@@ -2335,6 +2404,48 @@ function _buildMimeMessage({ to, subject, body }) {
   return _base64UrlEncode(lines.join('\r\n'));
 }
 
+// ── Real MIME body decoder — Gmail returns body text as base64url,
+// potentially split across nested multipart parts (text/plain,
+// text/html, or both). Recurses through parts to find real, usable text,
+// preferring text/plain since it's already clean (no HTML tags to strip).
+function _decodeGmailBody(payload) {
+  if (!payload) return '';
+
+  const decode = (data) => {
+    if (!data) return '';
+    try {
+      return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8');
+    } catch (_) { return ''; }
+  };
+
+  // Direct body on this part (simple, non-multipart messages).
+  if (payload.body?.data) {
+    const text = decode(payload.body.data);
+    if (payload.mimeType === 'text/html') {
+      // Real, minimal HTML strip — same approach as api/search.js's
+      // extractText, since full body text (not raw markup) is what the
+      // importance-classification LLM pass actually needs.
+      return text.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s{2,}/g, ' ').trim();
+    }
+    return text;
+  }
+
+  // Multipart — recurse, preferring text/plain if both are present.
+  if (Array.isArray(payload.parts)) {
+    const plainPart = payload.parts.find((p) => p.mimeType === 'text/plain');
+    if (plainPart) return _decodeGmailBody(plainPart);
+    const htmlPart = payload.parts.find((p) => p.mimeType === 'text/html');
+    if (htmlPart) return _decodeGmailBody(htmlPart);
+    // Nested multipart (e.g. multipart/alternative inside multipart/mixed)
+    for (const part of payload.parts) {
+      const nested = _decodeGmailBody(part);
+      if (nested) return nested;
+    }
+  }
+
+  return '';
+}
+
 async function handleGmailRead(req, res) {
   try {
     const accessToken = await _getGmailAccessToken();
@@ -2352,28 +2463,143 @@ async function handleGmailRead(req, res) {
     const messageRefs = listData.messages || [];
     if (!messageRefs.length) return res.status(200).json({ ok: true, messages: [] });
 
+    // REAL, UPGRADED: format=full (not metadata) — smart filtering needs
+    // the actual body text to judge whether an email is a real prospect
+    // inquiry vs. noise; a subject line and snippet alone genuinely
+    // aren't enough for the LLM classification pass in handleGmailAnalyze
+    // to do a real job, only a pattern-matching guess.
     const messages = await Promise.all(
       messageRefs.map(async (ref) => {
         const msgRes = await fetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${ref.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${ref.id}?format=full`,
           { headers: { Authorization: `Bearer ${accessToken}` } }
         );
         if (!msgRes.ok) return null;
         const msgData = await msgRes.json();
         const headers = msgData.payload?.headers || [];
         const getHeader = (name) => headers.find((h) => h.name === name)?.value || '';
+        const body = _decodeGmailBody(msgData.payload);
         return {
           id: msgData.id,
           from: getHeader('From'),
           subject: getHeader('Subject'),
           date: getHeader('Date'),
           snippet: msgData.snippet || '',
+          // Real, hard cap — long threads/newsletters can run to tens of
+          // thousands of characters; 4000 is comfortably enough for a
+          // real classification + summary pass without wasting tokens.
+          body: (body || msgData.snippet || '').slice(0, 4000),
         };
       })
     );
     return res.status(200).json({ ok: true, messages: messages.filter(Boolean) });
   } catch (e) {
     return res.status(200).json({ ok: false, error: `Real error reading Gmail: ${e.message}` });
+  }
+}
+
+// ═══════════════════════════════════════════
+// REAL, NEW — Smart Gmail analysis. Takes handleGmailRead's real message
+// data (now including actual body text) and runs a genuine LLM
+// classification + summarization pass per email — Joel's explicit ask:
+// not pattern/keyword filtering, but real judgment about what's actually
+// important (prospect inquiries, business-relevant tips/opportunities)
+// vs. noise, with a clean, readable summary instead of a generic
+// "new email from X" ping.
+//
+// HONEST SCOPE: "at his own discretion" means an LLM judgment call, which
+// is inherently not perfect — this is real discretion, not a keyword
+// list, but it can still misjudge an email occasionally, same as any
+// real classification task. Framed accurately rather than oversold.
+// ═══════════════════════════════════════════
+async function _classifyAndSummarizeEmails(messages) {
+  if (!messages.length) return [];
+
+  const system = `You are Flow, screening Joel Olaiya's inbox (Joelflowstack — solo web dev/bot integration/workflow automation, Ibadan, Nigeria). For EACH email below, judge its real importance using genuine understanding of the content — not keyword matching. Prioritize:
+- Real prospect/client inquiries (someone asking about his services, a potential deal, a follow-up on business he's actually doing)
+- Genuinely useful business intelligence (a real tool, API, opportunity, or trend directly relevant to web dev/bots/automation — not generic newsletter fluff)
+- Anything requiring a real, timely response
+
+De-prioritize: automated receipts, generic marketing/newsletters, spam, low-stakes notifications.
+
+Reply with ONLY this JSON array, no other text, one object per email in the same order given:
+[{"id": "the email's real id", "priority": "high"|"medium"|"low", "category": "prospect"|"business_tip"|"client_followup"|"other", "summary": "1-2 real sentences capturing what this email actually says and why it matters (or doesn't)", "suggestedAction": "a short, concrete next step, or null if none needed"}]`;
+
+  const dataDump = messages.map((m) => `ID: ${m.id}\nFrom: ${m.from}\nSubject: ${m.subject}\nBody: ${m.body}`).join('\n\n---\n\n').slice(0, 8000);
+
+  const res = await fetch(`${SITE}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: dataDump },
+      ],
+      max_tokens: 900,
+    }),
+  });
+  const data = await res.json();
+  if (!data.reply || typeof data.reply !== 'string') {
+    console.warn('[GmailAnalyze] Classification returned empty/malformed reply — falling back to unclassified.');
+    return messages.map((m) => ({ id: m.id, priority: 'medium', category: 'other', summary: m.snippet, suggestedAction: null }));
+  }
+  const match = data.reply.match(/\[[\s\S]*\]/);
+  if (!match) {
+    console.warn('[GmailAnalyze] Classification did not return valid JSON — falling back to unclassified.');
+    return messages.map((m) => ({ id: m.id, priority: 'medium', category: 'other', summary: m.snippet, suggestedAction: null }));
+  }
+  try {
+    return JSON.parse(match[0]);
+  } catch (e) {
+    console.warn('[GmailAnalyze] Classification JSON parse failed:', e.message);
+    return messages.map((m) => ({ id: m.id, priority: 'medium', category: 'other', summary: m.snippet, suggestedAction: null }));
+  }
+}
+
+// Real, read-only endpoint Electron's heartbeat calls instead of raw
+// gmail-read — returns messages already merged with their real
+// classification/summary, so the heartbeat can build one clean, ordered
+// digest instead of firing a notification per email.
+async function handleGmailAnalyze(req, res) {
+  try {
+    const accessToken = await _getGmailAccessToken();
+    const readReq = { headers: req.headers, body: req.body };
+    // Reuse the real read logic directly rather than an internal HTTP
+    // round-trip — same function, just called in-process.
+    const listRes = await fetch(
+      'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread newer_than:1d&maxResults=10',
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!listRes.ok) return res.status(200).json({ ok: false, error: `Gmail list failed: ${await listRes.text()}` });
+    const listData = await listRes.json();
+    const messageRefs = listData.messages || [];
+    if (!messageRefs.length) return res.status(200).json({ ok: true, messages: [] });
+
+    const messages = (await Promise.all(
+      messageRefs.map(async (ref) => {
+        const msgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${ref.id}?format=full`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        if (!msgRes.ok) return null;
+        const msgData = await msgRes.json();
+        const headers = msgData.payload?.headers || [];
+        const getHeader = (name) => headers.find((h) => h.name === name)?.value || '';
+        const body = _decodeGmailBody(msgData.payload);
+        return { id: msgData.id, from: getHeader('From'), subject: getHeader('Subject'), date: getHeader('Date'), snippet: msgData.snippet || '', body: (body || msgData.snippet || '').slice(0, 4000) };
+      })
+    )).filter(Boolean);
+
+    if (!messages.length) return res.status(200).json({ ok: true, messages: [] });
+
+    const classifications = await _classifyAndSummarizeEmails(messages);
+    const classById = new Map(classifications.map((c) => [c.id, c]));
+
+    const merged = messages.map((m) => {
+      const c = classById.get(m.id) || { priority: 'medium', category: 'other', summary: m.snippet, suggestedAction: null };
+      return { ...m, priority: c.priority, category: c.category, summary: c.summary, suggestedAction: c.suggestedAction };
+    });
+
+    return res.status(200).json({ ok: true, messages: merged });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: `Real error analyzing Gmail: ${e.message}` });
   }
 }
 
@@ -2550,6 +2776,8 @@ export default async function handler(req, res) {
   if (platform === 'sentinel-ping') return handleSentinelPing(req, res);
   if (platform === 'autopost')      return handleAutoPost(req, res);
   if (platform === 'social-monitor') return handleSocialMonitor(req, res);
+  if (platform === 'sales-research') return handleSalesResearch(req, res);
+  if (platform === 'insights')       return handleInsights(req, res);
   if (platform === 'social-drafts')  return handleSocialDrafts(req, res);
   if (platform === 'social-draft-approve') return handleSocialDraftApprove(req, res);
   if (platform === 'diagnose')      return handleDiagnose(req, res);
@@ -2557,6 +2785,7 @@ export default async function handler(req, res) {
   if (platform === 'youtube')       return handleYouTube(req, res);
   if (platform === 'tiktok')        return handleTikTok(req, res);
   if (platform === 'gmail-read')    return handleGmailRead(req, res);
+  if (platform === 'gmail-analyze') return handleGmailAnalyze(req, res);
   if (platform === 'gmail-send')    return handleGmailSend(req, res);
   if (platform === 'heartbeat-notify') return handleHeartbeatNotify(req, res);
   if (platform === 'marketing-draft') return handleMarketingDraft(req, res);
