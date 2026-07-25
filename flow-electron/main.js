@@ -957,6 +957,12 @@ function setupAutoStart() {
 function startWakeWord() {
   const resourcesPath  = process.resourcesPath;
   const soxBinaryPath  = path.join(resourcesPath, 'sox', 'sox.exe');
+  // REAL, NEW — a stable location that survives future app
+  // updates/reinstalls (unlike process.resourcesPath, which
+  // electron-builder replaces entirely on every new install). Used to
+  // store the Whisper model downloaded once on first real use, per
+  // Joel's explicit request to keep future auto-update downloads small.
+  const userDataPath = app.getPath('userData');
 
   setRendererLogSink((channel, payload) => {
     if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(channel, payload);
@@ -965,6 +971,7 @@ function startWakeWord() {
   startVoiceEngine({
     resourcesPath,
     soxBinaryPath,
+    userDataPath,
     onWakeDetected: () => {
       if (!mainWin) return;
       if (mainWin.isMinimized()) mainWin.restore();
@@ -979,6 +986,16 @@ function startWakeWord() {
     onCommand: (text) => {
       if (!mainWin || mainWin.isDestroyed()) return;
       mainWin.webContents.send('voice-command', { text });
+    },
+    // REAL, NEW — real progress during the one-time model download, so
+    // Joel sees an honest "downloading, X% done" rather than the app
+    // just appearing to hang on first real voice use after a fresh
+    // install.
+    onModelDownloadProgress: (downloaded, total) => {
+      if (!mainWin || mainWin.isDestroyed()) return;
+      mainWin.webContents.send('voice-model-download-progress', {
+        downloaded, total, percent: Math.round((downloaded / total) * 100),
+      });
     },
   });
 }
