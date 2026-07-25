@@ -56,6 +56,10 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     onDetected: (cb) => ipcRenderer.on('wakeword-detected', () => cb()),
     onLog: (cb) => ipcRenderer.on('wakeword-log', (_e, entry) => cb(entry)),
     onCommand: (cb) => ipcRenderer.on('voice-command', (_e, { text }) => cb(text)),
+    // REAL, NEW — fires during the one-time Whisper model download on
+    // first real voice use, so the renderer can show real progress
+    // instead of the app appearing to hang.
+    onModelDownloadProgress: (cb) => ipcRenderer.on('voice-model-download-progress', (_e, data) => cb(data)),
   },
 
   // ── Live dictation mode — Joel's explicit request: text streams into
