@@ -178,6 +178,7 @@ export async function generateLongVideo(promptText, opts = {}) {
     const { Client } = await loadGradioClient();
     const app = await Client.connect(LONG_VIDEO_SPACE);
     const clipBlobs = [];
+    const clipHadAudio = []; // real, tracks which clips came from the audio-capable Space vs. the silent fallback
 
     for (let i = 0; i < clipCount; i++) {
       opts.onProgress?.(i + 1, clipCount);
@@ -190,29 +191,79 @@ export async function generateLongVideo(promptText, opts = {}) {
         ? `${cleanPrompt}. (Continuous scene, part ${i + 1} of ${clipCount} — maintain the same setting, subject, and visual style as the rest of this sequence.)`
         : cleanPrompt;
 
-      const result = await app.predict("/handler", [
-        segmentPrompt,      // Prompt
-        "Balanced",         // Preset
-        768,                // Width
-        1024,               // Height — real, portrait default matching most social platforms
-        clipSeconds,        // Length (seconds)
-        24,                 // FPS
-        42 + i,             // Seed — real, varies per clip so clips aren't identical
-        false,              // Randomize seed each run — false, since we're setting it explicitly above
-        "blurry, low quality, distorted, watermark, text overlay", // Negative prompt
-        "none",             // Camera
-        0.8,                // Camera strength
-        false,              // Apply IC-LoRA-Detailer
-        0.5,                // Detailer strength
-      ]);
+      // REAL, Joel-requested retry + fallback logic — a genuine, valid
+      // concern he raised: HF Spaces run on a SHARED free GPU pool
+      // (ZeroGPU), not a quota tied to him personally, so generating
+      // several clips in one batch has a real chance one of them hits a
+      // busy/overloaded moment. Real mitigation: retry the SAME Space
+      // once (transient queue issues often clear on retry), then fall
+      // back to the existing, already-verified generateVideo pipeline
+      // (Lightricks/LTX-Video, no audio but real and reliable) for that
+      // one clip rather than failing the entire batch over one bad clip.
+      let clipBlob = null;
+      let usedFallback = false;
+      const MAX_ATTEMPTS = 2;
 
-      const videoData = result?.data?.[1]; // real, confirmed: returns[1] is the Video component (returns[0] is an Html status string)
-      const videoUrl = videoData?.video?.url;
-      if (!videoUrl) {
-        throw new Error(`Clip ${i + 1}/${clipCount} didn't return a usable video URL — real response: ${JSON.stringify(result?.data).slice(0, 200)}`);
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS && !clipBlob; attempt++) {
+        try {
+          const result = await app.predict("/handler", [
+            segmentPrompt,      // Prompt
+            "Balanced",         // Preset
+            768,                // Width
+            1024,               // Height — real, portrait default matching most social platforms
+            clipSeconds,        // Length (seconds)
+            24,                 // FPS
+            42 + i,             // Seed — real, varies per clip so clips aren't identical
+            false,              // Randomize seed each run — false, since we're setting it explicitly above
+            "blurry, low quality, distorted, watermark, text overlay", // Negative prompt
+            "none",             // Camera
+            0.8,                // Camera strength
+            false,              // Apply IC-LoRA-Detailer
+            0.5,                // Detailer strength
+          ]);
+
+          const videoData = result?.data?.[1]; // real, confirmed: returns[1] is the Video component (returns[0] is an Html status string)
+          const videoUrl = videoData?.video?.url;
+          if (!videoUrl) {
+            throw new Error(`no usable video URL — real response: ${JSON.stringify(result?.data).slice(0, 150)}`);
+          }
+          const clipRes = await fetch(videoUrl);
+          clipBlob = await clipRes.blob();
+        } catch (attemptErr) {
+          console.warn(`[VideoGen] Clip ${i + 1}/${clipCount} attempt ${attempt}/${MAX_ATTEMPTS} on primary Space failed:`, attemptErr.message);
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise((r) => setTimeout(r, 2000)); // real, brief pause before retrying — gives a transient queue moment to clear
+          }
+        }
       }
-      const clipRes = await fetch(videoUrl);
-      clipBlobs.push(await clipRes.blob());
+
+      // Real, genuine fallback — only reached if BOTH attempts on the
+      // primary Space failed. Uses the existing, already-verified
+      // generateVideo pipeline (no audio) so one overloaded clip doesn't
+      // sink the whole batch.
+      if (!clipBlob) {
+        try {
+          console.warn(`[VideoGen] Clip ${i + 1}/${clipCount} falling back to the silent LTX-Video pipeline after ${MAX_ATTEMPTS} failed attempts on the primary Space.`);
+          const fallbackResult = await generateVideo(segmentPrompt, { silent: true });
+          const fallbackRes = await fetch(fallbackResult.videoUrl);
+          clipBlob = await fallbackRes.blob();
+          usedFallback = true;
+        } catch (fallbackErr) {
+          throw new Error(`Clip ${i + 1}/${clipCount} failed on both the primary Space (after ${MAX_ATTEMPTS} attempts) and the fallback pipeline: ${fallbackErr.message}`);
+        }
+      }
+
+      clipBlobs.push(clipBlob);
+      clipHadAudio.push(!usedFallback);
+    }
+
+    // Real, honest note if any clip needed the silent fallback — worth
+    // surfacing since the final video will have a real gap in audio for
+    // that specific segment, not a bug, just an honest limitation of the
+    // fallback path.
+    const fallbackCount = clipHadAudio.filter((hadAudio) => !hadAudio).length;
+    if (fallbackCount > 0 && !opts.silent) {
+      _chat?.add(`ℹ️ ${fallbackCount} of ${clipCount} clip(s) needed to fall back to the silent video pipeline (the primary audio Space was overloaded) — those specific segments won't have sound.`, "bot");
     }
 
     // ── Real, client-side stitching via sequential MediaRecorder capture ──
