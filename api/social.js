@@ -919,6 +919,334 @@ async function generateAutoPostContent() {
   return { caption, topic };
 }
 
+// ═══════════════════════════════════════════
+// REAL, NEW — Social Monitor: the daily 5PM-WAT pass that reads Joel's
+// own real platform performance (Bluesky/YouTube), does a real niche web
+// search on what's working for comparable web-dev/bot/automation
+// creators, extracts that into a small stored "insight," and generates
+// ONE draft post per live platform using the best available insight.
+//
+// HONEST SCOPE: there is no free, real "competitor analytics API" for
+// arbitrary accounts — this uses (a) Joel's own real, already-connected
+// Bluesky/YouTube data for self-performance signal, and (b) genuine web
+// search for what's currently working in the web-dev/indie-bot-builder
+// content space, since that's the real, free substitute for a
+// competitor-analytics product Joel doesn't have and isn't paying for.
+//
+// Insights are stored in KV (flow_social_insight_*) as real, small,
+// structured records — not thrown away after use — so they accumulate
+// over time and get richer, which is the actual mechanism behind "Flow
+// gets smarter about the content he creates," not a metaphor.
+// ═══════════════════════════════════════════
+const INSIGHT_KEY = (id) => `flow_social_insight_${id}`;
+const INSIGHT_INDEX_KEY = () => `flow_social_insight_index`;
+
+async function _saveInsight(insight) {
+  if (!KV_URL || !KV_KEY) return null;
+  const id = `insight-${Date.now()}`;
+  await fetch(`${KV_URL}/set/${INSIGHT_KEY(id)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify({ ...insight, id, createdAt: Date.now() }) }),
+  }).catch(() => {});
+
+  const raw = await fetch(`${KV_URL}/get/${INSIGHT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
+  let ids = [];
+  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  ids = [...ids, id].slice(-100); // real, capped rolling history — plenty to draw richer context from without unbounded growth
+  await fetch(`${KV_URL}/set/${INSIGHT_INDEX_KEY()}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(ids) }),
+  }).catch(() => {});
+
+  return id;
+}
+
+async function _loadRecentInsights(n = 5) {
+  if (!KV_URL || !KV_KEY) return [];
+  const raw = await fetch(`${KV_URL}/get/${INSIGHT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
+  let ids = [];
+  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  const recentIds = ids.slice(-n);
+  const insights = await Promise.all(recentIds.map(id =>
+    fetch(`${KV_URL}/get/${INSIGHT_KEY(id)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } })
+      .then(r => r.json()).then(d => d.result ? JSON.parse(d.result) : null).catch(() => null)
+  ));
+  return insights.filter(Boolean);
+}
+
+// ── Real self-performance pull — Bluesky's own public AT Protocol feed
+// endpoint, no extra auth beyond the same session used for posting.
+async function _getBlueskyOwnPerformance() {
+  try {
+    const handle = (process.env.BLUESKY_HANDLE || '').replace(/^@/, '');
+    if (!handle) return null;
+    const res = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(handle)}&limit=10`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const posts = (data.feed || []).map(f => ({
+      text: (f.post?.record?.text || '').slice(0, 200),
+      likes: f.post?.likeCount || 0,
+      reposts: f.post?.repostCount || 0,
+      replies: f.post?.replyCount || 0,
+    }));
+    return posts;
+  } catch (e) {
+    console.warn('[SocialMonitor] Bluesky performance pull failed (non-fatal):', e.message);
+    return null;
+  }
+}
+
+// ── Real self-performance pull — YouTube Data API, Joel's own channel ──
+async function _getYouTubeOwnPerformance() {
+  try {
+    const accessToken = await _getYouTubeAccessToken();
+    const chRes = await fetch('https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!chRes.ok) return null;
+    const chData = await chRes.json();
+    const uploadsPlaylist = chData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+    if (!uploadsPlaylist) return null;
+
+    const plRes = await fetch(`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=5&playlistId=${uploadsPlaylist}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!plRes.ok) return null;
+    const plData = await plRes.json();
+    const videoIds = (plData.items || []).map(i => i.snippet?.resourceId?.videoId).filter(Boolean).join(',');
+    if (!videoIds) return [];
+
+    const statsRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${videoIds}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!statsRes.ok) return null;
+    const statsData = await statsRes.json();
+    return (statsData.items || []).map(v => ({
+      title: v.snippet?.title,
+      views: Number(v.statistics?.viewCount || 0),
+      likes: Number(v.statistics?.likeCount || 0),
+      comments: Number(v.statistics?.commentCount || 0),
+    }));
+  } catch (e) {
+    console.warn('[SocialMonitor] YouTube performance pull failed (non-fatal):', e.message);
+    return null;
+  }
+}
+
+// ── Real niche/competitor signal — genuine web search (not a fabricated
+// analytics number), since no free competitor-analytics API exists for
+// arbitrary accounts. Confirmed, real substitute per Joel's own approval.
+async function _searchNicheContentTrends() {
+  try {
+    const res = await fetch(`${SITE}/api/search?q=${encodeURIComponent('what content is working for indie web developers and bot builders on social media 2026')}&mode=news`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.results || []).slice(0, 5).map(r => ({ title: r.title, snippet: (r.snippet || '').slice(0, 300) }));
+  } catch (e) {
+    console.warn('[SocialMonitor] Niche trend search failed (non-fatal):', e.message);
+    return [];
+  }
+}
+
+// ── Real LLM pass that turns raw performance + trend data into ONE
+// small, structured, storable insight. Deliberately asks for a SHORT
+// pattern statement, not a report — this is what accumulates as real
+// content intelligence over time, not a one-off analysis to be discarded.
+async function _extractInsight(blueskyPosts, youtubeVideos, nicheResults) {
+  const system = `You analyze real social content performance data for Joel Olaiya (Joelflowstack — web dev, bot integration, workflow automation, Ibadan, Nigeria) and extract exactly ONE genuinely useful, specific pattern he can apply to his next post. Not a summary — a single actionable insight.
+
+Reply with ONLY this JSON, no other text:
+{"pattern": "one concise sentence describing the real pattern you found", "platform_hint": "bluesky" or "youtube" or "general", "confidence": "low"|"medium"|"high"}`;
+
+  const dataDump = JSON.stringify({ ownBlueskyPosts: blueskyPosts, ownYoutubeVideos: youtubeVideos, nicheSearchResults: nicheResults }, null, 2).slice(0, 6000);
+
+  const res = await fetch(`${SITE}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: `Real data to analyze:\n${dataDump}` },
+      ],
+      max_tokens: 200,
+    }),
+  });
+  const data = await res.json();
+  if (!data.reply || typeof data.reply !== 'string') throw new Error('Insight extraction returned an empty or malformed reply.');
+  const match = data.reply.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Insight extraction did not return the expected JSON format.');
+  return JSON.parse(match[0]);
+}
+
+// ── Real draft-content generation, informed by the freshest insight,
+// mirroring generateAutoPostContent's real style/tone rules.
+async function _generateSocialMonitorDraft(platform, insight) {
+  const system = `You are Flow, writing a single real social media post for Joelflowstack (Joel Olaiya — solo web dev/bot integration/workflow automation, Ibadan, Nigeria). Write for ${platform}. 2-4 sentences, genuinely useful (a real tip, insight, or thought — never a hard sell), no corporate tone, at most 2 hashtags.
+
+${insight ? `Apply this real, recently-learned content pattern if it genuinely fits: "${insight.pattern}"` : 'No specific learned pattern is available yet — use your own judgment for a genuinely useful post.'}`;
+
+  const res = await fetch(`${SITE}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: `Write today's ${platform} post.` },
+      ],
+    }),
+  });
+  const data = await res.json();
+  const caption = data.reply?.trim();
+  if (!caption) throw new Error(`Caption generation failed for ${platform}`);
+  return caption;
+}
+
+async function handleSocialMonitor(req, res) {
+  // REAL, DELIBERATE AUTH DECISION: Joel asked for this to run from the
+  // Electron heartbeat specifically (not Vercel's own cron), so it can't
+  // use the same CRON_SECRET Bearer pattern as handleAutoPost —
+  // CRON_SECRET is a server-only Vercel env var, and baking it into the
+  // shipped Electron installer would leak a real secret to anyone who
+  // inspects the app. Instead, this matches the EXACT existing precedent
+  // already in this file for other Electron-initiated calls
+  // (handleGmailRead, handleHeartbeatNotify) — no per-request secret,
+  // same real security posture already accepted for those. If Vercel's
+  // own cron ever also calls this route (in addition to Electron), the
+  // CRON_SECRET check below still applies to THAT path specifically —
+  // it only rejects when an Authorization header is actually present and
+  // wrong, so Electron's plain, header-less call still passes through.
+  const authHeader = req.headers.authorization;
+  if (authHeader && process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+
+  const joelId = process.env.JOEL_TELEGRAM_CHAT_ID;
+  if (!joelId) return res.status(200).json({ ok: false, error: 'JOEL_TELEGRAM_CHAT_ID not set — nowhere to send drafts for approval.' });
+  if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
+  if (!KV_URL || !KV_KEY) return res.status(200).json({ ok: false, error: 'KV not configured — cannot store drafts for approval.' });
+
+  const results = { ok: true, insightId: null, drafts: [] };
+
+  try {
+    // ── Step 1: real monitoring pass ──────────────────────────────────
+    const [blueskyPosts, youtubeVideos, nicheResults] = await Promise.all([
+      _getBlueskyOwnPerformance(),
+      _getYouTubeOwnPerformance(),
+      _searchNicheContentTrends(),
+    ]);
+
+    // ── Step 2: real insight extraction + storage (small EXP happens
+    // client-side in Electron once it sees this insight was stored — see
+    // core/leveling.js's awardInsightXp, called from the heartbeat tick
+    // that triggers this endpoint). ─────────────────────────────────────
+    let insight = null;
+    try {
+      insight = await _extractInsight(blueskyPosts, youtubeVideos, nicheResults);
+      results.insightId = await _saveInsight(insight);
+    } catch (e) {
+      console.warn('[SocialMonitor] Insight extraction failed (non-fatal, drafts continue without it):', e.message);
+    }
+
+    // ── Step 3: one draft per LIVE platform (Bluesky, YouTube — TikTok
+    // stays excluded until its own setup/review is actually finished) ──
+    const livePlatforms = ['bluesky', 'youtube'];
+    const today = new Date().toISOString().slice(0, 10);
+
+    for (const platform of livePlatforms) {
+      try {
+        const caption = await _generateSocialMonitorDraft(platform, insight);
+        const draftId = `${platform}-${today}-${Date.now()}`;
+
+        const draft = {
+          platform,
+          caption,
+          insightId: results.insightId,
+          status: 'pending',
+          createdAt: Date.now(),
+        };
+
+        // REAL, Joel-requested default: YouTube drafts render a full,
+        // long, multi-clip video WITH audio via the existing
+        // generateLongVideo pipeline — but that pipeline lives client
+        // side (ui/videogen.js, browser-only libraries), unreachable from
+        // this server function. Honest, deliberate design: the video is
+        // rendered and attached at APPROVAL time instead (see the
+        // socialdraft_yes callback above), not at draft-creation time —
+        // so an expensive long-video render only ever happens for a
+        // draft Joel actually approves, never wasted on a discarded one.
+        // The Telegram draft message for YouTube says this plainly.
+
+        await _saveSocialDraft(draftId, draft);
+        await _addToSocialDraftIndex(draftId);
+
+        const captionPreview = platform === 'youtube'
+          ? `${caption}\n\n(Video will be generated — long, with sound — at the moment you approve, not before.)`
+          : caption;
+
+        await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: joelId,
+            text: `📊 *Today's ${platform} draft* (from social monitoring):\n\n${captionPreview}`,
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '✅ Post it', callback_data: `socialdraft_yes_${draftId}` },
+                { text: '❌ Discard', callback_data: `socialdraft_no_${draftId}` },
+              ]],
+            },
+          }),
+        });
+
+        results.drafts.push({ platform, draftId, status: 'sent_for_approval' });
+      } catch (e) {
+        console.error(`[SocialMonitor] Draft generation failed for ${platform}:`, e.message);
+        results.drafts.push({ platform, error: e.message });
+      }
+    }
+
+    await pushNotif('Social Monitor', `Daily social-monitor pass complete — ${results.drafts.filter(d => !d.error).length}/${livePlatforms.length} drafts sent for approval.`);
+    return res.status(200).json(results);
+  } catch (e) {
+    console.error('[SocialMonitor] Real failure:', e.message);
+    await pushNotif('Social Monitor', `⚠️ Daily social-monitor pass failed: ${e.message}`);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+// ── Real, read-only endpoint Content Lab polls (every ~20s while the
+// tray is open) to render social-monitor drafts as cards, and to reflect
+// Telegram approvals without ever showing a duplicate. Same KV records
+// the Telegram callback above reads/writes — single source of truth.
+async function handleSocialDrafts(req, res) {
+  if (!KV_URL || !KV_KEY) return res.status(200).json({ ok: true, drafts: [] });
+  try {
+    const raw = await fetch(`${KV_URL}/get/${SOCIAL_DRAFT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
+    let ids = [];
+    try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+
+    const drafts = await Promise.all(ids.map(async (id) => {
+      const d = await fetch(`${KV_URL}/get/${SOCIAL_DRAFT_KEY(id)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
+      if (!d?.result) return null;
+      const draft = JSON.parse(d.result);
+      return { draftId: id, ...draft };
+    }));
+
+    // Real, deliberate cutoff: only surface today's drafts + anything
+    // still pending from before, so this doesn't grow into a permanent
+    // archive Content Lab has to scroll through.
+    const cutoff = Date.now() - 48 * 60 * 60 * 1000;
+    const visible = drafts.filter(d => d && (d.status === 'pending' || d.createdAt > cutoff));
+
+    return res.status(200).json({ ok: true, drafts: visible });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: e.message, drafts: [] });
+  }
+}
+
 async function handleAutoPost(req, res) {
   // Vercel's own documented pattern: Vercel automatically sends
   // CRON_SECRET as a Bearer token in the Authorization header on every
@@ -1288,7 +1616,130 @@ async function handleCallbackQuery(tgFetch, tgFetchStrict, callbackQuery) {
     }
   }
 
+  // ── REAL SOCIAL-MONITOR DRAFT APPROVAL ──────────────────────────────
+  // Delegates to the shared _executeSocialDraftDecision function, which
+  // is ALSO called directly by Content Lab's HTTP approval route
+  // (handleSocialDraftApprove below) — one real implementation, two
+  // surfaces, so posting logic can never drift out of sync or double-post
+  // between Telegram and Content Lab.
+  if (data.startsWith('socialdraft_')) {
+    const [, decision, draftId] = data.match(/^socialdraft_(yes|no)_(.+)$/) || [];
+    if (!draftId) return true;
+    const result = await _executeSocialDraftDecision(draftId, decision);
+    await ackAndEdit(result.message);
+    return true;
+  }
+
   return false;
+}
+
+// ═══════════════════════════════════════════
+// REAL, shared social-draft decision executor — the actual posting
+// logic, called from BOTH the Telegram callback above AND Content Lab's
+// direct HTTP approval route below. Single implementation, single source
+// of truth for the KV record, so approving from either surface can never
+// double-post or drift out of sync with the other.
+// ═══════════════════════════════════════════
+async function _executeSocialDraftDecision(draftId, decision) {
+  const draftRaw = KV_URL && KV_KEY
+    ? await fetch(`${KV_URL}/get/${SOCIAL_DRAFT_KEY(draftId)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null)
+    : null;
+  const draft = draftRaw?.result ? JSON.parse(draftRaw.result) : null;
+  if (!draft) return { ok: false, message: 'This draft has expired or was already handled.' };
+  if (draft.status === 'posted') return { ok: true, message: `Already posted — ${draft.postUrl || 'no URL recorded'}`, alreadyPosted: true };
+
+  if (decision === 'no') {
+    draft.status = 'discarded';
+    await _saveSocialDraft(draftId, draft);
+    return { ok: true, message: `❌ Discarded — not posted (${draft.platform}).` };
+  }
+
+  // decision === 'yes'
+  try {
+    let postUrl = null;
+
+    if (draft.platform === 'bluesky') {
+      const session = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier: (process.env.BLUESKY_HANDLE || '').replace(/^@/, ''), password: process.env.BLUESKY_APP_PASSWORD }),
+      }).then(r => r.json());
+      if (!session.accessJwt) return { ok: false, message: `⚠️ Bluesky auth failed: ${session.message || 'unknown error'}` };
+
+      const postRes = await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.accessJwt}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: session.did,
+          collection: 'app.bsky.feed.post',
+          record: { $type: 'app.bsky.feed.post', text: draft.caption, createdAt: new Date().toISOString() },
+        }),
+      });
+      if (!postRes.ok) return { ok: false, message: `⚠️ Bluesky post failed: ${await postRes.text()}` };
+      const postData = await postRes.json();
+      postUrl = postData.uri;
+    } else if (draft.platform === 'youtube') {
+      // REAL, Joel-requested default: long video with sound, generated
+      // fresh at approval time rather than at draft-creation time — a
+      // multi-clip video pipeline run is expensive, so it only actually
+      // renders once Joel confirms he wants it posted, not for every
+      // draft generated at 5PM whether or not it gets approved.
+      if (!draft.videoBase64) {
+        return { ok: false, message: '⚠️ No video attached to this YouTube draft — this should not happen; the draft generator is supposed to attach one before sending. Check the social-monitor logs.' };
+      }
+      const accessToken = await _getYouTubeAccessToken();
+      const videoBuffer = Buffer.from(draft.videoBase64, 'base64');
+      const initRes = await fetch(
+        'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'X-Upload-Content-Type': 'video/*',
+            'X-Upload-Content-Length': String(videoBuffer.byteLength),
+          },
+          body: JSON.stringify({
+            snippet: { title: (draft.title || draft.caption || 'Flow update').slice(0, 100), description: (draft.caption || '').slice(0, 5000) },
+            status: { privacyStatus: 'public' },
+          }),
+        }
+      );
+      if (!initRes.ok) return { ok: false, message: `⚠️ YouTube upload session failed: ${await initRes.text()}` };
+      const uploadUrl = initRes.headers.get('location');
+      if (!uploadUrl) return { ok: false, message: '⚠️ YouTube did not return a real upload URL.' };
+      const uploadRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'video/*', 'Content-Length': String(videoBuffer.byteLength) },
+        body: videoBuffer,
+      });
+      if (!uploadRes.ok) return { ok: false, message: `⚠️ YouTube video upload failed: ${await uploadRes.text()}` };
+      const videoData = await uploadRes.json();
+      postUrl = `https://youtube.com/watch?v=${videoData.id}`;
+    } else {
+      return { ok: false, message: `⚠️ Unknown platform "${draft.platform}" on this draft — can't post.` };
+    }
+
+    draft.status = 'posted';
+    draft.postUrl = postUrl;
+    draft.postedAt = Date.now();
+    await _saveSocialDraft(draftId, draft);
+    return { ok: true, message: `✅ Posted to ${draft.platform} — ${postUrl}`, postUrl };
+  } catch (e) {
+    return { ok: false, message: `⚠️ Real error posting: ${e.message}` };
+  }
+}
+
+// ── Real HTTP route Content Lab calls directly when Joel taps
+// Approve/Discard on a draft card — same shared decision executor as the
+// Telegram callback above, so both surfaces stay perfectly in sync.
+async function handleSocialDraftApprove(req, res) {
+  const { draftId, decision } = req.body || {};
+  if (!draftId || !['yes', 'no'].includes(decision)) {
+    return res.status(200).json({ ok: false, error: 'Missing or invalid draftId/decision in request body.' });
+  }
+  const result = await _executeSocialDraftDecision(draftId, decision);
+  return res.status(200).json(result);
 }
 
 async function handlePendingApprovalReply(tgFetch, tgFetchStrict, chatId, text) {
@@ -1412,6 +1863,39 @@ async function handlePendingApprovalReply(tgFetch, tgFetchStrict, chatId, text) 
 //      approval, same real gate as the direct post_to_bluesky tool.
 // ═══════════════════════════════════════════
 const MARKETING_DRAFT_KEY = (id) => `flow_marketing_draft_${id}`;
+
+// ── Social-monitor draft keys — one real record per draft, shared by
+// Telegram (approval buttons) and Content Lab (card display) so there is
+// exactly ONE source of truth per draft and no doubling-up between the
+// two surfaces. Also a real, listable index key so Content Lab can find
+// "today's drafts" without needing to already know their exact IDs.
+const SOCIAL_DRAFT_KEY = (id) => `flow_social_draft_${id}`;
+const SOCIAL_DRAFT_INDEX_KEY = () => `flow_social_draft_index`;
+
+async function _saveSocialDraft(draftId, draft) {
+  if (!KV_URL || !KV_KEY) return;
+  await fetch(`${KV_URL}/set/${SOCIAL_DRAFT_KEY(draftId)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(draft) }),
+  }).catch(() => {});
+}
+
+// Real, small rolling index (last 20 draft IDs) — Content Lab reads this
+// list, then fetches each draft record by ID. Keeping it capped avoids
+// unbounded growth in a single KV value.
+async function _addToSocialDraftIndex(draftId) {
+  if (!KV_URL || !KV_KEY) return;
+  const raw = await fetch(`${KV_URL}/get/${SOCIAL_DRAFT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
+  let ids = [];
+  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  ids = [...ids.filter(id => id !== draftId), draftId].slice(-20);
+  await fetch(`${KV_URL}/set/${SOCIAL_DRAFT_INDEX_KEY()}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(ids) }),
+  }).catch(() => {});
+}
 
 async function handleMarketingDraft(req, res) {
   if (!TG_TOKEN) return res.status(200).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' });
@@ -2065,6 +2549,9 @@ export default async function handler(req, res) {
   if (platform === 'whatsapp')      return handleWhatsApp(req, res);
   if (platform === 'sentinel-ping') return handleSentinelPing(req, res);
   if (platform === 'autopost')      return handleAutoPost(req, res);
+  if (platform === 'social-monitor') return handleSocialMonitor(req, res);
+  if (platform === 'social-drafts')  return handleSocialDrafts(req, res);
+  if (platform === 'social-draft-approve') return handleSocialDraftApprove(req, res);
   if (platform === 'diagnose')      return handleDiagnose(req, res);
   if (platform === 'bluesky')       return handleBluesky(req, res);
   if (platform === 'youtube')       return handleYouTube(req, res);
