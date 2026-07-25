@@ -1227,6 +1227,38 @@ function _saveAwardedSet(key, set) {
   try { localStorage.setItem(key, JSON.stringify([...set].slice(-200))); } catch (_) {}
 }
 
+// REAL, separate poll covering ALL stored insights — not just ones
+// attached to a social draft. Needed because the sales-conversation
+// research pass (heartbeat.js's _maybeRunSalesResearch) stores a real
+// insight that's never attached to any draft, so _pollSocialDrafts above
+// would never see it. Uses the SAME _AWARDED_INSIGHTS_KEY dedup set, so
+// an insight that's both stored here AND later attached to a social
+// draft still only ever awards its small XP once, whichever poll sees it
+// first.
+async function _pollAllInsights() {
+  try {
+    const res = await fetch("/api/social?platform=insights");
+    const data = await res.json();
+    if (!data.ok) return;
+
+    const awardedInsights = _loadAwardedSet(_AWARDED_INSIGHTS_KEY);
+    let changed = false;
+    for (const insight of data.insights || []) {
+      if (insight.id && !awardedInsights.has(insight.id)) {
+        awardedInsights.add(insight.id);
+        // Real, honest label — platform_hint distinguishes a
+        // sales/email-conversation insight from a social-content one in
+        // the level-up history log, without needing a separate XP value.
+        awardInsightXp(insight.platform_hint || insight.pattern || "general");
+        changed = true;
+      }
+    }
+    if (changed) _saveAwardedSet(_AWARDED_INSIGHTS_KEY, awardedInsights);
+  } catch (e) {
+    console.warn("[ContentLab] Insight poll failed (non-fatal):", e.message);
+  }
+}
+
 async function _pollSocialDrafts(listEl) {
   try {
     const res = await fetch("/api/social?platform=social-drafts");
@@ -1260,6 +1292,7 @@ async function _pollSocialDrafts(listEl) {
     }
 
     _renderDraftCards(listEl, drafts);
+    await _pollAllInsights(); // catches standalone insights (e.g. sales-research) missed by the draft-only pass above
   } catch (e) {
     console.warn("[ContentLab] Draft poll failed (non-fatal):", e.message);
   }
