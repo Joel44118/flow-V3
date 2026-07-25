@@ -52,6 +52,21 @@ const XP_VALUES = {
                      // (150) — a genuine new permanent capability, requiring Joel's
                      // explicit approval (a real deliberate signal, like correction),
                      // but not as significant as an entire new project.
+  socialInsight:      15,  // Flow's daily social-monitor pass genuinely analyzed
+                            // real performance/trend data and extracted a new,
+                            // storable content pattern. Small — this is passive
+                            // learning, not yet applied to anything real. Slightly
+                            // above casualLearning (18 vs this being close but
+                            // separate) since it's a deliberate analysis pass, not
+                            // an incidental in-conversation judgment.
+  socialInsightApplied: 80, // The bigger award: a stored insight was actually
+                            // pulled into a real post that got approved AND posted
+                            // live (Bluesky/YouTube). This is "insight became real
+                            // content," the whole reason EXP is tied to social
+                            // monitoring at all — weighted well above the passive
+                            // analysis award, comfortably between selfTool (60)
+                            // and project (150), since it's a real, live, published
+                            // outcome, not just a new capability sitting unused.
 };
 
 function xpForLevel(level) {
@@ -191,4 +206,25 @@ export function awardProjectXp(projectName) {
 // gated behind Joel's explicit deliberate approval.
 export function awardSelfToolXp(toolName) {
   _awardXp(XP_VALUES.selfTool, `Self-extended: ${toolName}`);
+}
+
+// ── Social-monitor XP — the two-tier award matching Joel's own framing:
+// small XP for real analysis happening at all, bigger XP only once an
+// insight demonstrably became a real, live post. Call sites:
+//   awardInsightXp   — ui/content-lab.js, right after a poll first sees
+//                       a NEW insightId show up on a draft record (i.e.
+//                       the social-monitor pass that created it actually
+//                       ran) — dedupe by insightId so the same insight
+//                       never re-awards on every poll.
+//   awardContentAppliedXp — ui/content-lab.js, right after a poll sees a
+//                       draft's status flip from "pending" to "posted"
+//                       AND that draft has a real insightId attached —
+//                       dedupe by draftId so the same post never
+//                       re-awards on every subsequent poll.
+export function awardInsightXp(insightSummary) {
+  _awardXp(XP_VALUES.socialInsight, `Social insight: ${(insightSummary || '').slice(0, 60)}`);
+}
+
+export function awardContentAppliedXp(platform, caption) {
+  _awardXp(XP_VALUES.socialInsightApplied, `Insight applied — posted to ${platform}: ${(caption || '').slice(0, 50)}`);
 }
