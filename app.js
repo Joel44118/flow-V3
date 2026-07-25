@@ -813,6 +813,24 @@ if (window.__flowElectron?.wakeword) {
     else console.log(prefix, line);
   });
 
+  // REAL, NEW — shows honest progress during the one-time Whisper model
+  // download (first real voice use after a fresh install), so it's
+  // clear the app is genuinely working, not hanging. Only surfaces at
+  // real milestones (not on every single progress tick, which would
+  // spam the chat) — a message every 25% is genuinely useful without
+  // being noisy.
+  let _lastShownDownloadMilestone = -1;
+  window.__flowElectron.wakeword.onModelDownloadProgress?.(({ percent }) => {
+    const milestone = Math.floor(percent / 25) * 25;
+    if (milestone !== _lastShownDownloadMilestone && milestone > 0) {
+      _lastShownDownloadMilestone = milestone;
+      console.log(`[Voice] Downloading voice model (one-time): ${percent}%`);
+      if (milestone === 100) {
+        Chat.add?.("🎙️ Voice model downloaded — voice control is ready.", "bot");
+      }
+    }
+  });
+
   window.__flowElectron.wakeword.onDetected(async () => {
     // Ignore if already mid-recording (e.g. Joel clicked the mic manually
     // right before saying the wake word) — avoids double-triggering the
