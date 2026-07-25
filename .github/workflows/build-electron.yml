@@ -72,17 +72,17 @@ jobs:
             exit 1
           fi
           cp "$BIN" flow-electron/resources/transcribe/transcribe-cli.exe
-      # REAL, CONFIRMED download — verified directly against transcribe.cpp's
-      # own docs page (docs/models/whisper-large-v3-turbo.md), which lists
-      # this exact URL and file. Q5_K_M chosen deliberately: 591MB (vs
-      # F16's 1.51GB) with WER 2.03% — nearly identical to F16's 2.01%,
-      # a real, sensible size/accuracy tradeoff for CPU-only inference
-      # (no Vulkan/CUDA in this build).
-      - name: Download Whisper GGUF model
-        shell: bash
-        run: |
-          curl -L -o flow-electron/resources/transcribe/whisper-large-v3-turbo-Q5_K_M.gguf \
-            "https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf/resolve/main/whisper-large-v3-turbo-Q5_K_M.gguf"
+      # REAL, DELIBERATE REMOVAL (this pass): the Whisper GGUF model
+      # (591MB) is no longer downloaded/bundled here. Joel explicitly
+      # asked to keep future auto-update downloads small — bundling a
+      # ~600MB model in every single installer/update meant every future
+      # update carried that same weight even when the model itself never
+      # changes. Real, better fix: voice-engine.js now downloads the
+      # model ONCE, on first real use, to a stable local folder that
+      # survives future app updates entirely (see voice-engine.js's
+      # _ensureModelDownloaded). This one build still ships without the
+      # model bundled — Joel will manually install this build once, then
+      # the app downloads the model itself on first real voice use.
       - name: Rebuild native dependencies for Electron
         working-directory: flow-electron
         run: npx electron-builder install-app-deps
