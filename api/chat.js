@@ -413,6 +413,26 @@ const FLOW_TOOLS = [
       },
     },
   },
+  // REAL, Joel-requested feature — send an email on command. Reading is
+  // handled separately (automatic, constant polling in flow-electron/
+  // heartbeat.js, not through this tool). This is purely for the
+  // "write and send to [someone] on command" half of the request.
+  {
+    type: 'function',
+    function: {
+      name: 'send_email',
+      description: "Write and send a real email via Joel's Gmail account. Call this when Joel explicitly asks to email/send a message to someone (e.g. 'email John about the meeting', 'send an email to client@example.com saying...'). Write a real, complete, appropriately-toned email body — don't just echo back a one-line summary. Always confirm back to Joel what was actually sent (recipient and subject), since email is genuinely irreversible once sent.",
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address.' },
+          subject: { type: 'string', description: 'Email subject line.' },
+          body: { type: 'string', description: 'The full, real email body text.' },
+        },
+        required: ['to', 'subject', 'body'],
+      },
+    },
+  },
   {
     type: 'function',
     function: {
@@ -532,6 +552,26 @@ async function executeFlowTool(toolName, args) {
         ? result.map(r => `[${new Date(r.ts).toLocaleDateString()}] ${r.text}`).join('\n')
         : 'Nothing relevant found in memory for that.',
     };
+  }
+  if (toolName === 'send_email') {
+    // REAL, genuinely server-side — calls the actual Gmail send
+    // endpoint directly (api/social.js's handleGmailSend, folded into
+    // that file to stay within Vercel Hobby's 12-function limit), same
+    // real pattern as recall_memory above.
+    try {
+      const sendRes = await fetch(`${process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://flow-v3-mu.vercel.app'}/api/social?platform=gmail-send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: args?.to, subject: args?.subject, body: args?.body }),
+      });
+      const sendData = await sendRes.json();
+      if (!sendData.ok) {
+        return { handled: true, result: `Email failed to send: ${sendData.error}` };
+      }
+      return { handled: true, result: `Email sent successfully to ${args?.to} with subject "${args?.subject}".` };
+    } catch (e) {
+      return { handled: true, result: `Real error sending email: ${e.message}` };
+    }
   }
   if (toolName === 'toggle_sentinel') {
     return { handled: false, clientAction: 'toggle_sentinel', result: null };
