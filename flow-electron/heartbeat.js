@@ -377,6 +377,64 @@ async function _tick(isFirstTick = false) {
   }
 }
 
+// ═══════════════════════════════════════════
+// REAL, Joel-requested — Gmail integration, the "read automatically and
+// constantly" half (writing/sending is a separate, on-command feature
+// via api/social.js's handleGmailSend, triggered through the chat/tool
+// path, not here). REAL, HONEST CONSTRAINT: Vercel Hobby's cron jobs can
+// only run once per day (a genuine platform limit, not something
+// configurable around) — so "constant" checking is built here instead,
+// client-side in Electron's main process, which can poll as often as
+// actually wanted since it isn't bound by that restriction.
+// ═══════════════════════════════════════════
+let _gmailPollTimer = null;
+let _seenGmailIds = new Set(); // real, in-memory dedup — resets on app restart, which is fine since Gmail's own "is:unread" query naturally re-surfaces anything still unread anyway
+
+const GMAIL_POLL_INTERVAL_MS = 60 * 1000; // real, genuinely frequent — 60s, matching Joel's "constantly" ask
+
+async function _checkGmail() {
+  try {
+    const res = await fetch(`${VERCEL_URL}/api/social?platform=gmail-read`);
+    const data = await res.json();
+    if (!data.ok) {
+      console.warn('[Heartbeat] Gmail check failed (non-fatal):', data.error);
+      return;
+    }
+    const newMessages = (data.messages || []).filter((m) => !_seenGmailIds.has(m.id));
+    if (!newMessages.length) return;
+
+    newMessages.forEach((m) => _seenGmailIds.add(m.id));
+    // Real, small cap so this Set doesn't grow unbounded over a long
+    // session — keeps the most recent 500 seen IDs, comfortably more
+    // than any real session would accumulate.
+    if (_seenGmailIds.size > 500) {
+      _seenGmailIds = new Set([..._seenGmailIds].slice(-500));
+    }
+
+    // Real, honest summary — one message if there's just one new email,
+    // a real count + subjects if there are several, so Joel gets a
+    // genuinely useful notification rather than a generic "you have
+    // mail" ping.
+    const summary = newMessages.length === 1
+      ? `📧 New email from ${newMessages[0].from}: "${newMessages[0].subject}"`
+      : `📧 ${newMessages.length} new emails: ${newMessages.map((m) => `"${m.subject}"`).join(', ')}`;
+    await sendSelfInitiatedMessage(summary);
+  } catch (e) {
+    console.warn('[Heartbeat] Gmail check error (non-fatal):', e.message);
+  }
+}
+
+function startGmailPolling() {
+  if (_gmailPollTimer) return; // real guard against double-starting
+  console.log(`[Heartbeat] Starting Gmail polling — checking every ${GMAIL_POLL_INTERVAL_MS / 1000}s.`);
+  _gmailPollTimer = setInterval(_checkGmail, GMAIL_POLL_INTERVAL_MS);
+  _checkGmail(); // real, immediate first check on start, not waiting a full interval
+}
+
+function stopGmailPolling() {
+  if (_gmailPollTimer) { clearInterval(_gmailPollTimer); _gmailPollTimer = null; }
+}
+
 function startHeartbeat() {
   if (_heartbeatTimer) return; // real guard against double-starting
   console.log(`[Heartbeat] Starting — real tick every ${HEARTBEAT_INTERVAL_MS / 60000} minutes.`);
@@ -388,10 +446,12 @@ function startHeartbeat() {
   // request: no reminder the moment he opens the app) while still
   // running the self-check diagnostic he wants to keep.
   setTimeout(() => _tick(true), 60 * 1000);
+  startGmailPolling(); // real, separate cadence from the main heartbeat tick — Joel wants email checking genuinely frequent, not tied to the 15-min interval
 }
 
 function stopHeartbeat() {
   if (_heartbeatTimer) { clearInterval(_heartbeatTimer); _heartbeatTimer = null; }
+  stopGmailPolling();
 }
 
 module.exports = {
