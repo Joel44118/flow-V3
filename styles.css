@@ -384,19 +384,42 @@ body::after {
 .alarm-item.dim { color:rgba(255,255,255,.15); }
 
 /* ── CHAT COLUMNS ─────────────────────────────────────────── */
+/* REAL, Joel-requested — chat now lives in a toggleable left-edge tray
+   (see ui/chat-tray.js) instead of being permanently on-screen with
+   hover-to-reveal opacity. #chat-tray-panel is the new slide-in
+   container; #col-left/#col-right keep their existing internal layout
+   rules (scrolling, alignment) but are now sized to fill that tray
+   instead of floating independently over the whole viewport. Mobile
+   behavior (col-right hidden, col-left fullscreen) is preserved
+   unchanged further down in the mobile media query. */
+#chat-tray-panel {
+  position: fixed; top: 0; left: 0; bottom: 0;
+  width: min(720px, 92vw);
+  background: rgba(15,10,30,0.98); border-right: 1px solid rgba(167,139,250,0.4);
+  box-shadow: 12px 0 40px rgba(0,0,0,0.5);
+  z-index: 9999; display: flex; flex-direction: row;
+  transform: translateX(-100%);
+  transition: transform 0.25s ease;
+}
+#chat-tray-panel.ct-open { transform: translateX(0); }
+
 .msg-col {
-  position:fixed; top:58px; bottom:86px; width:25%;
+  position: relative; top: auto; bottom: auto; width: 50%; height: 100%;
   display:flex; flex-direction:column; gap:8px;
-  overflow-y:auto; overflow-x:hidden; z-index:10;
-  padding:8px 10px 12px; scrollbar-width:none;
+  overflow-y:auto; overflow-x:hidden;
+  padding:16px 10px 12px; scrollbar-width:none;
 }
 .msg-col::-webkit-scrollbar { display:none; }
-#col-left  { left:4px;  align-items:flex-start; }
-#col-right { right:4px; align-items:flex-end; }
+#col-left  { align-items:flex-start; }
+#col-right { align-items:flex-end; }
 
 /* ── MESSAGE WRAPS ───────────────────────────────────────── */
-.mwrap { display:flex; flex-direction:column; max-width:100%; flex-shrink:0; opacity:0; transition:opacity .3s; }
-.mwrap:hover,.mwrap.fresh,.merror-wrap { opacity:1 !important; }
+/* REAL CHANGE: opacity is now always 1 — the old opacity:0 default +
+   hover-to-reveal was the workaround for chat being permanently overlaid
+   on other UI. Now that chat lives inside a tray Joel explicitly opens,
+   that workaround is no longer needed; messages should just be visible
+   whenever the tray is open. */
+.mwrap { display:flex; flex-direction:column; max-width:100%; flex-shrink:0; opacity:1; }
 .mwrap:has(.img-card),.img-card-wrap   { opacity:1 !important; pointer-events:all !important; }
 .mleft  { align-items:flex-start; }
 .mright { align-items:flex-end;   }
@@ -1041,7 +1064,13 @@ body::after {
    MOBILE RESPONSIVE
    ═══════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-  .msg-col { width:100%; left:0 !important; right:0 !important; bottom:100px; top:58px; padding:8px 12px 12px; }
+  /* REAL, updated for the tray-based chat structure: the tray itself
+     goes fullscreen-width on mobile (see #chat-tray-panel width rule
+     below), and col-left fills it entirely — col-right stays hidden,
+     preserving the exact existing mobile behavior (Joel's own messages
+     were already not shown on mobile before this change; unchanged here). */
+  #chat-tray-panel { width: 100vw; }
+  .msg-col { width:100%; padding:12px; }
   #col-right { display:none; }
   .input-panel { width:calc(100% - 24px); max-width:none; bottom:12px; padding:6px 12px; border-radius:30px; }
   .input-panel button { font-size:22px; padding:10px; }
@@ -1062,6 +1091,5 @@ body::after {
 }
 
 @media (max-width: 480px) {
-  .msg-col { bottom:96px; }
   .input-panel { bottom:8px; }
 }
