@@ -2597,6 +2597,30 @@ async function handleGmailAnalyze(req, res) {
       return { ...m, priority: c.priority, category: c.category, summary: c.summary, suggestedAction: c.suggestedAction };
     });
 
+    // ── REAL LEAD-REPLY CHECK, per Joel's explicit rule: Flow sends the
+    // first outreach automatically, but the moment a real prospect
+    // replies, it stops and hands the conversation to Joel — no
+    // auto-continuation. This is the trigger point for that hand-off.
+    try {
+      const newlyReplied = await _checkForLeadReplies(messages);
+      if (newlyReplied.length && TG_TOKEN && process.env.JOEL_TELEGRAM_CHAT_ID) {
+        for (const lead of newlyReplied) {
+          const name = [lead.firstName, lead.lastName].filter(Boolean).join(' ') || lead.email;
+          await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: process.env.JOEL_TELEGRAM_CHAT_ID,
+              text: `💼 *Prospect replied!* — ${name} (${lead.companyName || lead.domain})\n\nSubject: "${lead.replySubject}"\n\n${lead.replySnippet}\n\nThis one's yours now — Flow won't continue the conversation automatically.`,
+              parse_mode: 'Markdown',
+            }),
+          }).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('[GmailAnalyze] Lead-reply check failed (non-fatal):', e.message);
+    }
+
     return res.status(200).json({ ok: true, messages: merged });
   } catch (e) {
     return res.status(200).json({ ok: false, error: `Real error analyzing Gmail: ${e.message}` });
@@ -2624,6 +2648,353 @@ async function handleGmailSend(req, res) {
   } catch (e) {
     return res.status(200).json({ ok: false, error: `Real error sending email: ${e.message}` });
   }
+}
+
+// ═══════════════════════════════════════════
+// REAL, NEW — Prospect/lead pipeline. Original choice was Hunter.io, but
+// Joel hit a real signup wall (mandatory SMS phone verification, and
+// Nigerian numbers aren't supported by Hunter's verification provider).
+// Switched to Snov.io — same real email-finder/verifier model, real free
+// tier, and signup only requires email + password, no phone-verification
+// gate. (Apollo was ruled out earlier: its free tier no longer includes
+// usable API access. ScrapeGraphAI was ruled out too: general-purpose
+// page scraper, not a lead-discovery tool.)
+//
+// HONEST SCOPE: scrapegraph itself is still NOT connected — Joel
+// explicitly deferred that. This pipeline takes a domain/company name
+// (however Joel supplies it — manually today, scrapegraph later) and
+// does the real work from there: find a real verified contact via
+// Snov.io, store it as a lead, auto-send a genuine first outreach email,
+// then STOP and escalate to Joel the moment the prospect actually
+// replies — never auto-continuing a real back-and-forth without him,
+// per his explicit instruction.
+// ═══════════════════════════════════════════
+const LEAD_KEY = (id) => `flow_lead_${id}`;
+const LEAD_INDEX_KEY = () => `flow_lead_index`;
+
+async function _saveLead(leadId, lead) {
+  if (!KV_URL || !KV_KEY) return;
+  await fetch(`${KV_URL}/set/${LEAD_KEY(leadId)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(lead) }),
+  }).catch(() => {});
+}
+
+async function _loadLead(leadId) {
+  if (!KV_URL || !KV_KEY) return null;
+  const raw = await fetch(`${KV_URL}/get/${LEAD_KEY(leadId)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
+  return raw?.result ? JSON.parse(raw.result) : null;
+}
+
+async function _addToLeadIndex(leadId) {
+  if (!KV_URL || !KV_KEY) return;
+  const raw = await fetch(`${KV_URL}/get/${LEAD_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
+  let ids = [];
+  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  ids = [...ids.filter(id => id !== leadId), leadId].slice(-200); // real, capped rolling index
+  await fetch(`${KV_URL}/set/${LEAD_INDEX_KEY()}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(ids) }),
+  }).catch(() => {});
+}
+
+async function _loadAllLeads() {
+  if (!KV_URL || !KV_KEY) return [];
+  const raw = await fetch(`${KV_URL}/get/${LEAD_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
+  let ids = [];
+  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  const leads = await Promise.all(ids.map(_loadLead));
+  return leads.filter(Boolean);
+}
+
+// ═══════════════════════════════════════════
+// REAL SWITCH from Hunter.io to Snov.io — Joel hit a real wall: Hunter's
+// signup requires SMS phone verification, and their verification
+// provider doesn't support Nigerian numbers. Snov.io's signup only
+// requires email + password (phone is optional, marketing-only, per
+// their own privacy policy) — genuinely no geographic signup gate.
+//
+// HONEST STRUCTURAL DIFFERENCE from Hunter: Snov.io's API uses OAuth2
+// client_credentials (a real token exchange, not a query-string key) AND
+// an async start/result pattern — POST .../start returns a task_hash,
+// then GET .../result/{task_hash} retrieves the actual data. This is
+// NOT optional or skippable; the result endpoint can return "in
+// progress" if polled too fast, so a real short retry loop is used
+// below rather than a single fetch.
+// ═══════════════════════════════════════════
+let _snovTokenCache = { token: null, expiresAt: 0 };
+
+async function _getSnovAccessToken() {
+  // Real, small cache — token is valid 1 hour, no need to re-auth every call.
+  if (_snovTokenCache.token && Date.now() < _snovTokenCache.expiresAt) return _snovTokenCache.token;
+
+  const clientId = process.env.SNOV_CLIENT_ID;
+  const clientSecret = process.env.SNOV_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new Error('SNOV_CLIENT_ID and/or SNOV_CLIENT_SECRET not set in Vercel env vars — sign up free at snov.io (email + password only, no phone verification wall), then find both under Account Settings → API.');
+  }
+
+  const res = await fetch('https://api.snov.io/v1/oauth/access_token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret }),
+  });
+  if (!res.ok) throw new Error(`Snov.io auth failed: ${await res.text()}`);
+  const data = await res.json();
+  if (!data.access_token) throw new Error('Snov.io auth did not return an access_token.');
+
+  // Real, small safety margin — treat the token as expiring 60s early so
+  // a call started right at the boundary doesn't fail mid-request.
+  _snovTokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in || 3600) * 1000 - 60000 };
+  return data.access_token;
+}
+
+// ── Real helper for Snov.io's async start/result pattern, shared by
+// both domain search and email finder below. Polls the result endpoint
+// a few times with a short delay, since Snov.io's own docs describe
+// this as a genuinely asynchronous job, not an instant response.
+async function _pollSnovResult(resultUrl, token, maxAttempts = 5) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(resultUrl, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`Snov.io result poll failed: ${await res.text()}`);
+    const data = await res.json();
+    // Real, honest check — Snov.io returns a "status" field; anything
+    // other than "in_progress" (e.g. "completed", or simply real data
+    // present) means the job is done.
+    if (data.status !== 'in_progress') return data;
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // real, short wait before re-polling
+  }
+  throw new Error('Snov.io search did not complete in time — try again shortly.');
+}
+
+// ── Real Snov.io Domain Search — finds prospect emails at a given
+// company domain. Structurally different from Hunter's single-call
+// version: this starts a job, then polls for the real result.
+async function _huntDomainForContact(domain) {
+  const token = await _getSnovAccessToken();
+
+  const startRes = await fetch('https://api.snov.io/v2/domain-search/prospects/start', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ domain }),
+  });
+  if (!startRes.ok) throw new Error(`Snov.io domain search failed to start: ${await startRes.text()}`);
+  const startData = await startRes.json();
+  const resultUrl = startData.links?.result;
+  if (!resultUrl) throw new Error('Snov.io domain search did not return a result URL.');
+
+  const result = await _pollSnovResult(resultUrl, token);
+  const prospects = result.data || [];
+  if (!prospects.length) return null;
+
+  // Real, deliberate preference: a named, personal prospect with an
+  // actual email beats a generic one — same reasoning as before, just
+  // matched to Snov.io's own real response shape.
+  const withEmail = prospects.filter(p => p.emails?.length);
+  if (!withEmail.length) return null;
+  const sorted = [...withEmail].sort((a, b) => {
+    const aNamed = (a.firstName || a.first_name) ? 1 : 0;
+    const bNamed = (b.firstName || b.first_name) ? 1 : 0;
+    return bNamed - aNamed;
+  });
+  const best = sorted[0];
+  const bestEmail = best.emails[0];
+
+  return {
+    email: bestEmail.email || bestEmail,
+    firstName: best.firstName || best.first_name || null,
+    lastName: best.lastName || best.last_name || null,
+    position: best.position || best.title || null,
+    confidence: bestEmail.status === 'valid' ? 90 : bestEmail.status === 'unknown' ? 50 : 30,
+    companyName: best.companyName || domain,
+  };
+}
+
+// ── Real Snov.io Email Verifier — checks deliverability before
+// sending, same real motivation as before: unverified addresses risk
+// bounces and sender-reputation damage, confirmed repeatedly in
+// research on both Hunter and Snov.io's own documentation.
+async function _verifyEmailDeliverability(email) {
+  try {
+    const token = await _getSnovAccessToken();
+    const startRes = await fetch('https://api.snov.io/v1/get-emails-verifier-status', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ email }),
+    });
+    if (!startRes.ok) return { status: 'unknown' };
+    const data = await startRes.json();
+    // Real, honest mapping — Snov.io's verifier statuses to the same
+    // status vocabulary used elsewhere in this pipeline (valid/invalid/
+    // disposable/unknown), so the rest of handleLeadSearch doesn't need
+    // to know which provider produced the result.
+    const raw = (data.data?.result || data.result || '').toLowerCase();
+    if (raw.includes('valid') && !raw.includes('invalid')) return { status: 'valid' };
+    if (raw.includes('invalid')) return { status: 'invalid' };
+    if (raw.includes('disposable')) return { status: 'disposable' };
+    return { status: 'unknown' };
+  } catch (_) {
+    return { status: 'unknown' };
+  }
+}
+
+// ── Real, read endpoint: takes a domain/company name (typed in by Joel
+// today, or later fed by scrapegraph once connected) and resolves it to
+// a real, verified contact via Snov.io, storing it as a new lead.
+async function handleLeadSearch(req, res) {
+  const { domain, context } = req.body || {};
+  if (!domain) return res.status(200).json({ ok: false, error: 'Missing "domain" in request body — e.g. "acmecorp.com".' });
+
+  try {
+    const contact = await _huntDomainForContact(domain);
+    if (!contact) return res.status(200).json({ ok: false, error: `Snov.io found no email addresses for ${domain}.` });
+
+    const verification = await _verifyEmailDeliverability(contact.email);
+    // Real, honest gate — 'invalid' or 'disposable' addresses are
+    // genuinely not worth outreach; bounce risk outweighs any possible
+    // reply. 'unknown' (verifier unavailable) still proceeds, since
+    // that's a real API-availability issue, not a signal the email itself is bad.
+    if (verification.status === 'invalid' || verification.status === 'disposable') {
+      return res.status(200).json({ ok: false, error: `Found ${contact.email} but Snov.io's verifier marked it "${verification.status}" — skipping to protect sender reputation.` });
+    }
+
+    const leadId = `lead-${domain.replace(/[^a-z0-9]/gi, '')}-${Date.now()}`;
+    const lead = {
+      id: leadId,
+      domain,
+      email: contact.email,
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      position: contact.position,
+      companyName: contact.companyName,
+      confidence: contact.confidence,
+      verificationStatus: verification.status,
+      context: context || null, // whatever Joel (or later scrapegraph) knows about why this lead is relevant
+      status: 'new',
+      createdAt: Date.now(),
+    };
+    await _saveLead(leadId, lead);
+    await _addToLeadIndex(leadId);
+
+    return res.status(200).json({ ok: true, lead });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: e.message });
+  }
+}
+
+// ── Real outreach-content generator. Draws on the SAME accumulated
+// insight pool as social-monitor and sales-research (via
+// _loadRecentInsights) — this is the literal mechanism behind "Flow
+// gets smarter about reaching out" that Joel asked for: real,
+// previously-researched conversational patterns get pulled into the
+// actual email, not a fixed template.
+async function _generateOutreachEmail(lead) {
+  const insights = await _loadRecentInsights(10);
+  const relevantInsights = insights.filter(i => i.platform_hint === 'email_outreach' || i.platform_hint === 'general');
+  const insightText = relevantInsights.length
+    ? relevantInsights.map(i => `- ${i.pattern}`).join('\n')
+    : 'No specific researched patterns yet — use genuine judgment for a warm, low-pressure first outreach.';
+
+  const system = `You are Flow, writing a real, first cold-outreach email on behalf of Joel Olaiya (Joelflowstack — solo web dev, bot integration, and workflow automation freelancer, Ibadan, Nigeria) to a genuine prospect. Write a short, warm, low-pressure email — NOT salesy, NOT generic template language. Reference their company/context naturally if known. End with a simple, easy-to-answer question (not a hard pitch).
+
+Apply these real, previously-researched conversational patterns where they genuinely fit:
+${insightText}
+
+Reply with ONLY this JSON, no other text:
+{"subject": "a short, real, non-spammy subject line", "body": "the full email body, plain text, no markdown"}`;
+
+  const leadContext = `Prospect: ${lead.firstName || ''} ${lead.lastName || ''} at ${lead.companyName || lead.domain}${lead.position ? ` (${lead.position})` : ''}.${lead.context ? ` Context: ${lead.context}` : ''}`;
+
+  const res = await fetch(`${SITE}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: leadContext },
+      ],
+      max_tokens: 400,
+    }),
+  });
+  const data = await res.json();
+  if (!data.reply || typeof data.reply !== 'string') throw new Error('Outreach generation returned an empty or malformed reply.');
+  const match = data.reply.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Outreach generation did not return the expected JSON format.');
+  return JSON.parse(match[0]);
+}
+
+// ── Real send + status transition. Per Joel's explicit rule: this sends
+// the FIRST outreach automatically (no approval gate, unlike social
+// drafts) — but every subsequent step requires either a real reply from
+// the prospect (handled by _checkForLeadReplies, called from
+// gmail-analyze) or Joel's own manual action. Flow never continues a
+// live back-and-forth on its own.
+async function handleLeadOutreach(req, res) {
+  const { leadId } = req.body || {};
+  if (!leadId) return res.status(200).json({ ok: false, error: 'Missing "leadId" in request body.' });
+
+  const lead = await _loadLead(leadId);
+  if (!lead) return res.status(200).json({ ok: false, error: 'Lead not found.' });
+  if (lead.status !== 'new') return res.status(200).json({ ok: false, error: `Lead status is "${lead.status}", not "new" — outreach already sent or lead is in a later stage.` });
+
+  try {
+    const { subject, body } = await _generateOutreachEmail(lead);
+    const accessToken = await _getGmailAccessToken();
+    const raw = _buildMimeMessage({ to: lead.email, subject, body });
+    const sendRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw }),
+    });
+    if (!sendRes.ok) return res.status(200).json({ ok: false, error: `Gmail send failed: ${await sendRes.text()}` });
+    const sendData = await sendRes.json();
+
+    lead.status = 'outreach_sent';
+    lead.outreachSubject = subject;
+    lead.outreachBody = body;
+    lead.outreachMessageId = sendData.id;
+    lead.outreachSentAt = Date.now();
+    await _saveLead(leadId, lead);
+
+    return res.status(200).json({ ok: true, lead, subject });
+  } catch (e) {
+    return res.status(200).json({ ok: false, error: e.message });
+  }
+}
+
+// ── Real reply detection — called from handleGmailAnalyze below. Checks
+// incoming mail against leads in "outreach_sent" status by matching the
+// FROM address; if a real prospect replies, flips the lead to "replied"
+// and this is what triggers escalation to Joel via Telegram, per his
+// explicit "escalate to me once a prospect actually replies" rule.
+async function _checkForLeadReplies(messages) {
+  const leads = await _loadAllLeads();
+  const awaitingReply = leads.filter(l => l.status === 'outreach_sent');
+  if (!awaitingReply.length) return [];
+
+  const newlyReplied = [];
+  for (const msg of messages) {
+    const fromEmail = (msg.from.match(/<(.+?)>/) || [null, msg.from])[1].toLowerCase().trim();
+    const matchedLead = awaitingReply.find(l => l.email.toLowerCase() === fromEmail);
+    if (matchedLead) {
+      matchedLead.status = 'replied';
+      matchedLead.repliedAt = Date.now();
+      matchedLead.replySubject = msg.subject;
+      matchedLead.replySnippet = msg.snippet;
+      await _saveLead(matchedLead.id, matchedLead);
+      newlyReplied.push(matchedLead);
+    }
+  }
+  return newlyReplied;
+}
+
+// ── Real, read-only endpoint for listing leads (any UI, Content Lab, or
+// future dashboard can call this rather than reimplementing KV reads).
+async function handleLeadsList(req, res) {
+  const leads = await _loadAllLeads();
+  return res.status(200).json({ ok: true, leads });
 }
 
 async function handleBluesky(req, res) {
@@ -2786,6 +3157,9 @@ export default async function handler(req, res) {
   if (platform === 'tiktok')        return handleTikTok(req, res);
   if (platform === 'gmail-read')    return handleGmailRead(req, res);
   if (platform === 'gmail-analyze') return handleGmailAnalyze(req, res);
+  if (platform === 'lead-search')   return handleLeadSearch(req, res);
+  if (platform === 'lead-outreach') return handleLeadOutreach(req, res);
+  if (platform === 'leads-list')    return handleLeadsList(req, res);
   if (platform === 'gmail-send')    return handleGmailSend(req, res);
   if (platform === 'heartbeat-notify') return handleHeartbeatNotify(req, res);
   if (platform === 'marketing-draft') return handleMarketingDraft(req, res);
