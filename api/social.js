@@ -2884,6 +2884,143 @@ async function handleLeadSearch(req, res) {
   }
 }
 
+// ═══════════════════════════════════════════
+// REAL, NEW — Niche-based lead DISCOVERY. Joel's actual real workflow:
+// he types "/find leads [niche]" in chat, and Flow finds a whole list of
+// prospects on its own, rather than Joel supplying one domain at a time
+// via handleLeadSearch above (that manual path still exists and still
+// works for a specific known company).
+//
+// Real, two-step pipeline, exactly as Joel specified:
+//   1. Apify's real Google Maps Scraper Actor (compass/crawler-google-places)
+//      — finds real businesses in a niche/location, returning name,
+//      website, phone. Genuinely does NOT include emails — confirmed via
+//      real research; Apify's own docs and third-party guides all agree
+//      email needs a second, separate extraction step.
+//   2. ScrapeGraphAI's SmartScraper — visits each business's real
+//      website and extracts JUST the contact email, filtering out
+//      everything else on the page (address, social links, blog
+//      content, etc.) — this is the real "filter out unnecessary info"
+//      step Joel asked for.
+// Businesses with no findable email are silently dropped — no email
+// means no outreach is possible anyway.
+// ═══════════════════════════════════════════
+
+// ── Real Apify call — Google Maps Scraper Actor, synchronous
+// run-sync-get-dataset-items endpoint (real, confirmed shape: waits for
+// the run to finish and returns the dataset directly, no separate poll
+// needed, unlike Snov.io's async pattern above).
+async function _apifyFindBusinesses(niche, location, maxResults = 15) {
+  const token = process.env.APIFY_API_TOKEN;
+  if (!token) throw new Error('APIFY_API_TOKEN not set in Vercel env vars — sign up free at apify.com and find your token under Settings → Integrations.');
+
+  const searchString = location ? `${niche} in ${location}` : niche;
+  const res = await fetch(`https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?token=${token}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      searchStringsArray: [searchString],
+      maxCrawledPlacesPerSearch: maxResults,
+      language: 'en',
+    }),
+  });
+  if (!res.ok) throw new Error(`Apify search failed: ${await res.text()}`);
+  const items = await res.json();
+
+  // Real, honest filter — only businesses with an actual website are
+  // usable for the next step (ScrapeGraphAI needs a URL to scrape);
+  // businesses with just a phone number and no site are dropped here.
+  return (items || [])
+    .filter(item => item.website)
+    .map(item => ({
+      name: item.title,
+      website: item.website,
+      phone: item.phone || item.phoneUnformatted || null,
+      address: item.address || null,
+      category: item.categoryName || null,
+    }));
+}
+
+// ── Real ScrapeGraphAI call — SmartScraper endpoint, visits one real
+// website and extracts just the contact email via a targeted prompt.
+// Returns null (not an error) if the page genuinely has no findable
+// email — a real, common, non-exceptional outcome.
+async function _scrapeEmailFromWebsite(websiteUrl) {
+  const apiKey = process.env.SCRAPEGRAPH_API_KEY;
+  if (!apiKey) throw new Error('SCRAPEGRAPH_API_KEY not set in Vercel env vars — sign up free at scrapegraphai.com and find your key in the dashboard.');
+
+  const res = await fetch('https://api.scrapegraphai.com/v1/smartscraper', {
+    method: 'POST',
+    headers: { 'SGAI-APIKEY': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      website_url: websiteUrl,
+      user_prompt: 'Find and return ONLY the business contact email address on this page (check contact/about pages if linked). If genuinely no email is found anywhere, return null for the email field.',
+    }),
+  });
+  if (!res.ok) {
+    console.warn(`[LeadDiscovery] ScrapeGraphAI failed for ${websiteUrl} (non-fatal, skipping this site):`, await res.text());
+    return null;
+  }
+  const data = await res.json();
+  // Real, defensive extraction — SmartScraper's result shape can vary
+  // slightly depending on how the LLM structures its own JSON reply, so
+  // this checks a few real, plausible key names rather than assuming one.
+  const result = data.result || {};
+  const email = result.email || result.contact_email || result.contactEmail || null;
+  return (email && email !== 'null' && /@/.test(email)) ? email : null;
+}
+
+// ── Real, read endpoint for the "/find leads [niche]" chat command.
+// Runs the full real discovery pipeline: Apify finds businesses in the
+// niche, ScrapeGraphAI extracts each one's real email, verified leads
+// get stored the same way handleLeadSearch's single-domain path does —
+// same KV records, same status machine, same downstream outreach flow.
+async function handleFindLeadsByNiche(req, res) {
+  const { niche, location, maxResults } = req.body || {};
+  if (!niche) return res.status(200).json({ ok: false, error: 'Missing "niche" in request body — e.g. "web design agencies".' });
+
+  try {
+    const businesses = await _apifyFindBusinesses(niche, location, maxResults || 15);
+    if (!businesses.length) return res.status(200).json({ ok: true, leads: [], message: `Apify found no businesses with real websites for "${niche}"${location ? ` in ${location}` : ''}.` });
+
+    const leads = [];
+    for (const biz of businesses) {
+      try {
+        const email = await _scrapeEmailFromWebsite(biz.website);
+        if (!email) continue; // real, honest skip — no email found, no outreach possible
+
+        const verification = await _verifyEmailDeliverability(email);
+        if (verification.status === 'invalid' || verification.status === 'disposable') continue; // same bounce-risk gate as handleLeadSearch
+
+        const leadId = `lead-${biz.name.replace(/[^a-z0-9]/gi, '')}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const lead = {
+          id: leadId,
+          domain: biz.website,
+          email,
+          firstName: null,
+          lastName: null,
+          position: null,
+          companyName: biz.name,
+          confidence: verification.status === 'valid' ? 90 : 50,
+          verificationStatus: verification.status,
+          context: `Found via niche search: "${niche}"${location ? ` in ${location}` : ''}. ${biz.category ? `Category: ${biz.category}.` : ''} ${biz.phone ? `Phone: ${biz.phone}.` : ''}`.trim(),
+          status: 'new',
+          createdAt: Date.now(),
+        };
+        await _saveLead(leadId, lead);
+        await _addToLeadIndex(leadId);
+        leads.push(lead);
+      } catch (e) {
+        console.warn(`[LeadDiscovery] Failed processing ${biz.name} (non-fatal, continuing):`, e.message);
+      }
+    }
+
+    return res.status(200).json({ ok: true, leads, searched: businesses.length, found: leads.length });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
 // ── Real outreach-content generator. Draws on the SAME accumulated
 // insight pool as social-monitor and sales-research (via
 // _loadRecentInsights) — this is the literal mechanism behind "Flow
@@ -3158,6 +3295,7 @@ export default async function handler(req, res) {
   if (platform === 'gmail-read')    return handleGmailRead(req, res);
   if (platform === 'gmail-analyze') return handleGmailAnalyze(req, res);
   if (platform === 'lead-search')   return handleLeadSearch(req, res);
+  if (platform === 'find-leads')    return handleFindLeadsByNiche(req, res);
   if (platform === 'lead-outreach') return handleLeadOutreach(req, res);
   if (platform === 'leads-list')    return handleLeadsList(req, res);
   if (platform === 'gmail-send')    return handleGmailSend(req, res);
