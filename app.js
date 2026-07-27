@@ -32,6 +32,8 @@ import { initVideoGen, generateVideo, generateVideoFromImage } from "./ui/videog
 import { initMarketing, generateMarketingPost } from "./ui/marketing.js";
 import { initContentLab, openContentLab, closeContentLab, isContentLabOpen } from "./ui/content-lab.js";
 import { initThoughtLog } from "./ui/thought-log.js";
+import { initLeadsTray } from "./ui/leads.js";
+import { initChatTray } from "./ui/chat-tray.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -544,6 +546,8 @@ initVideoGen(Chat, Orb);
 initMarketing(Chat, Orb);
 initContentLab(Chat, Orb);
 initThoughtLog();
+initLeadsTray();
+initChatTray();
 initKnowledge(Chat);
 initProjects(Chat, (t) => sendToAI(t));
 
