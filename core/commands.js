@@ -87,6 +87,39 @@ export function getDate() {
 export async function parseCommand(text) {
   const t = text.toLowerCase().trim();
 
+  // ── REAL, Joel-requested — "/find leads [niche]" slash command.
+  // Explicit slash commands are unambiguous by design (Joel is
+  // deliberately invoking a specific skill, not just conversing), so
+  // this runs the real Apify + ScrapeGraphAI discovery pipeline directly
+  // — no intent-classification needed here, unlike the repo-creation fix
+  // further down, which specifically exists to guard against ACCIDENTAL
+  // triggering from normal conversation. A leading "/" is Joel opting in.
+  const _findLeadsMatch = text.match(/^\/find\s+leads?\s+(.+)/i);
+  if (_findLeadsMatch) {
+    const query = _findLeadsMatch[1].trim();
+    // Real, simple split — "web design agencies in Lagos" → niche +
+    // location; if there's no "in <place>", the whole thing is the niche
+    // and location is left for Apify's own default/broad search.
+    const _locMatch = query.match(/^(.+?)\s+in\s+(.+)$/i);
+    const niche = _locMatch ? _locMatch[1].trim() : query;
+    const location = _locMatch ? _locMatch[2].trim() : null;
+
+    _chatAdd?.(`🔍 Searching for ${niche}${location ? ` in ${location}` : ""} — this can take a minute (finding businesses, then checking each site for a real contact email)...`, "bot");
+    try {
+      const res = await fetch("/api/social?platform=find-leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ niche, location }),
+      });
+      const data = await res.json();
+      if (!data.ok) return `⚠️ Lead search failed: ${data.error}`;
+      if (!data.leads.length) return `Searched ${data.searched || 0} businesses for "${niche}"${location ? ` in ${location}` : ""}, but found no usable emails. Check the Leads tab, or try a different niche/location.`;
+      return `✅ Found ${data.leads.length} real lead${data.leads.length === 1 ? "" : "s"} out of ${data.searched} businesses searched for "${niche}"${location ? ` in ${location}` : ""}. Check the Leads tab to review and reach out — sent automatically once you approve there.`;
+    } catch (e) {
+      return `⚠️ Lead search failed: ${e.message}`;
+    }
+  }
+
   if (/what.s the time|time now|current time/i.test(t))  return `It's ${getTime()}.`;
   if (/what.s the date|what day/i.test(t))               return `Today is ${getDate()}.`;
   if (/weather|forecast|temperature|how hot|rain/i.test(t))
@@ -376,6 +409,56 @@ export async function parseSearchGoalCommand(text) {
   const _excludeRx   = /create\s+(?:a\s+)?(?:new\s+)?(?:github\s+)?repo\b(?!.*structure)/i;
 
   if ((_structureRx.test(t) || _repoOnlyRx.test(t)) && !_excludeRx.test(t)) {
+    // ═══════════════════════════════════════════
+    // REAL FIX, Joel-reported bug: this regex is deliberately broad
+    // (words like "create," "build," "make" followed loosely by almost
+    // any noun) to catch real phrasings like "scaffold myapp" — but that
+    // same breadth means genuine rambling conversation that happens to
+    // contain these words (Joel's real example: thinking out loud about
+    // a NASA-API business idea, which mentions "build" and "this thing")
+    // ALSO matches, triggering a real, unwanted repo scaffold + push.
+    //
+    // REAL FIX: before doing anything destructive (generating files,
+    // pushing to a real GitHub repo), ask a genuine LLM classifier
+    // whether this message is ACTUALLY a deliberate request to create/
+    // scaffold a repo, versus conversation that merely contains
+    // trigger-shaped words. This is real intent understanding, not
+    // another keyword list — the fix specifically targets Joel's
+    // complaint that pattern-matching alone isn't enough here.
+    //
+    // Deliberately gated ONLY here, not on every command: this is the
+    // one path in this file with real, costly, hard-to-undo
+    // consequences (actual commits to actual repos), so it's worth one
+    // extra real API call before proceeding. Cheaper, purely-informational
+    // commands elsewhere keep their existing fast regex matching.
+    // ═══════════════════════════════════════════
+    try {
+      const _intentCheck = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "system",
+              content: `Decide if this message is a REAL, deliberate request for Flow to create/scaffold/push code to a GitHub repository right now — versus general conversation, brainstorming, or a question that merely happens to contain words like "create," "build," or "make." Rambling, thinking-out-loud, or discussing a business idea is NOT a real request, even if it mentions building something. Reply with ONLY one word: YES or NO.`,
+            },
+            { role: "user", content: text },
+          ],
+          max_tokens: 5,
+        }),
+      });
+      const _intentData = await _intentCheck.json();
+      const _isReal = /^\s*yes/i.test(_intentData.reply || "");
+      if (!_isReal) return false; // real, honest fall-through to normal conversational AI reply — no scaffold, no push, nothing destructive happened
+    } catch (_intentErr) {
+      // Real, deliberate fail-safe: if the intent check itself fails
+      // (network error, API down), default to NOT scaffolding — a
+      // missed real request is recoverable (Joel just asks again), an
+      // accidental repo push from a failed safety check is not.
+      console.warn("[Commands] Repo-intent check failed, defaulting to no-op:", _intentErr.message);
+      return false;
+    }
+
     let owner = "Joel44118", repo = "";
     const _full       = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
     const _beforeRepo = t.match(/(\b(?!github\b|the\b|my\b|a\b|to\b|it\b)\w{3,})\s+repo\b/i);
