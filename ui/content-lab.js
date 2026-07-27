@@ -517,26 +517,6 @@ select.cl-input, select.cl-input option {
 }
 .cl-draft-discard:hover { background: rgba(248,113,113,0.22); }
 
-/* REAL, Joel-requested — Prospects/leads section CSS, matching Daily
-   Drafts styling for visual consistency. */
-#cl-leads-section {
-  flex-shrink: 0; margin: 0 16px 12px; max-height: 280px; overflow-y: auto;
-  border-top: 1px solid rgba(167,139,250,0.15); padding-top: 10px;
-}
-.cl-lead-form { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-.cl-lead-input {
-  background: rgba(255,255,255,0.04); border: 1px solid rgba(167,139,250,0.25);
-  border-radius: 8px; padding: 8px 10px; font-size: 12px; color: #e5e7eb; outline: none;
-}
-.cl-lead-input::placeholder { color: rgba(255,255,255,0.3); }
-.cl-lead-input:focus { border-color: rgba(167,139,250,0.6); }
-.cl-lead-add-btn {
-  border: 1px solid rgba(167,139,250,0.4); background: rgba(167,139,250,0.15); color: #d8d4ff;
-  border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
-}
-.cl-lead-add-btn:hover { background: rgba(167,139,250,0.25); }
-.cl-lead-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.cl-lead-form-status { font-size: 11px; color: #9ca3af; min-height: 14px; }
 
 /* REAL, Joel-requested feature: a collapsible drawer for post-status/
    error output, so it can never silently grow the panel and push other
@@ -1423,126 +1403,9 @@ function _stopDraftPolling() {
   if (_draftPollTimer) { clearInterval(_draftPollTimer); _draftPollTimer = null; }
 }
 
-// ═══════════════════════════════════════════
-// REAL, Joel-requested — Prospects UI. Add a domain manually today (this
-// is exactly where scrapegraph will plug in later — same endpoint, just
-// a different real caller); Flow resolves a verified contact via Snov.io
-// and sends the first outreach email automatically (no approval gate —
-// Joel's explicit rule). Below, a live-polling status list shows every
-// lead's real state (new → outreach_sent → replied), converging with
-// the same Telegram reply-escalation logic on one KV source of truth.
-// ═══════════════════════════════════════════
-let _leadPollTimer = null;
-
-async function _handleAddLead(domainInput, contextInput, statusEl, listEl, btn) {
-  const domain = domainInput.value.trim();
-  if (!domain) { statusEl.textContent = "Enter a domain first."; return; }
-
-  btn.disabled = true;
-  statusEl.textContent = "🔍 Searching for a real contact...";
-
-  try {
-    const searchRes = await fetch("/api/social?platform=lead-search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ domain, context: contextInput.value.trim() || null }),
-    });
-    const searchData = await searchRes.json();
-    if (!searchData.ok) {
-      statusEl.textContent = `⚠️ ${searchData.error}`;
-      btn.disabled = false;
-      return;
-    }
-
-    const name = [searchData.lead.firstName, searchData.lead.lastName].filter(Boolean).join(" ") || searchData.lead.email;
-    statusEl.textContent = `✅ Found ${name} — sending first outreach...`;
-
-    const outreachRes = await fetch("/api/social?platform=lead-outreach", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ leadId: searchData.lead.id }),
-    });
-    const outreachData = await outreachRes.json();
-    if (!outreachData.ok) {
-      statusEl.textContent = `⚠️ Found contact but outreach failed: ${outreachData.error}`;
-    } else {
-      statusEl.textContent = `✅ Outreach sent to ${name} (${searchData.lead.email})`;
-      domainInput.value = "";
-      contextInput.value = "";
-    }
-    await _pollLeads(listEl);
-  } catch (e) {
-    statusEl.textContent = `⚠️ ${e.message}`;
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function _pollLeads(listEl) {
-  try {
-    const res = await fetch("/api/social?platform=leads-list");
-    const data = await res.json();
-    if (!data.ok) return;
-    _renderLeadCards(listEl, data.leads || []);
-  } catch (e) {
-    console.warn("[ContentLab] Lead poll failed (non-fatal):", e.message);
-  }
-}
-
-function _renderLeadCards(listEl, leads) {
-  if (!leads.length) {
-    listEl.innerHTML = `<div class="cl-drafts-empty">No prospects yet — add a domain above to find a real contact and reach out.</div>`;
-    return;
-  }
-  listEl.innerHTML = "";
-  // Real, deliberate order: replied first (needs Joel's attention most),
-  // then outreach_sent, then new, most recent first within each group.
-  const statusOrder = { replied: 0, outreach_sent: 1, new: 2 };
-  const sorted = [...leads].sort((a, b) => {
-    const diff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
-    if (diff !== 0) return diff;
-    return (b.createdAt || 0) - (a.createdAt || 0);
-  });
-
-  for (const lead of sorted) {
-    const card = document.createElement("div");
-    card.className = "cl-draft-card";
-
-    const label = lead.status === "replied" ? "💼 Replied — yours now" : lead.status === "outreach_sent" ? "📤 Outreach sent" : "🆕 New";
-    const name = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || lead.email;
-
-    const header = document.createElement("div");
-    header.className = "cl-draft-header";
-    header.innerHTML = `<span class="cl-draft-platform">${name}</span><span class="cl-draft-status">${label}</span>`;
-    card.appendChild(header);
-
-    const meta = document.createElement("div");
-    meta.className = "cl-draft-caption";
-    meta.textContent = `${lead.companyName || lead.domain}${lead.position ? ` — ${lead.position}` : ""} · ${lead.email}`;
-    card.appendChild(meta);
-
-    if (lead.status === "replied" && lead.replySnippet) {
-      const replyPreview = document.createElement("div");
-      replyPreview.className = "cl-draft-caption";
-      replyPreview.style.marginTop = "6px";
-      replyPreview.style.fontStyle = "italic";
-      replyPreview.textContent = `"${lead.replySnippet}"`;
-      card.appendChild(replyPreview);
-    }
-
-    listEl.appendChild(card);
-  }
-}
-
-function _startLeadPolling(listEl) {
-  _stopLeadPolling();
-  _pollLeads(listEl); // real, immediate first load
-  _leadPollTimer = setInterval(() => _pollLeads(listEl), 20 * 1000);
-}
-
-function _stopLeadPolling() {
-  if (_leadPollTimer) { clearInterval(_leadPollTimer); _leadPollTimer = null; }
-}
+// NOTE: the Prospects/Leads UI (add-lead form, polling, status cards)
+// has been moved to its own standalone left-edge tray — see ui/leads.js
+// — per Joel's explicit request to separate it from Content Lab.
 
 export function openContentLab() {
   _injectStyles();
@@ -1734,52 +1597,14 @@ export function openContentLab() {
   draftsSection.appendChild(draftsList);
   panel.insertBefore(draftsSection, postAllBtn);
 
-  // ── Real, Joel-requested — Leads/Prospects section: manually add a
-  // domain (scrapegraph will feed this later), Flow resolves a real
-  // verified contact via Snov.io and sends the first outreach
-  // automatically. Below that, a live status list of every lead in the
-  // pipeline (new → outreach_sent → replied), polling the same
-  // leads-list endpoint the Telegram reply-escalation logic uses — one
-  // source of truth, same convergence pattern as Daily Drafts above.
-  const leadsSection = document.createElement("div");
-  leadsSection.id = "cl-leads-section";
-  leadsSection.innerHTML = `<div class="cl-drafts-title">💼 Prospects</div>`;
-
-  const leadForm = document.createElement("div");
-  leadForm.className = "cl-lead-form";
-  const domainInput = document.createElement("input");
-  domainInput.type = "text";
-  domainInput.placeholder = "company domain, e.g. acmecorp.com";
-  domainInput.className = "cl-lead-input";
-  const contextInput = document.createElement("input");
-  contextInput.type = "text";
-  contextInput.placeholder = "context (optional) — where you found them, what they need";
-  contextInput.className = "cl-lead-input";
-  const addLeadBtn = document.createElement("button");
-  addLeadBtn.className = "cl-btn cl-lead-add-btn";
-  addLeadBtn.textContent = "🔍 Find contact & reach out";
-  leadForm.appendChild(domainInput);
-  leadForm.appendChild(contextInput);
-  leadForm.appendChild(addLeadBtn);
-
-  const leadFormStatus = document.createElement("div");
-  leadFormStatus.className = "cl-lead-form-status";
-  leadForm.appendChild(leadFormStatus);
-
-  const leadsList = document.createElement("div");
-  leadsList.id = "cl-leads-list";
-
-  addLeadBtn.onclick = () => _handleAddLead(domainInput, contextInput, leadFormStatus, leadsList, addLeadBtn);
-
-  leadsSection.appendChild(leadForm);
-  leadsSection.appendChild(leadsList);
-  panel.insertBefore(leadsSection, postAllBtn);
+  // NOTE: the Prospects/Leads section previously lived here — it's now
+  // its own standalone left-edge tray (ui/leads.js), per Joel's explicit
+  // request to separate it from Content Lab.
 
   document.body.appendChild(panel);
   _panelEl = panel;
 
   _startDraftPolling(draftsList);
-  _startLeadPolling(leadsList);
 
   // Real, triggers the slide-in transition (panel starts at
   // transform:translateX(100%) per the CSS above; adding .cl-open
