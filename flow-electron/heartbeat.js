@@ -570,6 +570,7 @@ function _saveSeenGmailIds(set) {
 }
 
 let _seenGmailIds = _loadSeenGmailIds(); // real, persisted across restarts now — see fix note above
+let _lastGmailErrorNotifiedDate = null; // real, once-per-day cap on the gmail-analyze failure notice, so a persistent outage doesn't spam every 60s
 
 const GMAIL_POLL_INTERVAL_MS = 60 * 1000; // real, genuinely frequent — 60s, matching Joel's "constantly" ask
 
@@ -588,7 +589,18 @@ async function _checkGmail() {
     const res = await fetch(`${VERCEL_URL}/api/social?platform=gmail-analyze`);
     const data = await res.json();
     if (!data.ok) {
+      // REAL, Joel-requested visibility fix: previously this failure was
+      // ONLY logged to a console Joel never sees, then silently
+      // returned — meaning a real gmail-analyze failure looked
+      // identical to "no new mail," with zero indication anything was
+      // wrong. Now it surfaces honestly (once, not spammed) so a
+      // real, ongoing problem is visible instead of silently invisible.
       console.warn('[Heartbeat] Gmail check failed (non-fatal):', data.error);
+      const today = _todayWAT();
+      if (_lastGmailErrorNotifiedDate !== today) {
+        _lastGmailErrorNotifiedDate = today;
+        await sendSelfInitiatedMessage(`⚠️ Gmail smart-check failed today: ${data.error}\n\n(Falling back silently would just look like "no new mail" — flagging this once so it doesn't go unnoticed. Will keep retrying.)`);
+      }
       return;
     }
     const newMessages = (data.messages || []).filter((m) => !_seenGmailIds.has(m.id));
