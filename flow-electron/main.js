@@ -1014,10 +1014,27 @@ function startWakeWord() {
       console.error('[Main]', msg);
       if (mainWin && !mainWin.isDestroyed()) {
         mainWin.webContents.send('heartbeat-message', { text: msg, ts: Date.now() });
+        // REAL, Joel-requested — a genuine on/off signal for whether the
+        // mic is actually being listened to, distinct from the wake-word
+        // DETECTION event above (which only fires once "hey flow" is
+        // heard). This is what ui/app.js uses to light up #wake-indicator
+        // honestly, matching how every other app with an always-on mic
+        // (Windows' own mic indicator, Zoom, Discord, etc.) shows a real
+        // "I am listening right now" state rather than a static label.
+        mainWin.webContents.send('voice-engine-status', { listening: false, reason: 'failed-to-start' });
+      }
+    } else {
+      // Real, confirmed success — the engine is now genuinely capturing
+      // mic audio continuously via SoX and listening for the wake phrase.
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send('voice-engine-status', { listening: true });
       }
     }
   }).catch((e) => {
     console.error('[Main] startVoiceEngine threw an unexpected error:', e.message);
+    if (mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('voice-engine-status', { listening: false, reason: 'error', message: e.message });
+    }
   });
 }
 
