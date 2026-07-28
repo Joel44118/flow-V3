@@ -666,6 +666,18 @@ body::after {
 }
 #boot-overlay.boot-done { opacity: 0; pointer-events: none; }
 
+/* REAL, Joel-reported fix — the four tray tabs are hidden by default via
+   this shared class until core/boot.js's runBootSequence() genuinely
+   completes and removes it, exactly mirroring #top-bar.boot-collapsed
+   and #app-footer.boot-collapsed above. Fixes the tabs showing through
+   the boot screen (they previously had no boot-awareness at all). */
+#chat-tray-tab.boot-collapsed,
+#leads-tray-tab.boot-collapsed,
+#content-lab-tray-tab.boot-collapsed,
+#thought-log-tab.boot-collapsed {
+  opacity: 0; pointer-events: none;
+}
+
 #boot-orb-ring {
   width: 64px; height: 64px; border-radius: 50%;
   border: 2px solid rgba(56,189,248,0.25);
