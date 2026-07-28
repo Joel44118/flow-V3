@@ -6,6 +6,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "telegram": "^2.26.22"
+    "telegram": "^2.26.22",
+    "@andresaya/edge-tts": "^1.8.0"
   }
 }
