@@ -65,6 +65,12 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     // first real voice use, so the renderer can show real progress
     // instead of the app appearing to hang.
     onModelDownloadProgress: (cb) => ipcRenderer.on('voice-model-download-progress', (_e, data) => cb(data)),
+    // REAL, Joel-requested — a genuine on/off signal for whether the
+    // voice engine actually started and is listening right now, separate
+    // from onDetected (which only fires once the wake phrase is heard).
+    // This is what powers a real, honest #wake-indicator instead of a
+    // static label that never reflects the engine's real state.
+    onStatus: (cb) => ipcRenderer.on('voice-engine-status', (_e, data) => cb(data)),
   },
 
   // ── Live dictation mode — Joel's explicit request: text streams into
