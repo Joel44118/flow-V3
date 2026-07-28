@@ -32,6 +32,10 @@ let _screenControl = null;
 let _searchSend  = null;
 let _chatAdd     = null;
 let _getHistory  = null;
+let _openContentLab = null;
+let _openThoughtLog  = null;
+let _openLeadsTray   = null;
+let _openChatTray    = null;
 
 export function setNotepad(n)          { _notepad       = n; }
 export function setSpeakFn(fn)         { _speak         = fn; }
@@ -39,6 +43,17 @@ export function setVision(v)           { _vision        = v; }
 export function setScreenControl(sc)   { _screenControl = sc; }
 export function setSearchHandlers(s,c) { _searchSend = s; _chatAdd = c; }
 export function setHistoryFn(fn)       { _getHistory = fn; }
+// REAL, Joel-requested — "/content-lab" and "/thoughts" now actually
+// open their real trays instead of just being conversational text with
+// no effect. "/find-leads" already had a working backend
+// (handleFindLeadsByNiche); this just also opens the Leads tray so Joel
+// can watch results land live instead of only seeing the chat summary.
+export function setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray) {
+  _openContentLab = openContentLab;
+  _openThoughtLog = openThoughtLog;
+  _openLeadsTray  = openLeadsTray;
+  _openChatTray   = openChatTray;
+}
 
 // ── Site open map ──────────────────────────
 const SITES = [
@@ -94,7 +109,13 @@ export async function parseCommand(text) {
   // — no intent-classification needed here, unlike the repo-creation fix
   // further down, which specifically exists to guard against ACCIDENTAL
   // triggering from normal conversation. A leading "/" is Joel opting in.
-  const _findLeadsMatch = text.match(/^\/find\s+leads?\s+(.+)/i);
+  //
+  // REAL FIX: the slash palette (ui/slash.js) advertises this skill as
+  // "/find-leads" (hyphenated), but this regex only matched "/find leads"
+  // (space) — meaning selecting it from the skill tray produced text
+  // that fell through to plain conversation instead of running the real
+  // pipeline. Now matches both forms.
+  const _findLeadsMatch = text.match(/^\/find[\s-]leads?\s+(.+)/i);
   if (_findLeadsMatch) {
     const query = _findLeadsMatch[1].trim();
     // Real, simple split — "web design agencies in Lagos" → niche +
@@ -104,6 +125,7 @@ export async function parseCommand(text) {
     const niche = _locMatch ? _locMatch[1].trim() : query;
     const location = _locMatch ? _locMatch[2].trim() : null;
 
+    _openLeadsTray?.(); // real, opens the Leads tray so Joel watches results land live, not just a chat summary
     _chatAdd?.(`🔍 Searching for ${niche}${location ? ` in ${location}` : ""} — this can take a minute (finding businesses, then checking each site for a real contact email)...`, "bot");
     try {
       const res = await fetch("/api/social?platform=find-leads", {
@@ -118,6 +140,23 @@ export async function parseCommand(text) {
     } catch (e) {
       return `⚠️ Lead search failed: ${e.message}`;
     }
+  }
+
+  // ── REAL, Joel-requested — "/content-lab" and "/thoughts" now actually
+  // open their real trays. Previously these were only advertised in the
+  // skill palette or conversational text but had no real dispatch here —
+  // selecting them did nothing except fall through to normal chat.
+  if (/^\/content-?lab\b/i.test(t)) {
+    if (_openContentLab) { _openContentLab(); return null; }
+    return "⚠️ Content Lab isn't wired up in this session yet.";
+  }
+  if (/^\/thoughts?\b/i.test(t)) {
+    if (_openThoughtLog) { _openThoughtLog(); return null; }
+    return "⚠️ Thought Log isn't wired up in this session yet.";
+  }
+  if (/^\/leads?\b/i.test(t) && !_findLeadsMatch) {
+    if (_openLeadsTray) { _openLeadsTray(); return null; }
+    return "⚠️ Leads tray isn't wired up in this session yet.";
   }
 
   if (/what.s the time|time now|current time/i.test(t))  return `It's ${getTime()}.`;
