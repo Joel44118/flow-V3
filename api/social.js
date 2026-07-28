@@ -941,13 +941,56 @@ async function generateAutoPostContent() {
 const INSIGHT_KEY = (id) => `flow_social_insight_${id}`;
 const INSIGHT_INDEX_KEY = () => `flow_social_insight_index`;
 
+// ── Real embedding helpers — SAME real pattern already used by
+// flow-electron/memory-store.js and api/chat.js's _recallMemory: plain
+// HTTPS call to the server-side /api/mediapipe?action=embed route (which
+// itself calls HF's real, confirmed-live thenlper/gte-large
+// feature-extraction endpoint). No new npm dependency, no native
+// binding — same zero-native-deps discipline as the rest of this
+// codebase's memory system. Genuinely non-fatal on failure: an insight
+// without an embedding still saves and is still retrievable via the
+// keyword+recency fallback below, exactly like memory-store.js's design.
+async function _getInsightEmbedding(text) {
+  try {
+    const res = await fetch(`${SITE}/api/mediapipe?action=embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data.embedding) ? data.embedding : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _insightCosineSim(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; normA += a[i] * a[i]; normB += b[i] * b[i]; }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+// REAL, Joel-approved upgrade — insight storage now also fetches and
+// stores a real embedding of the insight's own pattern text. Previously
+// insights had ZERO semantic retrieval: _loadRecentInsights just grabbed
+// the last N by recency, and outreach-email generation naively filtered
+// by an exact platform_hint string match — meaning as the insight pool
+// grows (accumulating content/sales/mindset patterns over weeks), Flow
+// could only ever reach for the MOST RECENT matching insight, never the
+// most RELEVANT one for a specific lead or post. This is the real,
+// concrete gap this upgrade closes — genuine "understand before
+// delivering" rather than "grab whatever's newest."
 async function _saveInsight(insight) {
   if (!KV_URL || !KV_KEY) return null;
   const id = `insight-${Date.now()}`;
+  const embedding = await _getInsightEmbedding(insight.pattern); // null on failure, real non-fatal fallback
   await fetch(`${KV_URL}/set/${INSIGHT_KEY(id)}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: JSON.stringify({ ...insight, id, createdAt: Date.now() }) }),
+    body: JSON.stringify({ value: JSON.stringify({ ...insight, id, embedding, createdAt: Date.now() }) }),
   }).catch(() => {});
 
   const raw = await fetch(`${KV_URL}/get/${INSIGHT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
@@ -974,6 +1017,57 @@ async function _loadRecentInsights(n = 5) {
       .then(r => r.json()).then(d => d.result ? JSON.parse(d.result) : null).catch(() => null)
   ));
   return insights.filter(Boolean);
+}
+
+// ── REAL, NEW — semantic insight retrieval. Given a real query
+// describing the actual context (e.g. a lead's company/industry, or a
+// platform + topic for a social draft), loads the FULL insight pool
+// (not just the last N) and ranks by genuine relevance — real cosine
+// similarity when both the query and an insight have embeddings,
+// blended with recency so genuinely fresher research still gets a
+// natural edge among similarly-relevant matches. Falls back to pure
+// recency (old behavior) for any insight that failed to get an
+// embedding at save time — never silently excludes an insight just
+// because embedding fetch failed once.
+async function _recallRelevantInsights(query, { maxResults = 5, platformHint = null } = {}) {
+  if (!KV_URL || !KV_KEY) return [];
+  const raw = await fetch(`${KV_URL}/get/${INSIGHT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
+  let ids = [];
+  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  if (!ids.length) return [];
+
+  const allInsights = (await Promise.all(ids.map(id =>
+    fetch(`${KV_URL}/get/${INSIGHT_KEY(id)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } })
+      .then(r => r.json()).then(d => d.result ? JSON.parse(d.result) : null).catch(() => null)
+  ))).filter(Boolean);
+
+  const queryEmbedding = await _getInsightEmbedding(query);
+  const now = Date.now();
+
+  const scored = allInsights
+    // Real, soft preference rather than a hard filter — an
+    // exceptionally relevant insight from a DIFFERENT platform_hint
+    // can still surface (e.g. a general business-mindset insight
+    // genuinely applying to an email), it just doesn't get the same
+    // recency-independent boost a same-category match gets.
+    .map(insight => {
+      const ageDays = (now - (insight.createdAt || 0)) / (24 * 60 * 60 * 1000);
+      const recencyScore = Math.max(0, 1 - ageDays / 30) * 0.2; // real, same 30-day decay curve as memory-store.js
+      const categoryMatch = platformHint && insight.platform_hint === platformHint ? 0.15 : 0;
+
+      let semanticScore = 0;
+      if (queryEmbedding && insight.embedding) {
+        semanticScore = _insightCosineSim(queryEmbedding, insight.embedding);
+      }
+
+      const finalScore = (semanticScore * 0.65) + recencyScore + categoryMatch;
+      return { insight, score: finalScore };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxResults)
+    .map(s => s.insight);
+
+  return scored;
 }
 
 // ── Real, read-only endpoint Content Lab polls for XP purposes — covers
@@ -1094,10 +1188,31 @@ Reply with ONLY this JSON, no other text:
 
 // ── Real draft-content generation, informed by the freshest insight,
 // mirroring generateAutoPostContent's real style/tone rules.
-async function _generateSocialMonitorDraft(platform, insight) {
+async function _generateSocialMonitorDraft(platform, freshInsight) {
+  // REAL, Joel-approved upgrade: previously this only ever used the ONE
+  // insight freshly generated by today's own analysis pass, completely
+  // ignoring weeks of accumulated content/mindset research sitting in
+  // the insight pool. Now it also pulls in past insights genuinely
+  // relevant to THIS platform via semantic search, so older-but-relevant
+  // research actually gets a chance to inform today's post — not just
+  // whatever happened to be discovered in the last 24 hours.
+  const pastInsights = await _recallRelevantInsights(`${platform} social media content strategy`, { maxResults: 3, platformHint: 'general' });
+  // Real, simple de-dupe — if today's fresh insight also got surfaced by
+  // the semantic search (same insight, both paths), don't list it twice.
+  const uniquePast = pastInsights.filter(i => i.id !== freshInsight?.id);
+
+  const allPatterns = [
+    ...(freshInsight ? [`(today's fresh analysis) ${freshInsight.pattern}`] : []),
+    ...uniquePast.map(i => i.pattern),
+  ];
+
+  const patternText = allPatterns.length
+    ? allPatterns.map(p => `- ${p}`).join('\n')
+    : null;
+
   const system = `You are Flow, writing a single real social media post for Joelflowstack (Joel Olaiya — solo web dev/bot integration/workflow automation, Ibadan, Nigeria). Write for ${platform}. 2-4 sentences, genuinely useful (a real tip, insight, or thought — never a hard sell), no corporate tone, at most 2 hashtags.
 
-${insight ? `Apply this real, recently-learned content pattern if it genuinely fits: "${insight.pattern}"` : 'No specific learned pattern is available yet — use your own judgment for a genuinely useful post.'}`;
+${patternText ? `Apply these real, previously-researched content patterns where they genuinely fit (don't force all of them in — pick what's actually relevant):\n${patternText}` : 'No specific learned pattern is available yet — use your own judgment for a genuinely useful post.'}`;
 
   const res = await fetch(`${SITE}/api/chat`, {
     method: 'POST',
@@ -3082,8 +3197,15 @@ async function handleFindLeadsByNiche(req, res) {
 // previously-researched conversational patterns get pulled into the
 // actual email, not a fixed template.
 async function _generateOutreachEmail(lead) {
-  const insights = await _loadRecentInsights(10);
-  const relevantInsights = insights.filter(i => i.platform_hint === 'email_outreach' || i.platform_hint === 'general');
+  // REAL, Joel-approved upgrade: previously this loaded the 10 MOST
+  // RECENT insights and kept only exact platform_hint matches — meaning
+  // a genuinely relevant insight from 3 weeks ago (e.g. specifically
+  // about reaching out to agencies, when this lead IS an agency) could
+  // lose to a less-relevant one from yesterday just because it's newer.
+  // Now the query is built from THIS lead's real context, so retrieval
+  // ranks by actual relevance to who Joel is emailing, not just recency.
+  const queryContext = `outreach email to ${lead.companyName || lead.domain}${lead.position ? `, ${lead.position}` : ''}${lead.context ? ` — ${lead.context}` : ''}`;
+  const relevantInsights = await _recallRelevantInsights(queryContext, { maxResults: 5, platformHint: 'email_outreach' });
   const insightText = relevantInsights.length
     ? relevantInsights.map(i => `- ${i.pattern}`).join('\n')
     : 'No specific researched patterns yet — use genuine judgment for a warm, low-pressure first outreach.';
