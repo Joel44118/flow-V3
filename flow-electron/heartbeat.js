@@ -423,6 +423,16 @@ async function _maybeRunSocialMonitor() {
 // (once the scrapegraph pipeline is connected) — real content
 // intelligence accumulating the same way social-monitor's insights do.
 //
+// REAL UPGRADE, Joel-requested: previously a single fixed topic on a
+// flat 3-day timer. Now a real ROTATION across three genuinely distinct
+// research areas — content strategy, client-conversation/sales skill,
+// and business mindset/strategy — cycling one at a time so Flow is
+// never idle for long stretches, but also never hammering the same
+// topic repeatedly. Runs on IDLE (no real user interaction in the last
+// _IDLE_THRESHOLD_MS), not a flat calendar timer — "whenever Flow is
+// online and not actively being used" is closer to what Joel actually
+// asked for than a fixed multi-day clock.
+//
 // REAL, Joel-requested — happens SILENTLY: no Telegram ping, no native
 // notification for this specific pass, so it genuinely runs "without him
 // knowing" in the moment. It still shows up honestly afterward, though —
@@ -432,17 +442,24 @@ async function _maybeRunSocialMonitor() {
 // that this is happening in the background, without a chattier
 // in-the-moment interruption.
 // ═══════════════════════════════════════════
-const RESEARCH_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000; // real 3-day cadence, elapsed-time based
+const _IDLE_THRESHOLD_MS = 20 * 60 * 1000; // real, 20 min of no interaction before background research is allowed to run — long enough that it never fires mid-conversation
+const _MIN_GAP_BETWEEN_RESEARCH_MS = 6 * 60 * 60 * 1000; // real, honest cap — even if idle the whole day, don't run more than once every 6h, to keep this genuinely "background" rather than constant
+const RESEARCH_TOPICS = ['sales-research', 'content-research', 'mindset-research']; // real rotation order
+
 function _researchStatePath() { return path.join(app.getPath('userData'), 'flow-sales-research-state.json'); }
 
 function _loadResearchState() {
   try {
     const p = _researchStatePath();
-    if (!fs.existsSync(p)) return { lastRunAt: 0 };
-    return JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (!fs.existsSync(p)) return { lastRunAt: 0, nextTopicIndex: 0 };
+    const loaded = JSON.parse(fs.readFileSync(p, 'utf8'));
+    // Real, backward-compatible default for anyone upgrading from the
+    // old single-topic version of this state file.
+    if (typeof loaded.nextTopicIndex !== 'number') loaded.nextTopicIndex = 0;
+    return loaded;
   } catch (e) {
     console.warn('[Heartbeat] Research state load failed (non-fatal):', e.message);
-    return { lastRunAt: 0 };
+    return { lastRunAt: 0, nextTopicIndex: 0 };
   }
 }
 
@@ -454,27 +471,39 @@ function _saveResearchState(state) {
   }
 }
 
+// Real, module-scope tracker of the last time Joel actually sent a
+// message — updated from app.js/ai.js via markUserActivity() (see
+// export below), so "idle" reflects genuine inactivity, not just time
+// since the app opened.
+let _lastUserActivityAt = Date.now();
+function markUserActivity() { _lastUserActivityAt = Date.now(); }
+
 async function _maybeRunSalesResearch() {
   const state = _loadResearchState();
-  if (Date.now() - (state.lastRunAt || 0) < RESEARCH_INTERVAL_MS) return; // not due yet
+  const idleFor = Date.now() - _lastUserActivityAt;
+  const sinceLastRun = Date.now() - (state.lastRunAt || 0);
 
-  console.log('[Heartbeat] Running background sales-conversation research pass (silent)...');
+  if (idleFor < _IDLE_THRESHOLD_MS) return; // real, active conversation — don't interrupt
+  if (sinceLastRun < _MIN_GAP_BETWEEN_RESEARCH_MS) return; // ran recently enough already
+
+  const topic = RESEARCH_TOPICS[state.nextTopicIndex % RESEARCH_TOPICS.length];
+  console.log(`[Heartbeat] Running background research pass (silent, idle ${Math.round(idleFor / 60000)}min) — topic: ${topic}...`);
   try {
-    const res = await fetch(`${VERCEL_URL}/api/social?platform=sales-research`);
+    const res = await fetch(`${VERCEL_URL}/api/social?platform=${topic}`);
     const data = await res.json();
     if (!data.ok) {
-      console.warn('[Heartbeat] Sales-research pass reported failure (non-fatal):', data.error);
+      console.warn(`[Heartbeat] Background research pass (${topic}) reported failure (non-fatal):`, data.error);
     } else {
-      console.log('[Heartbeat] Sales-research pass complete — insight stored, no notification sent (by design).');
+      console.log(`[Heartbeat] Background research pass (${topic}) complete — insight stored, no notification sent (by design).`);
     }
     // Deliberately no sendSelfInitiatedMessage call here at all, on
     // either success or failure — Joel's explicit ask was for this to
     // happen without him knowing in the moment. The EXP bar (via Content
     // Lab picking up the stored insight) is the only visible trace.
   } catch (e) {
-    console.warn('[Heartbeat] Sales-research pass request failed (non-fatal):', e.message);
+    console.warn(`[Heartbeat] Background research pass (${topic}) request failed (non-fatal):`, e.message);
   }
-  _saveResearchState({ lastRunAt: Date.now() });
+  _saveResearchState({ lastRunAt: Date.now(), nextTopicIndex: (state.nextTopicIndex + 1) % RESEARCH_TOPICS.length });
 }
 
 async function _tick(isFirstTick = false) {
@@ -675,4 +704,5 @@ function stopHeartbeat() {
 module.exports = {
   startHeartbeat, stopHeartbeat, setNotificationSink,
   addGoal, listGoals, removeGoal, recordMarketingPost,
+  markUserActivity,
 };
