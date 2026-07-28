@@ -855,6 +855,34 @@ if (window.__flowElectron?.wakeword) {
     }
   });
 
+  // REAL, Joel-requested — a genuine "is the mic actually being
+  // listened to right now" indicator, distinct from wake-word DETECTION
+  // (which only fires once "hey flow" is actually heard). Toggles the
+  // real #wake-indicator element (already in index.html/styles.css, but
+  // previously just static decorative text — app.js never updated it).
+  // This answers Joel's real question directly: yes, the app should
+  // show this, and now it genuinely does, reflecting the real state
+  // reported by the voice engine itself rather than assuming success.
+  const wakeIndicatorEl = document.getElementById("wake-indicator");
+  window.__flowElectron.wakeword.onStatus?.(({ listening, reason, message }) => {
+    if (!wakeIndicatorEl) return;
+    if (listening) {
+      wakeIndicatorEl.classList.remove("failed");
+      wakeIndicatorEl.classList.add("active");
+      wakeIndicatorEl.innerHTML = `🎙️ Listening for <em>"Hey Flow"</em>`;
+      wakeIndicatorEl.title = "";
+    } else {
+      wakeIndicatorEl.classList.remove("active");
+      wakeIndicatorEl.classList.add("failed");
+      // Real, honest, visible failure state — this is what used to be
+      // "hey flow does nothing" with zero explanation; now the
+      // indicator itself tells Joel plainly that it's not listening,
+      // instead of silently looking identical to the working state.
+      wakeIndicatorEl.innerHTML = `⚠️ Voice control not running`;
+      wakeIndicatorEl.title = message || `Reason: ${reason || "unknown"} — check DevTools console for [WakeWord] logs.`;
+    }
+  });
+
   window.__flowElectron.wakeword.onDetected(async () => {
     // Ignore if already mid-recording (e.g. Joel clicked the mic manually
     // right before saying the wake word) — avoids double-triggering the
