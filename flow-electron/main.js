@@ -969,6 +969,13 @@ function startWakeWord() {
     if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(channel, payload);
   });
 
+  // REAL, Joel-reported bug fix: this call's return value was previously
+  // discarded entirely. startVoiceEngine() returns false on real failure
+  // (missing transcribe-cli.exe, SoX binary, or a failed one-time model
+  // download) — with the result ignored, a failure looked IDENTICAL to
+  // "hey flow" simply not being said yet: no error, no notification,
+  // nothing. This is a real, plausible root cause for "hey flow does
+  // nothing" — the engine may never have actually started, silently.
   startVoiceEngine({
     resourcesPath,
     soxBinaryPath,
@@ -998,6 +1005,19 @@ function startWakeWord() {
         downloaded, total, percent: Math.round((downloaded / total) * 100),
       });
     },
+  }).then((started) => {
+    if (started === false) {
+      // Real, honest surfacing — sent to the SAME renderer log channel
+      // used elsewhere in this file, plus a real chat message once the
+      // window exists, so this is never silent again.
+      const msg = '⚠️ Voice engine failed to start — "hey flow" will not work this session. Check the console/logs for the specific reason (missing transcribe-cli.exe, missing sox.exe, or a failed one-time model download).';
+      console.error('[Main]', msg);
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send('heartbeat-message', { text: msg, ts: Date.now() });
+      }
+    }
+  }).catch((e) => {
+    console.error('[Main] startVoiceEngine threw an unexpected error:', e.message);
   });
 }
 
