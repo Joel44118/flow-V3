@@ -167,6 +167,7 @@ export function initThoughtLog() {
   _injectStyles();
   const tab = document.createElement("div");
   tab.id = "thought-log-tab";
+  tab.className = "boot-collapsed"; // real, Joel-reported fix — hidden until core/boot.js reveals it
   tab.title = "Flow's Thoughts";
   tab.textContent = "💭";
   tab.addEventListener("click", () => {
