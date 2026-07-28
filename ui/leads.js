@@ -40,8 +40,6 @@ function _injectStyles() {
 }
 #leads-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
 #leads-tray-tab .lt-tab-icon { font-size: 15px; line-height: 1; }
-#leads-tray-tab .lt-tab-arrow { font-size: 11px; transition: transform 0.2s ease; }
-#leads-tray-tab.lt-tray-open .lt-tab-arrow { transform: rotate(180deg); }
 
 #leads-panel {
   position: fixed; top: 0; left: 0; bottom: 0;
@@ -322,8 +320,9 @@ export function closeLeadsTray() {
 function _buildToggleButton() {
   const tab = document.createElement("div");
   tab.id = "leads-tray-tab";
+  tab.className = "boot-collapsed"; // real, Joel-reported fix — hidden until core/boot.js reveals it
   tab.title = "Prospects";
-  tab.innerHTML = `<span class="lt-tab-icon">💼</span><span class="lt-tab-arrow">▶</span>`;
+  tab.innerHTML = `<span class="lt-tab-icon">💼</span>`;
   tab.addEventListener("click", () => {
     if (isLeadsTrayOpen()) closeLeadsTray();
     else openLeadsTray();
