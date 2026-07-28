@@ -111,9 +111,21 @@ export async function runBootSequence() {
   // top edge and footer down to the real bottom edge simultaneously —
   // reading as one continuous motion pulling apart from the center,
   // exactly as Joel described.
+  // REAL, Joel-reported fix: the four tray tabs (Chats, Leads, Content
+  // Lab, Thought Log) were built later than this boot-overlay system and
+  // never got included in it — they're appended straight to
+  // document.body with their own z-index that happened to tie with the
+  // overlay's, so whichever rendered later (the trays) won and showed
+  // through the boot screen. Same real collapsed-state pattern as
+  // top-bar/footer above: hidden by default via CSS's .boot-collapsed
+  // class, revealed here once boot genuinely finishes.
   overlay.classList.add("boot-done");
   topBar?.classList.remove("boot-collapsed");
   footer?.classList.remove("boot-collapsed");
+  document.getElementById("chat-tray-tab")?.classList.remove("boot-collapsed");
+  document.getElementById("leads-tray-tab")?.classList.remove("boot-collapsed");
+  document.getElementById("content-lab-tray-tab")?.classList.remove("boot-collapsed");
+  document.getElementById("thought-log-tab")?.classList.remove("boot-collapsed");
 
   setTimeout(() => { overlay.style.display = "none"; }, 700); // real: matches the CSS transition duration below, removed after it visually completes rather than an arbitrary guess
 }
