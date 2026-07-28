@@ -35,8 +35,6 @@ function _injectStyles() {
 }
 #chat-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
 #chat-tray-tab .ct-tab-icon { font-size: 15px; line-height: 1; }
-#chat-tray-tab .ct-tab-arrow { font-size: 11px; transition: transform 0.2s ease; }
-#chat-tray-tab.ct-tray-open .ct-tab-arrow { transform: rotate(180deg); }
 `;
   document.head.appendChild(style);
 }
@@ -98,8 +96,9 @@ export function closeChatTray() {
 function _buildToggleButton() {
   const tab = document.createElement("div");
   tab.id = "chat-tray-tab";
+  tab.className = "boot-collapsed"; // real, Joel-reported fix — hidden until core/boot.js reveals it
   tab.title = "Chat";
-  tab.innerHTML = `<span class="ct-tab-icon">💬</span><span class="ct-tab-arrow">▶</span>`;
+  tab.innerHTML = `<span class="ct-tab-icon">💬</span>`;
   tab.addEventListener("click", () => {
     if (isChatTrayOpen()) closeChatTray();
     else openChatTray();
