@@ -21,6 +21,11 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     addGoal:     (description) => ipcRenderer.invoke('heartbeat_add_goal', { description }),
     removeGoal:  (id)    => ipcRenderer.invoke('heartbeat_remove_goal', { id }),
     recordMarketingPost: () => ipcRenderer.invoke('heartbeat_record_marketing_post'),
+    // REAL, Joel-requested — lets the renderer tell the heartbeat "Joel
+    // just did something real," so the background research loop
+    // (content/sales/mindset rotation) only ever fires during genuine
+    // idle time, never interrupting an active conversation.
+    markUserActivity: () => ipcRenderer.send('heartbeat_mark_user_activity'),
     onMessage:   (cb)    => ipcRenderer.on('heartbeat-message', (_e, entry) => cb(entry)),
   },
 
