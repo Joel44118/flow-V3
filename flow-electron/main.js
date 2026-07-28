@@ -493,6 +493,7 @@ ipcMain.handle('heartbeat_list_goals', () => heartbeat.listGoals());
 ipcMain.handle('heartbeat_add_goal', (_e, { description }) => heartbeat.addGoal(description));
 ipcMain.handle('heartbeat_remove_goal', (_e, { id }) => heartbeat.removeGoal(id));
 ipcMain.handle('heartbeat_record_marketing_post', () => heartbeat.recordMarketingPost());
+ipcMain.on('heartbeat_mark_user_activity', () => heartbeat.markUserActivity());
 
 ipcMain.on('win_minimize', () => mainWin?.minimize());
 ipcMain.on('win_maximize', () => { if (!mainWin) return; mainWin.isMaximized() ? mainWin.unmaximize() : mainWin.maximize(); });
