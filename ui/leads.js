@@ -33,13 +33,14 @@ function _injectStyles() {
   width: 28px; height: 84px;
   background: rgba(30,20,55,0.95); border: 1px solid rgba(167,139,250,0.4);
   border-left: none; border-radius: 0 10px 10px 0;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   cursor: pointer; z-index: 9998; color: #a78bfa; font-size: 16px;
   box-shadow: 4px 0 16px rgba(0,0,0,0.35);
   transition: background 0.15s ease, width 0.15s ease;
 }
 #leads-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
-#leads-tray-tab .lt-tab-arrow { transition: transform 0.2s ease; }
+#leads-tray-tab .lt-tab-icon { font-size: 15px; line-height: 1; }
+#leads-tray-tab .lt-tab-arrow { font-size: 11px; transition: transform 0.2s ease; }
 #leads-tray-tab.lt-tray-open .lt-tab-arrow { transform: rotate(180deg); }
 
 #leads-panel {
@@ -295,6 +296,21 @@ export function openLeadsTray() {
     panel.classList.add("lt-open");
     document.getElementById("leads-tray-tab")?.classList.add("lt-tray-open");
   });
+  _bindOutsideClickClose();
+}
+
+// REAL, Joel-requested — tapping anywhere outside the tray (and outside
+// its own tab button) closes it. Bound once, not per-open.
+let _outsideClickBound = false;
+function _bindOutsideClickClose() {
+  if (_outsideClickBound) return;
+  _outsideClickBound = true;
+  document.addEventListener("mousedown", (e) => {
+    if (!_panelEl?.classList.contains("lt-open")) return;
+    const tab = document.getElementById("leads-tray-tab");
+    if (_panelEl.contains(e.target) || tab?.contains(e.target)) return;
+    closeLeadsTray();
+  });
 }
 
 export function closeLeadsTray() {
@@ -307,7 +323,7 @@ function _buildToggleButton() {
   const tab = document.createElement("div");
   tab.id = "leads-tray-tab";
   tab.title = "Prospects";
-  tab.innerHTML = `<span class="lt-tab-arrow">▶</span>`;
+  tab.innerHTML = `<span class="lt-tab-icon">💼</span><span class="lt-tab-arrow">▶</span>`;
   tab.addEventListener("click", () => {
     if (isLeadsTrayOpen()) closeLeadsTray();
     else openLeadsTray();
