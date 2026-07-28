@@ -1116,58 +1116,112 @@ ${insight ? `Apply this real, recently-learned content pattern if it genuinely f
 }
 
 // ═══════════════════════════════════════════
-// REAL, NEW — Sales-conversation research pass. Genuinely separate from
-// social-monitor's niche-content research above: this specifically
-// researches how to hold a stable, effective conversation with prospects
-// and buyers (not social content patterns), and stores the result as a
-// real insight using the SAME storage system social-monitor already
-// uses — so it accumulates in the same growing pool of content
-// intelligence, and future prospect-outreach drafts (once scrapegraph is
-// connected) can draw on it the same way social drafts already do.
+// REAL, UPGRADED — Background research now covers THREE genuinely
+// distinct topics, rotating one per idle pass (see heartbeat.js's
+// RESEARCH_TOPICS array): sales/client-conversation skill (original),
+// content strategy (what's working in the web-dev/bot-builder niche —
+// distinct from social-monitor's OWN-performance analysis above), and
+// business mindset/strategy (broader freelance-business thinking, not
+// tied to any one channel). Each stores a real insight via the same
+// _saveInsight system, so all three accumulate into the same growing
+// pool that feeds outreach emails, social drafts, and Content Lab's XP
+// tracking — genuinely one system, three input topics.
 //
-// Called on its own 3-day cadence from the Electron heartbeat, silently
-// (no Telegram/native notification by design — see heartbeat.js).
+// Called from the Electron heartbeat only when genuinely idle (no real
+// Joel interaction in the last 20 min), silently — no Telegram/native
+// notification by design (see heartbeat.js).
 // ═══════════════════════════════════════════
-async function _researchSalesConversation() {
-  const results = await Promise.all([
-    fetch(`${SITE}/api/search?q=${encodeURIComponent('how to have effective sales conversations with prospects 2026')}&mode=deep`).then(r => r.json()).catch(() => ({ results: [] })),
-    fetch(`${SITE}/api/search?q=${encodeURIComponent('best practices following up with leads over email without being pushy')}&mode=deep`).then(r => r.json()).catch(() => ({ results: [] })),
-  ]);
+const RESEARCH_TOPIC_CONFIG = {
+  'sales-research': {
+    queries: [
+      'how to have effective sales conversations with prospects 2026',
+      'best practices following up with leads over email without being pushy',
+    ],
+    focus: 'how to talk to prospects/buyers effectively — for Joel Olaiya, a solo web dev/bot integration/workflow automation freelancer (Joelflowstack) who follows up with leads and maintains client conversations over email',
+    platformHint: 'email_outreach',
+  },
+  'content-research': {
+    queries: [
+      'what content is working for indie web developers and bot builders on social media 2026',
+      'how solo freelance developers build an audience online 2026',
+    ],
+    focus: 'what kind of content genuinely works for a solo web dev/bot-builder freelancer trying to grow an audience and attract clients online',
+    platformHint: 'general',
+  },
+  'mindset-research': {
+    queries: [
+      'freelance developer business strategy pricing positioning 2026',
+      'how solo software freelancers scale beyond trading time for money',
+    ],
+    focus: 'business strategy and mindset for a solo freelance web dev/bot-builder — pricing, positioning, scaling beyond one-off client work',
+    platformHint: 'general',
+  },
+};
+
+async function _runResearchPass(topicKey) {
+  const config = RESEARCH_TOPIC_CONFIG[topicKey];
+  if (!config) throw new Error(`Unknown research topic: ${topicKey}`);
+
+  const results = await Promise.all(
+    config.queries.map(q =>
+      fetch(`${SITE}/api/search?q=${encodeURIComponent(q)}&mode=deep`).then(r => r.json()).catch(() => ({ results: [] }))
+    )
+  );
   const combined = results.flatMap(r => (r.results || []).slice(0, 4).map(x => ({ title: x.title, snippet: (x.snippet || '').slice(0, 300) })));
-  return combined;
+
+  const system = `You are extracting ONE genuinely useful, specific pattern about ${config.focus}. Not a summary — one real, actionable insight Joel can apply.
+
+Reply with ONLY this JSON, no other text:
+{"pattern": "one concise sentence describing the real pattern you found", "platform_hint": "${config.platformHint}", "confidence": "low"|"medium"|"high"}`;
+
+  const dataDump = JSON.stringify(combined, null, 2).slice(0, 5000);
+  const chatRes = await fetch(`${SITE}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: `Real research to analyze:\n${dataDump}` },
+      ],
+      max_tokens: 200,
+    }),
+  });
+  const chatData = await chatRes.json();
+  if (!chatData.reply || typeof chatData.reply !== 'string') throw new Error(`${topicKey} insight extraction returned an empty or malformed reply.`);
+  const match = chatData.reply.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error(`${topicKey} insight extraction did not return the expected JSON format.`);
+  return JSON.parse(match[0]);
 }
 
 async function handleSalesResearch(req, res) {
   try {
-    const searchResults = await _researchSalesConversation();
-
-    const system = `You are extracting ONE genuinely useful, specific pattern about how to talk to prospects/buyers effectively — for Joel Olaiya, a solo web dev/bot integration/workflow automation freelancer (Joelflowstack) who follows up with leads and maintains client conversations over email. Not a summary — one real, actionable insight he can apply the next time he emails a prospect or client.
-
-Reply with ONLY this JSON, no other text:
-{"pattern": "one concise sentence describing the real conversational/sales pattern you found", "platform_hint": "email_outreach", "confidence": "low"|"medium"|"high"}`;
-
-    const dataDump = JSON.stringify(searchResults, null, 2).slice(0, 5000);
-    const chatRes = await fetch(`${SITE}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: `Real research to analyze:\n${dataDump}` },
-        ],
-        max_tokens: 200,
-      }),
-    });
-    const chatData = await chatRes.json();
-    if (!chatData.reply || typeof chatData.reply !== 'string') throw new Error('Sales-research insight extraction returned an empty or malformed reply.');
-    const match = chatData.reply.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('Sales-research insight extraction did not return the expected JSON format.');
-    const insight = JSON.parse(match[0]);
-
+    const insight = await _runResearchPass('sales-research');
     const insightId = await _saveInsight(insight);
     return res.status(200).json({ ok: true, insightId, insight });
   } catch (e) {
     console.error('[SalesResearch] Real failure:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+async function handleContentResearch(req, res) {
+  try {
+    const insight = await _runResearchPass('content-research');
+    const insightId = await _saveInsight(insight);
+    return res.status(200).json({ ok: true, insightId, insight });
+  } catch (e) {
+    console.error('[ContentResearch] Real failure:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+async function handleMindsetResearch(req, res) {
+  try {
+    const insight = await _runResearchPass('mindset-research');
+    const insightId = await _saveInsight(insight);
+    return res.status(200).json({ ok: true, insightId, insight });
+  } catch (e) {
+    console.error('[MindsetResearch] Real failure:', e.message);
     return res.status(500).json({ ok: false, error: e.message });
   }
 }
@@ -3285,6 +3339,8 @@ export default async function handler(req, res) {
   if (platform === 'autopost')      return handleAutoPost(req, res);
   if (platform === 'social-monitor') return handleSocialMonitor(req, res);
   if (platform === 'sales-research') return handleSalesResearch(req, res);
+  if (platform === 'content-research') return handleContentResearch(req, res);
+  if (platform === 'mindset-research') return handleMindsetResearch(req, res);
   if (platform === 'insights')       return handleInsights(req, res);
   if (platform === 'social-drafts')  return handleSocialDrafts(req, res);
   if (platform === 'social-draft-approve') return handleSocialDraftApprove(req, res);
