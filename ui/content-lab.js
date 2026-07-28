@@ -316,8 +316,6 @@ function _injectStyles() {
 }
 #content-lab-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
 #content-lab-tray-tab .cl-tab-icon { font-size: 15px; line-height: 1; }
-#content-lab-tray-tab .cl-tab-arrow { font-size: 11px; transition: transform 0.2s ease; }
-#content-lab-tray-tab.cl-tray-open .cl-tab-arrow { transform: rotate(180deg); }
 
 #content-lab-panel {
   /* REAL, full redesign: fixed to the right edge, spans the ENTIRE
@@ -1667,8 +1665,9 @@ export function isContentLabOpen() {
 function _buildToggleButton() {
   const tab = document.createElement("div");
   tab.id = "content-lab-tray-tab";
+  tab.className = "boot-collapsed"; // real, Joel-reported fix — hidden until core/boot.js reveals it
   tab.title = "Content Lab";
-  tab.innerHTML = `<span class="cl-tab-icon">📊</span><span class="cl-tab-arrow">◀</span>`;
+  tab.innerHTML = `<span class="cl-tab-icon">📊</span>`;
   tab.addEventListener("click", () => {
     if (isContentLabOpen()) closeContentLab();
     else openContentLab();
