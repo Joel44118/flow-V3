@@ -19,7 +19,7 @@ import {
   parseCommand, parseVisionCommand, parseSearchGoalCommand,
   handleRepoCommand, handleScaffoldCommand, handlePushCommand,
   handleEditCommand, confirmPendingEdit,
-  checkPendingPush, setHistoryFn, getTime, getDate
+  checkPendingPush, setHistoryFn, getTime, getDate, setTrayHandlers
 } from "./core/commands.js";
 
 import { Chat }        from "./ui/chat.js";
@@ -30,10 +30,10 @@ import { initStagedFiles, stageFiles, clearStaged, getStagedFiles, hasStagedFile
 import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
 import { initVideoGen, generateVideo, generateVideoFromImage } from "./ui/videogen.js";
 import { initMarketing, generateMarketingPost } from "./ui/marketing.js";
-import { initContentLab, openContentLab, closeContentLab, isContentLabOpen } from "./ui/content-lab.js";
-import { initThoughtLog } from "./ui/thought-log.js";
-import { initLeadsTray } from "./ui/leads.js";
-import { initChatTray } from "./ui/chat-tray.js";
+import { initContentLab, openContentLab, closeContentLab, isContentLabOpen, pollAllInsights } from "./ui/content-lab.js";
+import { initThoughtLog, openThoughtLog } from "./ui/thought-log.js";
+import { initLeadsTray, openLeadsTray } from "./ui/leads.js";
+import { initChatTray, openChatTray } from "./ui/chat-tray.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -548,6 +548,20 @@ initContentLab(Chat, Orb);
 initThoughtLog();
 initLeadsTray();
 initChatTray();
+setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray);
+
+// REAL, Joel-requested — polls for new research insights (content/sales/
+// mindset rotation from the Electron heartbeat) on its OWN interval,
+// independent of whether Content Lab's tray happens to be open. This is
+// specifically so the footer's LV.{level} badge reflects background
+// research promptly — Joel's real ask was to be able to confirm Flow is
+// actually getting smarter, which requires this to run regardless of
+// which tray (if any) is open, not just as a side effect of opening
+// Content Lab. Every 60s — background research itself is capped at once
+// per 6h per topic (see heartbeat.js), so this only needs to be frequent
+// enough to catch that promptly, not aggressively frequent.
+setInterval(() => pollAllInsights(), 60 * 1000);
+pollAllInsights(); // real, immediate first check on boot, not waiting a full 60s
 initKnowledge(Chat);
 initProjects(Chat, (t) => sendToAI(t));
 
@@ -654,6 +668,12 @@ const sendBtn = document.getElementById("send-btn");
 const micBtn  = document.getElementById("mic-btn");
 
 async function doSend() {
+  // REAL, Joel-requested — tells the Electron heartbeat this is genuine
+  // real user activity, so the background research rotation (content/
+  // sales/mindset) only runs during real idle time, never mid-conversation.
+  // No-op safely on web (window.__flowElectron doesn't exist there).
+  window.__flowElectron?.heartbeat?.markUserActivity?.();
+
   // Check if a slash chip is active first
   const slash = getSlashState();
   if (slash) {
