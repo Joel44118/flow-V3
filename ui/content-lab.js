@@ -309,13 +309,14 @@ function _injectStyles() {
   width: 28px; height: 84px;
   background: rgba(30,20,55,0.95); border: 1px solid rgba(167,139,250,0.4);
   border-right: none; border-radius: 10px 0 0 10px;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   cursor: pointer; z-index: 9998; color: #a78bfa; font-size: 16px;
   box-shadow: -4px 0 16px rgba(0,0,0,0.35);
   transition: background 0.15s ease, width 0.15s ease;
 }
 #content-lab-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
-#content-lab-tray-tab .cl-tab-arrow { transition: transform 0.2s ease; }
+#content-lab-tray-tab .cl-tab-icon { font-size: 15px; line-height: 1; }
+#content-lab-tray-tab .cl-tab-arrow { font-size: 11px; transition: transform 0.2s ease; }
 #content-lab-tray-tab.cl-tray-open .cl-tab-arrow { transform: rotate(180deg); }
 
 #content-lab-panel {
@@ -1236,7 +1237,17 @@ function _saveAwardedSet(key, set) {
 // an insight that's both stored here AND later attached to a social
 // draft still only ever awards its small XP once, whichever poll sees it
 // first.
-async function _pollAllInsights() {
+//
+// REAL, Joel-requested — EXPORTED so app.js can run this independent of
+// whether Content Lab's tray is open. Previously this only ran as a side
+// effect of _pollSocialDrafts, which only fires while the Content Lab
+// tray is actively open — meaning the background research rotation
+// (content/sales/mindset, all silent by design) could run for hours
+// without Joel's EXP bar reflecting it, since nothing was polling. Now
+// app.js calls this directly on its own interval regardless of which
+// tray (if any) is open, so the footer's LV.{level} badge updates
+// promptly and Joel can actually confirm research is happening.
+export async function pollAllInsights() {
   try {
     const res = await fetch("/api/social?platform=insights");
     const data = await res.json();
@@ -1293,7 +1304,7 @@ async function _pollSocialDrafts(listEl) {
     }
 
     _renderDraftCards(listEl, drafts);
-    await _pollAllInsights(); // catches standalone insights (e.g. sales-research) missed by the draft-only pass above
+    await pollAllInsights(); // catches standalone insights (e.g. sales-research) missed by the draft-only pass above
   } catch (e) {
     console.warn("[ContentLab] Draft poll failed (non-fatal):", e.message);
   }
@@ -1614,6 +1625,24 @@ export function openContentLab() {
   // since the element was just added to the DOM in the same frame.
   requestAnimationFrame(() => panel.classList.add("cl-open"));
   document.getElementById("content-lab-tray-tab")?.classList.add("cl-tray-open");
+  _bindOutsideClickClose();
+}
+
+// REAL, Joel-requested — tapping anywhere outside the tray (and outside
+// its own tab button, so re-clicking the tab to close still works
+// normally rather than being swallowed by this listener) closes it. Bound
+// once, not per-open, and checked against _panelEl's live open state so
+// it's a real no-op when the tray is already closed.
+let _outsideClickBound = false;
+function _bindOutsideClickClose() {
+  if (_outsideClickBound) return;
+  _outsideClickBound = true;
+  document.addEventListener("mousedown", (e) => {
+    if (!_panelEl?.classList.contains("cl-open")) return;
+    const tab = document.getElementById("content-lab-tray-tab");
+    if (_panelEl.contains(e.target) || tab?.contains(e.target)) return;
+    closeContentLab();
+  });
 }
 
 export function closeContentLab() {
@@ -1639,7 +1668,7 @@ function _buildToggleButton() {
   const tab = document.createElement("div");
   tab.id = "content-lab-tray-tab";
   tab.title = "Content Lab";
-  tab.innerHTML = `<span class="cl-tab-arrow">◀</span>`;
+  tab.innerHTML = `<span class="cl-tab-icon">📊</span><span class="cl-tab-arrow">◀</span>`;
   tab.addEventListener("click", () => {
     if (isContentLabOpen()) closeContentLab();
     else openContentLab();
