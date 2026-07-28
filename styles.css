@@ -366,6 +366,16 @@ body::after {
   color:var(--green);
   text-shadow:0 0 14px var(--green),0 0 32px rgba(74,222,128,0.4);
 }
+/* REAL, Joel-requested — a genuine, visually distinct failure state so
+   a broken voice engine is immediately obvious (amber/red glow) rather
+   than looking like the same dim, ambiguous default text it used to
+   show whether the engine was working or not. pointer-events is
+   re-enabled here specifically so the title tooltip (the real failure
+   reason) is actually hoverable, unlike the base rule above. */
+#wake-indicator.failed {
+  color:#f59e0b; text-shadow:0 0 10px rgba(245,158,11,0.5);
+  pointer-events:auto; cursor:help;
+}
 #wake-indicator em { font-style:normal; color:rgba(56,189,248,0.45); }
 #status-wrap { display:flex; align-items:center; gap:6px; font-family:var(--fd); font-size:9px; letter-spacing:.2em; opacity:.5; }
 #status-dot  { width:6px; height:6px; border-radius:50%; background:var(--green); box-shadow:0 0 8px var(--green); animation:pdot 2s infinite; }
