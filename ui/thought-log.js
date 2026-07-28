@@ -137,10 +137,26 @@ export function openThoughtLog() {
   document.getElementById("thought-log-tab")?.classList.add("tl-tray-open");
 
   _renderList(list);
+  _bindOutsideClickClose();
 }
 
 export function closeThoughtLog() {
   if (_panelEl) _panelEl.classList.remove("tl-open");
+  document.getElementById("thought-log-tab")?.classList.remove("tl-tray-open");
+}
+
+// REAL, Joel-requested — tapping anywhere outside the tray (and outside
+// its own tab button) closes it. Bound once, not per-open.
+let _outsideClickBound = false;
+function _bindOutsideClickClose() {
+  if (_outsideClickBound) return;
+  _outsideClickBound = true;
+  document.addEventListener("mousedown", (e) => {
+    if (!_panelEl?.classList.contains("tl-open")) return;
+    const tab = document.getElementById("thought-log-tab");
+    if (_panelEl.contains(e.target) || tab?.contains(e.target)) return;
+    closeThoughtLog();
+  });
 }
 
 export function isThoughtLogOpen() {
