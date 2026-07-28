@@ -28,13 +28,14 @@ function _injectStyles() {
   width: 28px; height: 84px;
   background: rgba(30,20,55,0.95); border: 1px solid rgba(167,139,250,0.4);
   border-left: none; border-radius: 0 10px 10px 0;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   cursor: pointer; z-index: 9998; color: #a78bfa; font-size: 16px;
   box-shadow: 4px 0 16px rgba(0,0,0,0.35);
   transition: background 0.15s ease, width 0.15s ease;
 }
 #chat-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
-#chat-tray-tab .ct-tab-arrow { transition: transform 0.2s ease; }
+#chat-tray-tab .ct-tab-icon { font-size: 15px; line-height: 1; }
+#chat-tray-tab .ct-tab-arrow { font-size: 11px; transition: transform 0.2s ease; }
 #chat-tray-tab.ct-tray-open .ct-tab-arrow { transform: rotate(180deg); }
 `;
   document.head.appendChild(style);
@@ -74,6 +75,21 @@ export function openChatTray() {
   });
 }
 
+// REAL, Joel-requested — tapping anywhere outside the tray (and outside
+// its own tab button) closes it. Bound once at init, not per-open, since
+// initChatTray() already builds the panel eagerly.
+let _outsideClickBound = false;
+function _bindOutsideClickClose() {
+  if (_outsideClickBound) return;
+  _outsideClickBound = true;
+  document.addEventListener("mousedown", (e) => {
+    if (!_panelEl?.classList.contains("ct-open")) return;
+    const tab = document.getElementById("chat-tray-tab");
+    if (_panelEl.contains(e.target) || tab?.contains(e.target)) return;
+    closeChatTray();
+  });
+}
+
 export function closeChatTray() {
   if (_panelEl) _panelEl.classList.remove("ct-open");
   document.getElementById("chat-tray-tab")?.classList.remove("ct-tray-open");
@@ -83,7 +99,7 @@ function _buildToggleButton() {
   const tab = document.createElement("div");
   tab.id = "chat-tray-tab";
   tab.title = "Chat";
-  tab.innerHTML = `<span class="ct-tab-arrow">▶</span>`;
+  tab.innerHTML = `<span class="ct-tab-icon">💬</span><span class="ct-tab-arrow">▶</span>`;
   tab.addEventListener("click", () => {
     if (isChatTrayOpen()) closeChatTray();
     else openChatTray();
@@ -107,4 +123,5 @@ export function initChatTray() {
   if (colRight) panel.appendChild(colRight);
   document.body.appendChild(panel);
   _panelEl = panel;
+  _bindOutsideClickClose();
 }
