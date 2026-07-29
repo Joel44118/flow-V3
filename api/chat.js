@@ -1114,12 +1114,98 @@ async function _recallMemory(query, { maxResults = 5 } = {}) {
 }
 
 
+
+// ═══════════════════════════════════════════════════════════════
+// LEAD CAPTURE — the public portfolio site's entry popup posts here.
+// A public action (no ADMIN_SECRET needed — visitors are submitting
+// their own contact info, not doing anything privileged), handled and
+// returned BEFORE the AI-provider chain below, so it never touches
+// Groq/Cerebras/etc and costs nothing.
+//
+// Appends to content/leads.json in the joelflowstack-portfolio repo
+// via GitHub's Contents API directly, using the same GITHUB_TOKEN this
+// file already needs for other things. Deliberately NOT routed through
+// api/github.js's put-file mode — that endpoint takes an arbitrary
+// owner/repo/path from the caller with no auth of its own (a known,
+// already-flagged risk), so nothing here goes near it. This handler
+// hardcodes the one target file and nothing else is ever writable
+// through it.
+// ═══════════════════════════════════════════════════════════════
+const LEADS_OWNER = 'joelflowstack';
+const LEADS_REPO  = 'joelflowstack-portfolio';
+const LEADS_PATH  = 'content/leads.json';
+
+function _isValidEmail(s) {
+  return typeof s === 'string' && s.length < 200 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
+async function _captureLead(body, res) {
+  const { name = '', email, interest = '', page = '', honeypot } = body.lead || {};
+  // Honeypot: a hidden field real visitors never see or fill in. Any
+  // value here means it's a bot — reply success anyway so it doesn't
+  // learn to adapt, just don't actually store it.
+  if (honeypot) return res.status(200).json({ ok: true });
+  if (!_isValidEmail(email)) return res.status(400).json({ error: 'A valid email is required.' });
+
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) return res.status(500).json({ error: 'Lead storage is not configured.' });
+
+  const ghHeaders = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'Flow-V3',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+  const contentsUrl = `https://api.github.com/repos/${LEADS_OWNER}/${LEADS_REPO}/contents/${LEADS_PATH}`;
+
+  let leads = [];
+  let sha;
+  try {
+    const existing = await fetch(contentsUrl, { headers: ghHeaders });
+    if (existing.ok) {
+      const data = await existing.json();
+      sha = data.sha;
+      leads = JSON.parse(Buffer.from(data.content, 'base64').toString('utf-8')).leads || [];
+    }
+    // a 404 here just means leads.json doesn't exist yet — leads stays [], sha stays undefined (create, not update)
+  } catch (_) { /* malformed existing file — non-fatal, we still append below */ }
+
+  leads.push({
+    name:     String(name).slice(0, 120),
+    email:    email.slice(0, 200),
+    interest: String(interest).slice(0, 120),
+    page:     String(page).slice(0, 120),
+    ts:       new Date().toISOString(),
+  });
+
+  const payload = {
+    message: `New lead: ${email}`,
+    content: Buffer.from(JSON.stringify({ leads }, null, 2), 'utf-8').toString('base64'),
+    branch: 'main',
+  };
+  if (sha) payload.sha = sha;
+
+  const put = await fetch(contentsUrl, {
+    method: 'PUT',
+    headers: { ...ghHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!put.ok) {
+    const err = await put.json().catch(() => ({}));
+    console.error('[Flow] lead capture GitHub write failed:', err.message);
+    return res.status(502).json({ error: 'Could not save the lead right now.' });
+  }
+  return res.status(200).json({ ok: true });
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')    return res.status(405).json({ error: 'POST only' });
+
+  if (req.body?.action === 'capture_lead') return _captureLead(req.body, res);
 
   const CB_KEY = process.env.CEREBRAS_API_KEY;
   const NV_KEY = process.env.NVIDIA_API_KEY;
