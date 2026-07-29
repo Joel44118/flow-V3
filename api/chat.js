@@ -413,6 +413,34 @@ const FLOW_TOOLS = [
       },
     },
   },
+  // ═══════════════════════════════════════════
+  // REAL, NEW — Joel-reported bug fix: Flow had NO real web-search tool
+  // at all. When asked to "research" something, the model had nothing
+  // real to call and fabricated a plausible-looking but entirely fake
+  // tool invocation as plain text (e.g. "google_search_web(query=...)")
+  // — a real, confirmed LLM failure mode when a model has seen
+  // function-calling syntax in training but isn't actually given a
+  // matching tool. This is the genuine fix: a real tool, backed by
+  // api/search.js's existing DuckDuckGo + Google News RSS search (the
+  // same engine already used by core/intel.js and the social-monitor/
+  // sales-research background passes), now actually wired into normal
+  // chat's tool-calling loop.
+  // ═══════════════════════════════════════════
+  {
+    type: 'function',
+    function: {
+      name: 'search_web',
+      description: "Search the real web for current information — news, facts, trends, or anything you don't already know or that could have changed since your training data. Call this whenever Joel asks you to research, look up, find out about, or get current information on something. Returns real search results (titles, snippets, sources) for you to read and synthesize into an actual answer — this does NOT answer the question for you, you still need to write the real response using what comes back.",
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What to search for — a specific, focused query, not the full original question verbatim.' },
+          mode: { type: 'string', enum: ['quick', 'deep', 'news'], description: "quick = fast general search (default), deep = broader/more thorough (general + news combined), news = targeted recent news. Use 'deep' for genuine research requests, 'news' for current-events questions, 'quick' otherwise." },
+        },
+        required: ['query'],
+      },
+    },
+  },
   // REAL, Joel-requested feature — send an email on command. Reading is
   // handled separately (automatic, constant polling in flow-electron/
   // heartbeat.js, not through this tool). This is purely for the
@@ -552,6 +580,35 @@ async function executeFlowTool(toolName, args) {
         ? result.map(r => `[${new Date(r.ts).toLocaleDateString()}] ${r.text}`).join('\n')
         : 'Nothing relevant found in memory for that.',
     };
+  }
+  if (toolName === 'search_web') {
+    // REAL, genuinely server-side — calls api/search.js directly (same
+    // real DuckDuckGo + Google News engine already used elsewhere in
+    // this codebase), folded in as a direct fetch rather than importing
+    // search.js's internals, matching the exact same cross-file-call
+    // pattern send_email already uses for api/social.js below. This is
+    // the actual fix for the hallucinated-tool-call bug — Flow now has
+    // a REAL search capability to reach for instead of fabricating one.
+    try {
+      const query = args?.query || '';
+      const mode = ['quick', 'deep', 'news'].includes(args?.mode) ? args.mode : 'quick';
+      if (!query.trim()) return { handled: true, result: 'No search query provided.' };
+
+      const searchRes = await fetch(`${process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://flow-v3-mu.vercel.app'}/api/search?q=${encodeURIComponent(query)}&mode=${mode}`);
+      const searchData = await searchRes.json();
+      if (searchData.error) return { handled: true, result: `Search failed: ${searchData.error}` };
+
+      const results = searchData.results || [];
+      if (!results.length) return { handled: true, result: `No real results found for "${query}".` };
+
+      const formatted = results.slice(0, 8).map((r, i) =>
+        `${i + 1}. ${r.title}${r.pub ? ` [${new Date(r.pub).toLocaleDateString()}]` : ''}\n   ${r.snippet}${r.url ? `\n   Source: ${r.url}` : ''}`
+      ).join('\n\n');
+
+      return { handled: true, result: `Real search results for "${query}":\n\n${formatted}` };
+    } catch (e) {
+      return { handled: true, result: `Real error searching the web: ${e.message}` };
+    }
   }
   if (toolName === 'send_email') {
     // REAL, genuinely server-side — calls the actual Gmail send
@@ -731,6 +788,16 @@ const OR_MODELS = {
 const OR_TOKENS = { code: 8000, research: 4000, creative: 1600, pdf: 1200, chat: 2200 };
 
 async function tryOpenRouter(messages, intent, key) {
+  // REAL, HONEST GAP — flagged, not silently left: unlike tryCerebras
+  // above, this provider offers NO tools at all (no FLOW_TOOLS in the
+  // request body, no tool_calls handling in the response). If Cerebras
+  // (the FIRST provider tried) is ever down/rate-limited and a request
+  // falls through to OpenRouter, EVERY tool — including the new
+  // search_web fix for the hallucinated-tool-call bug — silently
+  // disappears again until Cerebras recovers. Confirmed, scoped, real;
+  // not fixed in this pass because each fallback provider likely has a
+  // different real tool-calling response shape that needs individual
+  // verification, not a blind copy-paste of Cerebras's exact loop.
   const models    = OR_MODELS[intent] || OR_MODELS.chat;
   const maxTokens = OR_TOKENS[intent] || 600;
   for (const model of models) {
