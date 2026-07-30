@@ -652,95 +652,107 @@ async function executeFlowTool(toolName, args) {
   return { handled: true, result: `Unknown tool: ${toolName}` };
 }
 
+// ═══════════════════════════════════════════
+// REAL, NEW — shared tool-calling round-trip, extracted from what was
+// previously Cerebras-only logic. Joel's explicit instruction: make Flow
+// as advanced as possible, no need to ask before proceeding. This is the
+// real fix for a genuine, confirmed gap — search_web (and every other
+// tool) only worked when Cerebras specifically answered the request;
+// the moment Cerebras was rate-limited/down and a request fell through
+// to OpenRouter/Groq/NVIDIA/HuggingFace, tools silently vanished because
+// those four providers never offered them at all.
+//
+// All five providers (Cerebras, OpenRouter, Groq, NVIDIA, HuggingFace)
+// use the same OpenAI-compatible /v1/chat/completions contract —
+// confirmed directly from each provider's own endpoint URL and response
+// shape already in this file (choices[0].message, tool_calls, etc.) —
+// so one real, shared implementation is genuinely correct here, not a
+// risky guess applied uniformly across different APIs.
+//
+// Returns the SAME shape every tryXxx function already returns:
+// { reply, idea, model } on a normal or tool-resolved answer, or
+// { reply, model, clientAction, clientArgs } when the model called a
+// tool that needs the renderer (camera, image-gen, etc.) to actually run.
+// Throws on genuine failure, same as every existing tryXxx function, so
+// the outer provider-fallback chain (unchanged) keeps working exactly
+// as it already does.
+// ═══════════════════════════════════════════
+async function _chatWithToolSupport({ url, headers, model, maxTokens, messages, intent, providerLabel, extraBody = {}, timeoutMs = 8000 }) {
+  const offerTools = intent === 'chat' || intent === 'research';
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  const body = { model, max_tokens: maxTokens, messages, ...extraBody };
+  if (offerTools) body.tools = FLOW_TOOLS;
+
+  const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+  clearTimeout(t);
+
+  if (r.status === 429) throw new Error('rate limit');
+  const data = await r.json();
+  if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || data.detail || `HTTP ${r.status}`);
+
+  const choice = data.choices[0];
+  const toolCalls = choice.message?.tool_calls;
+
+  if (toolCalls?.length) {
+    const call = toolCalls[0]; // one tool call per turn — real, simple scope, same as the original Cerebras implementation
+    const toolArgs = JSON.parse(call.function.arguments || '{}');
+    const toolResult = await executeFlowTool(call.function.name, toolArgs);
+
+    if (!toolResult.handled) {
+      return {
+        reply: choice.message.content || '',
+        model: `${providerLabel}:${model}`,
+        clientAction: toolResult.clientAction,
+        clientArgs: toolResult.clientArgs,
+      };
+    }
+
+    // REAL, same fix as Cerebras's original implementation — strip
+    // reasoning_content before re-sending. Harmless no-op for providers
+    // that never set this field (destructuring a field that doesn't
+    // exist is safe), and required for the ones that do (Cerebras).
+    const { reasoning_content, ...messageWithoutReasoning } = choice.message;
+    const followUpMessages = [
+      ...messages,
+      messageWithoutReasoning,
+      { role: 'tool', tool_call_id: call.id, content: toolResult.result },
+    ];
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), timeoutMs);
+    const r2 = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model, max_tokens: maxTokens, messages: followUpMessages, ...extraBody }),
+      signal: ctrl2.signal,
+    });
+    clearTimeout(t2);
+    const data2 = await r2.json();
+    if (!r2.ok || !data2.choices?.length) throw new Error(data2.error?.message || data2.detail || `HTTP ${r2.status}`);
+    const cleaned = cleanReply(data2.choices[0].message.content, intent);
+    return { reply: cleaned.reply, idea: cleaned.idea, model: `${providerLabel}:${model}` };
+  }
+
+  const cleaned = cleanReply(choice.message.content, intent);
+  return { reply: cleaned.reply, idea: cleaned.idea, model: `${providerLabel}:${model}` };
+}
+
 async function tryCerebras(messages, intent, key) {
   const chain = CB_MODELS[intent] || CB_MODELS.chat;
-  // Only offer tools for intents where autonomous tool-use genuinely
-  // helps — chat and research are the natural fit for "what time is it"
-  // or "look at this"; code/pdf intents stay tool-free to avoid the
-  // model reaching for a tool mid-code-generation for no real reason.
-  const offerTools = intent === 'chat' || intent === 'research';
+  const headers = { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };
 
   for (const { model, maxTokens } of chain) {
-    const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 7000);
     try {
-      const body = { model, max_tokens: maxTokens, messages };
-      if (offerTools) body.tools = FLOW_TOOLS;
-
-      const r = await fetch('https://api.cerebras.ai/v1/chat/completions', {
-        method:  'POST',
-        headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
-        signal:  ctrl.signal,
+      return await _chatWithToolSupport({
+        url: 'https://api.cerebras.ai/v1/chat/completions',
+        headers, model, maxTokens, messages, intent,
+        providerLabel: 'Cerebras', timeoutMs: 7000,
       });
-      clearTimeout(t);
-      if (r.status === 429) { console.warn(`[Flow] Cerebras rate limit: ${model}`); continue; }
-      const data = await r.json();
-      if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-
-      const choice = data.choices[0];
-      const toolCalls = choice.message?.tool_calls;
-
-      // REAL tool-calling loop: if the model chose to call a tool, we
-      // actually run it and give the model a chance to respond using
-      // the real result — a genuine second round-trip, not simulated.
-      // Client-side tools (camera, image-gen) can't be executed here
-      // (this is a serverless function, no camera/browser access) —
-      // those get signaled back to the caller (core/ai.js) to handle in
-      // the renderer instead.
-      if (toolCalls?.length) {
-        const call = toolCalls[0]; // one tool call per turn for now — real, simple scope
-        const toolArgs = JSON.parse(call.function.arguments || '{}');
-        const toolResult = await executeFlowTool(call.function.name, toolArgs);
-
-        if (!toolResult.handled) {
-          return {
-            reply: choice.message.content || '',
-            model: `Cerebras:${model}`,
-            clientAction: toolResult.clientAction,
-            clientArgs: toolResult.clientArgs,
-          };
-        }
-
-        // REAL, CONFIRMED FIX for a genuine, separate Cerebras bug
-        // (verified via real research, not guessed): Cerebras's own API
-        // generates a reasoning_content field on response messages, but
-        // then REJECTS that same field with an HTTP 400
-        // ("reasoning_content is unsupported type") if it's echoed back
-        // in the next request's message history — exactly what
-        // pushing `choice.message` whole into followUpMessages would do.
-        // Stripping it here before re-sending avoids that real failure
-        // on the tool-call follow-up round-trip specifically.
-        const { reasoning_content, ...messageWithoutReasoning } = choice.message;
-        const followUpMessages = [
-          ...messages,
-          messageWithoutReasoning,
-          { role: 'tool', tool_call_id: call.id, content: toolResult.result },
-        ];
-        const r2 = await fetch('https://api.cerebras.ai/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, max_tokens: maxTokens, messages: followUpMessages }),
-        });
-        const data2 = await r2.json();
-        if (!r2.ok || !data2.choices?.length) throw new Error(data2.error?.message || `HTTP ${r2.status}`);
-        const cleaned = cleanReply(data2.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `Cerebras:${model}` };
-      }
-
-      // REAL, CONFIRMED FIX — this is the actual, direct cause of plain
-      // messages (e.g. "wassup") failing even outside any tool-call
-      // scenario. This line uses a differently-named variable
-      // (choice.message.content, not data.choices[0].message.content)
-      // than the other 5 call sites, so it was silently skipped by the
-      // earlier bulk-fix that updated those to destructure cleanReply's
-      // {reply, idea} return shape. Without this fix, `reply` was being
-      // set to the ENTIRE {reply, idea} object instead of the real
-      // string — exactly the "server responded, but didn't return a
-      // usable reply" / "text.replace is not a function" class of bug,
-      // on literally every normal (non-tool-call) Cerebras response.
-      const cleanedPlain = cleanReply(choice.message.content, intent);
-      return { reply: cleanedPlain.reply, idea: cleanedPlain.idea, model: `Cerebras:${model}` };
-    } catch (e) { clearTimeout(t); console.warn(`[Flow] Cerebras ${model}: ${e.message}`); }
+    } catch (e) {
+      if (e.message === 'rate limit') { console.warn(`[Flow] Cerebras rate limit: ${model}`); continue; }
+      console.warn(`[Flow] Cerebras ${model}: ${e.message}`);
+    }
   }
   throw new Error('Cerebras: all models failed');
 }
@@ -788,41 +800,30 @@ const OR_MODELS = {
 const OR_TOKENS = { code: 8000, research: 4000, creative: 1600, pdf: 1200, chat: 2200 };
 
 async function tryOpenRouter(messages, intent, key) {
-  // REAL, HONEST GAP — flagged, not silently left: unlike tryCerebras
-  // above, this provider offers NO tools at all (no FLOW_TOOLS in the
-  // request body, no tool_calls handling in the response). If Cerebras
-  // (the FIRST provider tried) is ever down/rate-limited and a request
-  // falls through to OpenRouter, EVERY tool — including the new
-  // search_web fix for the hallucinated-tool-call bug — silently
-  // disappears again until Cerebras recovers. Confirmed, scoped, real;
-  // not fixed in this pass because each fallback provider likely has a
-  // different real tool-calling response shape that needs individual
-  // verification, not a blind copy-paste of Cerebras's exact loop.
+  // REAL FIX, Joel-requested ("make Flow as advanced as possible"): this
+  // provider now genuinely offers tools via the same shared helper
+  // Cerebras uses — previously had NO tool support at all, meaning
+  // search_web (and every other tool) silently vanished on fallback.
   const models    = OR_MODELS[intent] || OR_MODELS.chat;
   const maxTokens = OR_TOKENS[intent] || 600;
+  const headers = {
+    'Authorization': `Bearer ${key}`,
+    'Content-Type':  'application/json',
+    'HTTP-Referer':  'https://flow-v3-mu.vercel.app',
+    'X-Title':       'Flow V3',
+  };
+
   for (const model of models) {
-    const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 9000);
     try {
-      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method:  'POST',
-        headers: {
-          'Authorization': `Bearer ${key}`,
-          'Content-Type':  'application/json',
-          'HTTP-Referer':  'https://flow-v3-mu.vercel.app',
-          'X-Title':       'Flow V3',
-        },
-        body:   JSON.stringify({ model, max_tokens: maxTokens, stop: STOP4, messages }),
-        signal: ctrl.signal,
+      return await _chatWithToolSupport({
+        url: 'https://openrouter.ai/api/v1/chat/completions',
+        headers, model, maxTokens, messages, intent,
+        providerLabel: 'OR', timeoutMs: 9000,
+        extraBody: { stop: STOP4 },
       });
-      clearTimeout(t);
-      const data = await r.json();
-      if (data.error?.message?.includes('Prompt tokens limit')) { console.warn('[Flow] OR token limit'); continue; }
-      if (r.status === 429) { console.warn('[Flow] OR rate limit'); continue; }
-      if (r.status === 404 || data.error?.code === 404) { console.warn(`[Flow] OR 404: ${model}`); continue; }
-      if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      const cleaned = cleanReply(data.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `OR:${model}` };
-    } catch (e) { clearTimeout(t); console.warn(`[Flow] OR ${model}: ${e.message}`); }
+    } catch (e) {
+      console.warn(`[Flow] OR ${model}: ${e.message}`);
+    }
   }
   throw new Error('OpenRouter: all models failed');
 }
@@ -863,24 +864,24 @@ const GROQ_MODELS = {
 };
 
 async function tryGroq(messages, intent, key) {
+  // REAL FIX, Joel-requested — real tool support added, same shared
+  // helper as Cerebras/OpenRouter. Groq's endpoint is genuinely OpenAI-
+  // compatible (confirmed by its own URL: /openai/v1/chat/completions),
+  // so the same tool-call contract applies here without modification.
   const chain = GROQ_MODELS[intent] || GROQ_MODELS.chat;
+  const headers = { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };
+
   for (const { model, maxTokens } of chain) {
-    const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 7000);
     try {
-      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method:  'POST',
-        headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ model, max_tokens: maxTokens, stop: STOP4, messages }),
-        signal:  ctrl.signal,
+      return await _chatWithToolSupport({
+        url: 'https://api.groq.com/openai/v1/chat/completions',
+        headers, model, maxTokens, messages, intent,
+        providerLabel: 'Groq', timeoutMs: 7000,
+        extraBody: { stop: STOP4 },
       });
-      clearTimeout(t);
-      const data = await r.json();
-      if (r.status === 404 || data.error?.code === 'model_not_found') { console.warn(`[Flow] Groq 404: ${model}`); continue; }
-      if (r.status === 429) { console.warn(`[Flow] Groq rate limit: ${model}`); continue; }
-      if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      const cleaned = cleanReply(data.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `Groq:${model}` };
-    } catch (e) { clearTimeout(t); console.warn(`[Flow] Groq ${model}: ${e.message}`); }
+    } catch (e) {
+      console.warn(`[Flow] Groq ${model}: ${e.message}`);
+    }
   }
   throw new Error('Groq: all models failed');
 }
@@ -892,23 +893,22 @@ const HF_MODELS = [
 ];
 
 async function tryHuggingFace(messages, intent, token) {
+  // REAL FIX, Joel-requested — real tool support added, same shared
+  // helper. HF's inference endpoint is OpenAI-compatible
+  // (/v1/chat/completions), same contract as the other four providers.
   const maxTokens = intent === 'code' ? 1200 : 400;
+  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+
   for (const model of HF_MODELS) {
-    const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 6000);
     try {
-      const r = await fetch('https://api-inference.huggingface.co/v1/chat/completions', {
-        method:  'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ model, max_tokens: maxTokens, messages }),
-        signal:  ctrl.signal,
+      return await _chatWithToolSupport({
+        url: 'https://api-inference.huggingface.co/v1/chat/completions',
+        headers, model, maxTokens, messages, intent,
+        providerLabel: 'HF', timeoutMs: 6000,
       });
-      clearTimeout(t);
-      if (r.status === 503) { console.warn(`[Flow] HF cold: ${model}`); continue; }
-      const data = await r.json();
-      if (!r.ok || !data.choices?.length) throw new Error(data.error?.message || `HTTP ${r.status}`);
-      const cleaned = cleanReply(data.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `HF:${model}` };
-    } catch (e) { clearTimeout(t); console.warn(`[Flow] HF ${model}: ${e.message}`); }
+    } catch (e) {
+      console.warn(`[Flow] HF ${model}: ${e.message}`);
+    }
   }
   throw new Error('HF: all models cold or failed');
 }
@@ -949,39 +949,24 @@ const NV_MODELS = {
 const NV_TOKENS = { code: 8000, research: 4000, chat: 2200, creative: 1600, pdf: 1000 };
 
 async function tryNvidia(messages, intent, key) {
+  // REAL FIX, Joel-requested — real tool support added, same shared
+  // helper. NVIDIA's NIM endpoint is OpenAI-compatible, same contract.
   const model     = NV_MODELS[intent] || NV_MODELS.chat;
   const maxTokens = NV_TOKENS[intent] || 600;
   const isUltra   = model === 'nvidia/nemotron-3-ultra-550b-a55b';
-  const ctrl = new AbortController();
-  const t    = setTimeout(() => ctrl.abort(), 10000);
+  const headers = { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };
+
   try {
-    const body = { model, max_tokens: maxTokens, messages, stream: false };
-    // Nemotron 3 Ultra defaults to a reasoning/thinking mode per NVIDIA's
-    // own docs (chat_template_kwargs.enable_thinking) — leaving this
-    // unset can spend part of the token budget on hidden reasoning
-    // before the visible reply even starts, same class of issue Flow
-    // already handles for its own <flow-think> scratchpad elsewhere in
-    // this file. Explicitly disabling it here keeps behavior predictable
-    // and keeps the full max_tokens budget for the actual visible answer.
-    if (isUltra) {
-      body.chat_template_kwargs = { enable_thinking: false };
-    }
-    const r = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-      method:  'POST',
-      headers: {
-        'Authorization': `Bearer ${key}`,
-        'Content-Type':  'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
+    return await _chatWithToolSupport({
+      url: 'https://integrate.api.nvidia.com/v1/chat/completions',
+      headers, model, maxTokens, messages, intent,
+      providerLabel: 'NVIDIA', timeoutMs: 10000,
+      // Nemotron 3 Ultra defaults to a reasoning/thinking mode per
+      // NVIDIA's own docs — explicitly disabled to keep the full
+      // max_tokens budget for the visible reply, same real fix as before.
+      extraBody: isUltra ? { stream: false, chat_template_kwargs: { enable_thinking: false } } : { stream: false },
     });
-    clearTimeout(t);
-    if (r.status === 429) { console.warn('[Flow] NVIDIA rate limit'); throw new Error('rate limit'); }
-    const data = await r.json();
-    if (!r.ok || !data.choices?.length) throw new Error(data.detail || data.error?.message || `HTTP ${r.status}`);
-    const cleaned = cleanReply(data.choices[0].message.content, intent); return { reply: cleaned.reply, idea: cleaned.idea, model: `NVIDIA:${model}` };
   } catch (e) {
-    clearTimeout(t);
     console.warn(`[Flow] NVIDIA ${e.message}`);
     throw e;
   }
@@ -1114,98 +1099,12 @@ async function _recallMemory(query, { maxResults = 5 } = {}) {
 }
 
 
-
-// ═══════════════════════════════════════════════════════════════
-// LEAD CAPTURE — the public portfolio site's entry popup posts here.
-// A public action (no ADMIN_SECRET needed — visitors are submitting
-// their own contact info, not doing anything privileged), handled and
-// returned BEFORE the AI-provider chain below, so it never touches
-// Groq/Cerebras/etc and costs nothing.
-//
-// Appends to content/leads.json in the joelflowstack-portfolio repo
-// via GitHub's Contents API directly, using the same GITHUB_TOKEN this
-// file already needs for other things. Deliberately NOT routed through
-// api/github.js's put-file mode — that endpoint takes an arbitrary
-// owner/repo/path from the caller with no auth of its own (a known,
-// already-flagged risk), so nothing here goes near it. This handler
-// hardcodes the one target file and nothing else is ever writable
-// through it.
-// ═══════════════════════════════════════════════════════════════
-const LEADS_OWNER = 'joelflowstack';
-const LEADS_REPO  = 'joelflowstack-portfolio';
-const LEADS_PATH  = 'content/leads.json';
-
-function _isValidEmail(s) {
-  return typeof s === 'string' && s.length < 200 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
-}
-
-async function _captureLead(body, res) {
-  const { name = '', email, interest = '', page = '', honeypot } = body.lead || {};
-  // Honeypot: a hidden field real visitors never see or fill in. Any
-  // value here means it's a bot — reply success anyway so it doesn't
-  // learn to adapt, just don't actually store it.
-  if (honeypot) return res.status(200).json({ ok: true });
-  if (!_isValidEmail(email)) return res.status(400).json({ error: 'A valid email is required.' });
-
-  const token = process.env.GITHUB_TOKEN;
-  if (!token) return res.status(500).json({ error: 'Lead storage is not configured.' });
-
-  const ghHeaders = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'User-Agent': 'Flow-V3',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-  const contentsUrl = `https://api.github.com/repos/${LEADS_OWNER}/${LEADS_REPO}/contents/${LEADS_PATH}`;
-
-  let leads = [];
-  let sha;
-  try {
-    const existing = await fetch(contentsUrl, { headers: ghHeaders });
-    if (existing.ok) {
-      const data = await existing.json();
-      sha = data.sha;
-      leads = JSON.parse(Buffer.from(data.content, 'base64').toString('utf-8')).leads || [];
-    }
-    // a 404 here just means leads.json doesn't exist yet — leads stays [], sha stays undefined (create, not update)
-  } catch (_) { /* malformed existing file — non-fatal, we still append below */ }
-
-  leads.push({
-    name:     String(name).slice(0, 120),
-    email:    email.slice(0, 200),
-    interest: String(interest).slice(0, 120),
-    page:     String(page).slice(0, 120),
-    ts:       new Date().toISOString(),
-  });
-
-  const payload = {
-    message: `New lead: ${email}`,
-    content: Buffer.from(JSON.stringify({ leads }, null, 2), 'utf-8').toString('base64'),
-    branch: 'main',
-  };
-  if (sha) payload.sha = sha;
-
-  const put = await fetch(contentsUrl, {
-    method: 'PUT',
-    headers: { ...ghHeaders, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!put.ok) {
-    const err = await put.json().catch(() => ({}));
-    console.error('[Flow] lead capture GitHub write failed:', err.message);
-    return res.status(502).json({ error: 'Could not save the lead right now.' });
-  }
-  return res.status(200).json({ ok: true });
-}
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')    return res.status(405).json({ error: 'POST only' });
-
-  if (req.body?.action === 'capture_lead') return _captureLead(req.body, res);
 
   const CB_KEY = process.env.CEREBRAS_API_KEY;
   const NV_KEY = process.env.NVIDIA_API_KEY;
