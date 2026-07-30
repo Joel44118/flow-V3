@@ -122,7 +122,12 @@ export async function runBootSequence() {
   overlay.classList.add("boot-done");
   topBar?.classList.remove("boot-collapsed");
   footer?.classList.remove("boot-collapsed");
-  document.getElementById("chat-tray-tab")?.classList.remove("boot-collapsed");
+  // REAL, updated: the single #chat-tray-tab element is gone (chat is
+  // now two independent hover-drawers, see ui/chat-tray.js) — reveals
+  // the new handle-zone elements instead, same real boot-collapsed
+  // pattern as the other three trays.
+  document.getElementById("chat-drawer-handle-zone-left")?.classList.remove("boot-collapsed");
+  document.getElementById("chat-drawer-handle-zone-right")?.classList.remove("boot-collapsed");
   document.getElementById("leads-tray-tab")?.classList.remove("boot-collapsed");
   document.getElementById("content-lab-tray-tab")?.classList.remove("boot-collapsed");
   document.getElementById("thought-log-tab")?.classList.remove("boot-collapsed");
