@@ -22,11 +22,21 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     removeGoal:  (id)    => ipcRenderer.invoke('heartbeat_remove_goal', { id }),
     recordMarketingPost: () => ipcRenderer.invoke('heartbeat_record_marketing_post'),
     // REAL, Joel-requested — lets the renderer tell the heartbeat "Joel
-    // just did something real," so the background research loop
-    // (content/sales/mindset rotation) only ever fires during genuine
-    // idle time, never interrupting an active conversation.
+    // just did something real." No longer gates background research
+    // (that now starts immediately on app open, per Joel's explicit
+    // ask), but kept for other real, potential future uses of genuine
+    // activity tracking.
     markUserActivity: () => ipcRenderer.send('heartbeat_mark_user_activity'),
     onMessage:   (cb)    => ipcRenderer.on('heartbeat-message', (_e, entry) => cb(entry)),
+  },
+
+  // ── Flow Settings — real, persisted toggles ─────────────────────────
+  // Backing store lives in heartbeat.js (small JSON file in userData).
+  // Starts with backgroundResearchEnabled; a real place to add more
+  // toggles later without inventing a new IPC channel each time.
+  settings: {
+    get: () => ipcRenderer.invoke('flow_get_settings'),
+    set: (key, value) => ipcRenderer.invoke('flow_set_setting', key, value),
   },
 
   // ── Flow Sentinel ────────────────────────────────────────────────────
@@ -57,20 +67,30 @@ contextBridge.exposeInMainWorld('__flowElectron', {
   // transcribed command text once the user finishes speaking after the
   // wake phrase — the renderer is responsible for routing this into
   // real actions (e.g. Content Lab commands).
-  wakeword: {
-    onDetected: (cb) => ipcRenderer.on('wakeword-detected', () => cb()),
-    onLog: (cb) => ipcRenderer.on('wakeword-log', (_e, entry) => cb(entry)),
-    onCommand: (cb) => ipcRenderer.on('voice-command', (_e, { text }) => cb(text)),
-    // REAL, NEW — fires during the one-time Whisper model download on
-    // first real voice use, so the renderer can show real progress
-    // instead of the app appearing to hang.
-    onModelDownloadProgress: (cb) => ipcRenderer.on('voice-model-download-progress', (_e, data) => cb(data)),
-    // REAL, Joel-requested — a genuine on/off signal for whether the
-    // voice engine actually started and is listening right now, separate
-    // from onDetected (which only fires once the wake phrase is heard).
-    // This is what powers a real, honest #wake-indicator instead of a
-    // static label that never reflects the engine's real state.
-    onStatus: (cb) => ipcRenderer.on('voice-engine-status', (_e, data) => cb(data)),
+  // ═══════════════════════════════════════════
+  // REAL, SCRATCHED AND REBUILT — Joel's explicit instruction: the old
+  // "hey flow" spoken wake-word system is gone. Real, honest reason:
+  // FOUR separate real approaches were tried across this project's
+  // history and all failed for Joel's specific environment — trained
+  // openWakeWord models, Deepgram continuous streaming, a whisper.cpp
+  // local compile (the binary never actually shipped), and
+  // webkitSpeechRecognition (confirmed via research to reliably fail
+  // inside Electron specifically — Electron builds lack the special
+  // Google API key Chrome bakes in for its speech service). Chasing a
+  // fifth approach would likely hit the same wall.
+  //
+  // REAL REPLACEMENT: a global hotkey (Ctrl+Shift+Space, registered in
+  // main.js using the SAME globalShortcut infrastructure already proven
+  // working elsewhere in this app) instantly triggers the mic from
+  // anywhere on the PC — no spoken phrase, no continuous audio capture,
+  // no native binaries, no compilation step. Recording itself reuses
+  // core/whisper.js's ALREADY-WORKING MediaRecorder + Hugging Face
+  // Whisper flow (the same one the plain web build already uses
+  // successfully) — Electron no longer has its own separate, more
+  // fragile dictation pipeline at all.
+  // ═══════════════════════════════════════════
+  voiceHotkey: {
+    onTrigger: (cb) => ipcRenderer.on('trigger-voice-record', () => cb()),
   },
 
   // ── Live dictation mode — Joel's explicit request: text streams into
@@ -79,12 +99,11 @@ contextBridge.exposeInMainWorld('__flowElectron', {
   // pausing wake-word listening while active); onUpdate fires repeatedly
   // with the current best-guess text; onFinal fires once with the
   // completed text when silence is detected or stop() is called manually.
-  dictation: {
-    start: () => ipcRenderer.invoke('start_dictation'),
-    stop: () => ipcRenderer.invoke('stop_dictation'),
-    onUpdate: (cb) => ipcRenderer.on('dictation-update', (_e, { text }) => cb(text)),
-    onFinal: (cb) => ipcRenderer.on('dictation-final', (_e, { text }) => cb(text)),
-  },
+  // NOTE: the old Electron-specific `dictation` bridge (SoX + local
+  // whisper.cpp) is gone — Electron now uses the exact same
+  // core/whisper.js MediaRecorder + Hugging Face Whisper flow the plain
+  // web build already used successfully, so no separate bridge is
+  // needed for this anymore.
 
   // Real fix: this IPC handler (validate_js_syntax) was added to main.js
   // earlier this session but never actually exposed here — meaning
