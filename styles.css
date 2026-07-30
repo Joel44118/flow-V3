@@ -123,7 +123,16 @@ body::after {
   mask-composite: exclude;
   pointer-events: none;
   animation: titlebar-light-rotate 3s linear infinite;
-  z-index: 999; /* above content, below any modal/popup overlays that use higher z-index */
+  /* REAL, Joel-requested fix: previously z-index:999, well BELOW the
+     tray tabs/panels (z-index 9998/9999) — meaning the rotating light
+     rendered underneath Content Lab/Leads/Chats/Thought Log whenever
+     they were open, instead of sweeping over them like it does over
+     the rest of the app. Raised above all four trays so the light
+     genuinely feels like it's wrapping the whole app, tabs included —
+     Settings' modal (z-index 10500, see ui/settings.js) stays above
+     this intentionally, since a real dialog should still take priority
+     over a decorative effect. */
+  z-index: 10000;
   filter: drop-shadow(0 0 10px rgba(var(--titlebar-glow-rgb), 0.9))
           drop-shadow(0 0 22px rgba(var(--titlebar-glow-rgb), 0.6));
 }
@@ -366,16 +375,6 @@ body::after {
   color:var(--green);
   text-shadow:0 0 14px var(--green),0 0 32px rgba(74,222,128,0.4);
 }
-/* REAL, Joel-requested — a genuine, visually distinct failure state so
-   a broken voice engine is immediately obvious (amber/red glow) rather
-   than looking like the same dim, ambiguous default text it used to
-   show whether the engine was working or not. pointer-events is
-   re-enabled here specifically so the title tooltip (the real failure
-   reason) is actually hoverable, unlike the base rule above. */
-#wake-indicator.failed {
-  color:#f59e0b; text-shadow:0 0 10px rgba(245,158,11,0.5);
-  pointer-events:auto; cursor:help;
-}
 #wake-indicator em { font-style:normal; color:rgba(56,189,248,0.45); }
 #status-wrap { display:flex; align-items:center; gap:6px; font-family:var(--fd); font-size:9px; letter-spacing:.2em; opacity:.5; }
 #status-dot  { width:6px; height:6px; border-radius:50%; background:var(--green); box-shadow:0 0 8px var(--green); animation:pdot 2s infinite; }
@@ -394,30 +393,20 @@ body::after {
 .alarm-item.dim { color:rgba(255,255,255,.15); }
 
 /* ── CHAT COLUMNS ─────────────────────────────────────────── */
-/* REAL, Joel-requested — chat now lives in a toggleable left-edge tray
-   (see ui/chat-tray.js) instead of being permanently on-screen with
-   hover-to-reveal opacity. #chat-tray-panel is the new slide-in
-   container; #col-left/#col-right keep their existing internal layout
-   rules (scrolling, alignment) but are now sized to fill that tray
-   instead of floating independently over the whole viewport. Mobile
-   behavior (col-right hidden, col-left fullscreen) is preserved
-   unchanged further down in the mobile media query. */
-#chat-tray-panel {
-  position: fixed; top: 0; left: 0; bottom: 0;
-  width: min(720px, 92vw);
-  background: rgba(15,10,30,0.98); border-right: 1px solid rgba(167,139,250,0.4);
-  box-shadow: 12px 0 40px rgba(0,0,0,0.5);
-  z-index: 9999; display: flex; flex-direction: row;
-  transform: translateX(-100%);
-  transition: transform 0.25s ease;
-}
-#chat-tray-panel.ct-open { transform: translateX(0); }
-
+/* REAL, Joel-requested REDESIGN: the single tab-toggled tray is gone —
+   scrapped per his explicit instruction. Back to two independent
+   columns, one per side, but each is now a real DRAWER (see
+   ui/chat-tray.js): hidden below the viewport by default, a small
+   hover-revealed handle at the bottom of each side slides that side's
+   content up into view. #col-left/#col-right now live inside their own
+   .chat-drawer-content container (one per side, not a shared row), so
+   each fills 100% of its own drawer rather than splitting 50/50 with
+   the other side. */
 .msg-col {
-  position: relative; top: auto; bottom: auto; width: 50%; height: 100%;
+  position: relative; width: 100%; height: 100%;
   display:flex; flex-direction:column; gap:8px;
   overflow-y:auto; overflow-x:hidden;
-  padding:16px 10px 12px; scrollbar-width:none;
+  padding:0; scrollbar-width:none;
 }
 .msg-col::-webkit-scrollbar { display:none; }
 #col-left  { align-items:flex-start; }
@@ -426,9 +415,9 @@ body::after {
 /* ── MESSAGE WRAPS ───────────────────────────────────────── */
 /* REAL CHANGE: opacity is now always 1 — the old opacity:0 default +
    hover-to-reveal was the workaround for chat being permanently overlaid
-   on other UI. Now that chat lives inside a tray Joel explicitly opens,
-   that workaround is no longer needed; messages should just be visible
-   whenever the tray is open. */
+   on other UI. Now that chat lives inside a drawer Joel explicitly
+   opens via the hover handle, that workaround is no longer needed;
+   messages should just be visible whenever the drawer is open. */
 .mwrap { display:flex; flex-direction:column; max-width:100%; flex-shrink:0; opacity:1; }
 .mwrap:has(.img-card),.img-card-wrap   { opacity:1 !important; pointer-events:all !important; }
 .mleft  { align-items:flex-start; }
@@ -681,7 +670,8 @@ body::after {
    completes and removes it, exactly mirroring #top-bar.boot-collapsed
    and #app-footer.boot-collapsed above. Fixes the tabs showing through
    the boot screen (they previously had no boot-awareness at all). */
-#chat-tray-tab.boot-collapsed,
+#chat-drawer-handle-zone-left.boot-collapsed,
+#chat-drawer-handle-zone-right.boot-collapsed,
 #leads-tray-tab.boot-collapsed,
 #content-lab-tray-tab.boot-collapsed,
 #thought-log-tab.boot-collapsed {
@@ -1090,8 +1080,9 @@ body::after {
      goes fullscreen-width on mobile (see #chat-tray-panel width rule
      below), and col-left fills it entirely — col-right stays hidden,
      preserving the exact existing mobile behavior (Joel's own messages
-     were already not shown on mobile before this change; unchanged here). */
-  #chat-tray-panel { width: 100vw; }
+     were already not shown on mobile before this change; unchanged here).
+     REAL, updated: mobile sizing for the new chat-drawer system lives
+     inline in ui/chat-tray.js's injected styles now, not here. */
   .msg-col { width:100%; padding:12px; }
   #col-right { display:none; }
   .input-panel { width:calc(100% - 24px); max-width:none; bottom:12px; padding:6px 12px; border-radius:30px; }
