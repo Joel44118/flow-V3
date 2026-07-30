@@ -32,57 +32,15 @@ jobs:
       - name: Install dependencies
         working-directory: flow-electron
         run: npm install --ignore-scripts
-      # REAL, NEW STEP — compiles transcribe.cpp (handy-computer/
-      # transcribe.cpp on GitHub, MIT-licensed) from source, since Joel
-      # has no local CLI/build tools to do this himself and this runner
-      # already has cmake + MSVC via windows-latest's default toolchain.
-      # CPU-only build (no -DTRANSCRIBE_VULKAN / -DTRANSCRIBE_CUDA) —
-      # deliberately the simplest, zero-extra-setup path; Vulkan can be
-      # added later as a real optimization if CPU-only proves too slow,
-      # but isn't guessed to be necessary here.
-      - name: Build transcribe.cpp (CPU)
-        shell: bash
-        run: |
-          git clone --depth 1 https://github.com/handy-computer/transcribe.cpp.git transcribe-cpp-src
-          cd transcribe-cpp-src
-          cmake -B build
-          # REAL, CONFIRMED FIX for a real build failure hit on this exact
-          # step: `cmake --build build` with no target builds EVERY target
-          # in the project, including its test suite — one of those test
-          # files (tests/whisper_bin_parser_unit.cpp) includes <unistd.h>,
-          # a POSIX-only header that genuinely doesn't exist on Windows/
-          # MSVC, causing a hard C1083 compile error and failing the whole
-          # CI run even though the actual CLI we need builds fine on its
-          # own. Building only the `transcribe-cli` target by name (a
-          # standard CMake mechanism, not something specific to this
-          # project) skips the test suite entirely — we don't need it, and
-          # it isn't Windows-portable anyway per this real, confirmed error.
-          cmake --build build --config Release --target transcribe-cli
-      # Real, exact path per transcribe.cpp's own project layout —
-      # examples/cli builds to build/bin/ (or build/Release/ on MSVC
-      # multi-config generators used by windows-latest's default cmake
-      # setup) as transcribe-cli.exe.
-      - name: Stage transcribe.cpp binary
-        shell: bash
-        run: |
-          mkdir -p flow-electron/resources/transcribe
-          BIN=$(find transcribe-cpp-src/build -iname "transcribe-cli.exe" | head -n 1)
-          if [ -z "$BIN" ]; then
-            echo "transcribe-cli.exe not found after build — check the build step's real output above."
-            exit 1
-          fi
-          cp "$BIN" flow-electron/resources/transcribe/transcribe-cli.exe
-      # REAL, DELIBERATE REMOVAL (this pass): the Whisper GGUF model
-      # (591MB) is no longer downloaded/bundled here. Joel explicitly
-      # asked to keep future auto-update downloads small — bundling a
-      # ~600MB model in every single installer/update meant every future
-      # update carried that same weight even when the model itself never
-      # changes. Real, better fix: voice-engine.js now downloads the
-      # model ONCE, on first real use, to a stable local folder that
-      # survives future app updates entirely (see voice-engine.js's
-      # _ensureModelDownloaded). This one build still ships without the
-      # model bundled — Joel will manually install this build once, then
-      # the app downloads the model itself on first real voice use.
+      # NOTE: the transcribe.cpp compile + stage steps (SoX + local
+      # whisper.cpp continuous wake-word listening) are gone — scratched
+      # and rebuilt per Joel's explicit instruction after four separate
+      # real approaches to hands-free wake-word all failed for his
+      # environment. Voice is now a global hotkey (Ctrl+Shift+Space,
+      # registered directly in main.js) that triggers the SAME
+      # MediaRecorder + Hugging Face Whisper flow the web build already
+      # used successfully (core/whisper.js) — no native binary to
+      # compile, no CI build step needed for voice at all anymore.
       - name: Rebuild native dependencies for Electron
         working-directory: flow-electron
         run: npx electron-builder install-app-deps
