@@ -1,8 +1,18 @@
-// core/speech.js (v2)
-// ONE consistent voice across ALL devices via ElevenLabs cloud TTS
-// Falls back to browser TTS if ElevenLabs not configured
-// ElevenLabs free tier: 10,000 chars/month — enough for daily use
-// Add ELEVENLABS_API_KEY to Vercel env vars to enable cloud voice
+// core/speech.js (v3)
+// ONE consistent voice across ALL devices via Edge TTS (api/tts.js).
+//
+// REAL, Joel-requested CHANGE: the browser-native speechSynthesis
+// fallback (the classic robotic "default" OS voice) is REMOVED
+// entirely. Previously, any real Edge TTS failure — including the kind
+// of intermittent issue flagged honestly when Edge TTS was first wired
+// in (it depends on a real WebSocket connection, which can behave
+// differently under Vercel's serverless execution model than a plain
+// fetch() call) — silently fell back to speechSynthesis, meaning Flow's
+// voice would randomly, unpredictably switch to a generic, low-quality
+// system voice mid-use with zero indication why. Per Joel's explicit
+// instruction: Flow now ONLY ever uses Edge TTS. If it fails, Flow just
+// doesn't speak that reply out loud (the text is still visible in
+// chat), rather than jarringly switching voices.
 
 let _isSpeaking   = false;
 let _isPaused     = false;
@@ -12,7 +22,7 @@ let _activeWrap   = null;
 let _onDone       = null;
 let _fullText     = "";
 let _charOffset   = 0;
-let _audioEl      = null;   // for ElevenLabs audio playback
+let _audioEl      = null;
 
 setInterval(() => {
   if (!_isSpeaking || _isPaused) { _envelope *= 0.82; return; }
@@ -67,17 +77,13 @@ function _resetState(runOnDone = true) {
   _onDone = null;
 }
 
-// ── ElevenLabs cloud TTS — same voice on every device ─────────────────────
-// Voice: "Adam" (male, natural, clear) — free tier voice ID
-// Set ELEVENLABS_API_KEY in Vercel → Settings → Environment Variables
-const EL_VOICE_ID = "pNInz6obpgDQGcFmaJgB"; // Adam — consistent male voice
-
-async function _speakElevenLabs(text, onDone, wrap) {
+// ── Edge TTS via api/tts.js — the ONLY voice path now ─────────────────────
+async function _speakEdgeTTS(text, onDone, wrap) {
   try {
     const res = await fetch("/api/tts", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ text: text.slice(0, 500) }), // cap per request
+      body:    JSON.stringify({ text: text.slice(0, 3000) }),
     });
     if (!res.ok) throw new Error("TTS API " + res.status);
 
@@ -89,103 +95,27 @@ async function _speakElevenLabs(text, onDone, wrap) {
 
     _audioEl.onplay  = () => { _isSpeaking = true; _setButtons(wrap, "playing"); };
     _audioEl.onended = () => { URL.revokeObjectURL(url); _resetState(true); if (onDone) onDone(); };
-    _audioEl.onerror = () => { URL.revokeObjectURL(url); _fallbackBrowserTTS(text, 0, onDone, wrap); };
+    // REAL, Joel-requested CHANGE: previously fell back to browser TTS
+    // here. Now a real playback error just logs and stops cleanly — the
+    // reply stays visible in chat as text either way, so nothing is
+    // actually lost, but Flow's voice never unexpectedly switches to a
+    // generic robotic one.
+    _audioEl.onerror = () => {
+      URL.revokeObjectURL(url);
+      console.warn("[Flow TTS] Edge TTS playback failed — not speaking this reply aloud (text is still in chat).");
+      _resetState(true);
+    };
 
     _activeWrap = wrap;
     _onDone     = onDone;
     await _audioEl.play();
     return true;
   } catch (e) {
-    console.warn("[Flow TTS] ElevenLabs failed:", e.message, "— using browser TTS");
+    console.warn("[Flow TTS] Edge TTS request failed:", e.message, "— not speaking this reply aloud (text is still in chat).");
+    _resetState(true);
     return false;
   }
 }
-
-// ── Browser TTS fallback — best available male voice ─────────────────────
-let _cachedVoice = null;
-
-function _getFlowVoice() {
-  if (_cachedVoice) return _cachedVoice;
-  const voices = window.speechSynthesis.getVoices();
-  if (!voices.length) return null;
-
-  // Priority list — male voices, best quality first
-  const PREF = [
-    "Google UK English Male",
-    "Microsoft Ryan Online (Natural) - English (United Kingdom)",
-    "Microsoft Guy Online (Natural) - English (United States)",
-    "Microsoft Davis Online (Natural) - English (United States)",
-    "Daniel",   // iOS/macOS male
-    "Aaron",    // iOS 16+ male
-    "Fred",     // iOS classic male
-    "Google US English",
-  ];
-
-  for (const name of PREF) {
-    const v = voices.find(v => v.name.toLowerCase().includes(name.toLowerCase()) && v.lang.startsWith("en"));
-    if (v) { _cachedVoice = v; return v; }
-  }
-
-  // Any non-female English voice
-  const FEMALE = ["female","woman","zira","hazel","susan","karen","moira","samantha","victoria","tessa","fiona"];
-  const v = voices.find(v => v.lang.startsWith("en") && !FEMALE.some(w => v.name.toLowerCase().includes(w)));
-  if (v) { _cachedVoice = v; return v; }
-  return null;
-}
-
-window.speechSynthesis.onvoiceschanged = () => { _cachedVoice = null; };
-
-function _fallbackBrowserTTS(text, fromChar, onDone, wrap) {
-  // Block if ElevenLabs audio is actively playing
-  if (_audioEl && !_audioEl.paused && !_audioEl.ended) return;
-  const slice = text.slice(fromChar).trim();
-  if (!slice) { _resetState(true); return; }
-
-  _isSpeaking = true;
-  _isPaused   = false;
-  _onDone     = onDone || null;
-  _activeWrap = wrap   || null;
-  _setButtons(_activeWrap, "playing");
-
-  const u    = new SpeechSynthesisUtterance(slice);
-  u.lang     = "en-US";
-  u.rate     = 0.96;
-  u.pitch    = 1;
-  u.volume   = 1;
-  u.voice    = _getFlowVoice();
-
-  u.onboundary = (e) => {
-    if (e.name === "word") {
-      _charOffset   = fromChar + (e.charIndex || 0);
-      _lastBoundary = performance.now();
-      _envelope     = 0.6 + Math.random() * 0.4;
-    }
-  };
-  u.onend   = () => { if (!_isPaused) _resetState(true); };
-  u.onerror = (e) => { if (e.error !== "interrupted") _resetState(true); };
-
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(u);
-}
-
-// ── Check if ElevenLabs is configured (cached after first check) ──────────
-let _elAvailable = null;
-async function _checkEL() {
-  if (_elAvailable !== null) return _elAvailable;
-  try {
-    const r = await fetch("/api/tts", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ text: "." }) });
-    _elAvailable = r.ok;
-  } catch (_) { _elAvailable = false; }
-  return _elAvailable;
-}
-// Fire this at module load (Flow boot) rather than waiting for the first
-// spoken reply. Previously, speak() awaited this check on the FIRST call
-// of every session, meaning every first reply paid a real network
-// round-trip to ElevenLabs before speech could even start — that round
-// trip is exactly the noticeable "takes a moment to start reading" delay.
-// Now it's already resolved by the time anyone has finished reading a
-// reply and Flow is ready to speak it.
-_checkEL();
 
 // ── Public Speech API ─────────────────────────────────────────────────────
 export const Speech = {
@@ -201,7 +131,6 @@ export const Speech = {
       try { _audioEl.pause(); _audioEl.src = ''; } catch(_) {}
       _audioEl = null;
     }
-    window.speechSynthesis.cancel();
 
     if (_activeWrap && _activeWrap !== wrap) _setButtons(_activeWrap, 'idle');
     _fullText   = clean;
@@ -210,26 +139,9 @@ export const Speech = {
     _onDone     = onDone || null;
 
     // ── LOCK speaking immediately (synchronous) before any await ──────────
-    // This prevents browser TTS from starting during the ElevenLabs fetch
     _isSpeaking = true;
 
-    // ── Try ElevenLabs first ──────────────────────────────────────────────
-    // _elAvailable is normally already resolved by boot-time pre-warming
-    // above. This await is now only a real wait in the rare case Flow
-    // starts speaking within the first instant of page load, before that
-    // background check has had time to finish.
-    if (_elAvailable === null) await _checkEL();
-
-    if (_elAvailable) {
-      const ok = await _speakElevenLabs(clean, onDone, wrap);
-      if (ok) return;  // ElevenLabs playing — done
-      // ElevenLabs failed this call — fall through to browser TTS
-    }
-
-    // ── Browser TTS fallback ──────────────────────────────────────────────
-    // Only runs if ElevenLabs is not configured OR failed this specific call
-    _isSpeaking = false;  // reset so _fallbackBrowserTTS can set it
-    _fallbackBrowserTTS(clean, 0, onDone, wrap);
+    await _speakEdgeTTS(clean, onDone, wrap);
   },
 
   pause() {
@@ -239,7 +151,6 @@ export const Speech = {
     const savedWrap = _activeWrap;
     const savedDone = _onDone;
     if (_audioEl) { _audioEl.pause(); _isSpeaking = true; _setButtons(savedWrap, "paused"); return; }
-    window.speechSynthesis.cancel();
     _isSpeaking = true;
     _isPaused   = true;
     _activeWrap = savedWrap;
@@ -250,13 +161,17 @@ export const Speech = {
   resume() {
     if (!_isPaused) return;
     _isPaused = false;
-    if (_audioEl && _audioEl.paused) { _audioEl.play(); _setButtons(_activeWrap, "playing"); return; }
-    _fallbackBrowserTTS(_fullText, _charOffset, _onDone, _activeWrap);
+    if (_audioEl && _audioEl.paused) { _audioEl.play(); _setButtons(_activeWrap, "playing"); }
+    // REAL, honest note: mid-utterance resume-from-a-specific-character
+    // isn't possible anymore now that speechSynthesis (which supported
+    // resuming from a live boundary event) is gone — Audio elements
+    // don't have an equivalent word-boundary API. Resuming just
+    // continues the same audio clip from where it was paused, which
+    // Audio.play() already does natively above.
   },
 
   cancel() {
     if (_audioEl) { _audioEl.pause(); _audioEl.src = ""; _audioEl = null; }
-    window.speechSynthesis.cancel();
     _resetState(false);
   },
 
