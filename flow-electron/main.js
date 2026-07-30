@@ -35,7 +35,23 @@ console.error = (...args) => { _origError(...args); _forwardToRenderer('error', 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.quit(); process.exit(0); }
 app.on('second-instance', () => {
-  if (mainWin) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.focus(); }
+  // REAL, CONFIRMED BUG FIX, Joel-reported: previously this only called
+  // .restore() (undoes MINIMIZED state) and .focus() — neither of which
+  // actually shows a HIDDEN window. Flow's own close handler further
+  // down (mainWin.hide() instead of a real quit, for "minimize to tray"
+  // behavior) means the window is very often hidden, not minimized —
+  // two genuinely different Electron states. Double-clicking a desktop
+  // shortcut or the .exe again while Flow was already running-but-hidden
+  // triggered this exact handler, which did nothing visible at all —
+  // this is the real, confirmed cause of "it doesn't seem to open."
+  // .show() is a safe no-op if the window is already visible, so this
+  // is correct for every real starting state (minimized, hidden, or
+  // already visible/behind other windows).
+  if (mainWin) {
+    if (mainWin.isMinimized()) mainWin.restore();
+    mainWin.show();
+    mainWin.focus();
+  }
 });
 
 // ── robotjs ───────────────────────────────────────────────────────────────
@@ -96,7 +112,20 @@ try {
     // rejection, antivirus/SmartScreen quarantine, corrupted download,
     // permission denied writing the update file — surfaces here now,
     // instead of vanishing into the old swallowed .catch(() => {}).
-    console.error('[AutoUpdater] REAL ERROR:', err == null ? 'unknown error' : (err.stack || err.message || err));
+    const msg = err == null ? 'unknown error' : (err.stack || err.message || String(err));
+    console.error('[AutoUpdater] REAL ERROR:', msg);
+    // REAL, Joel-requested visibility fix: console.error alone is
+    // invisible in the packaged app (no terminal window). A real update
+    // failure — one honest, plausible explanation for the app sometimes
+    // running a stale build — now also reaches Joel directly as a real
+    // chat message, same proven channel already used for other
+    // real background failures (e.g. the Gmail-check error notice).
+    if (mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('heartbeat-message', {
+        text: `⚠️ Auto-update failed: ${msg}\n\n(This can leave Flow on an older build. If this keeps happening, download the latest installer directly from the GitHub Releases page and run it once.)`,
+        ts: Date.now(),
+      });
+    }
   });
 } catch(e) { console.warn('[Flow] electron-updater not available'); }
 
