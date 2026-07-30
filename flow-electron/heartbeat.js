@@ -442,8 +442,15 @@ async function _maybeRunSocialMonitor() {
 // that this is happening in the background, without a chattier
 // in-the-moment interruption.
 // ═══════════════════════════════════════════
-const _IDLE_THRESHOLD_MS = 20 * 60 * 1000; // real, 20 min of no interaction before background research is allowed to run — long enough that it never fires mid-conversation
-const _MIN_GAP_BETWEEN_RESEARCH_MS = 6 * 60 * 60 * 1000; // real, honest cap — even if idle the whole day, don't run more than once every 6h, to keep this genuinely "background" rather than constant
+// REAL, Joel-requested CHANGE: previously gated behind 20 minutes of
+// real idle time — Joel explicitly wants this starting the moment the
+// app opens, no delay, so EXP genuinely starts accumulating right away
+// rather than waiting for him to stop using the app. The idle-avoidance
+// concern is gone; a real 6h min-gap between runs is kept so this stays
+// a background trickle, not a hammering loop, and a real, persisted
+// settings toggle (see _isBackgroundResearchEnabled below) lets Joel
+// turn this off entirely if he ever wants to.
+const _MIN_GAP_BETWEEN_RESEARCH_MS = 6 * 60 * 60 * 1000; // real, honest cap — don't run more than once every 6h, keeps this a genuine background trickle
 const RESEARCH_TOPICS = ['sales-research', 'content-research', 'mindset-research']; // real rotation order
 
 function _researchStatePath() { return path.join(app.getPath('userData'), 'flow-sales-research-state.json'); }
@@ -471,23 +478,61 @@ function _saveResearchState(state) {
   }
 }
 
+// ═══════════════════════════════════════════
+// REAL, NEW — Settings panel backing store. A genuine, persisted
+// on/off switch for background research (and a real place to add more
+// toggles later), read from a small JSON file in userData — same real
+// persistence pattern already used for research/social-monitor state
+// elsewhere in this file. Defaults to ON (true) so existing behavior is
+// preserved for anyone who doesn't touch the new settings panel at all.
+// ═══════════════════════════════════════════
+function _settingsPath() { return path.join(app.getPath('userData'), 'flow-settings.json'); }
+
+function _loadSettings() {
+  try {
+    const p = _settingsPath();
+    if (!fs.existsSync(p)) return { backgroundResearchEnabled: true };
+    const loaded = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (typeof loaded.backgroundResearchEnabled !== 'boolean') loaded.backgroundResearchEnabled = true;
+    return loaded;
+  } catch (e) {
+    console.warn('[Heartbeat] Settings load failed (non-fatal, defaulting to enabled):', e.message);
+    return { backgroundResearchEnabled: true };
+  }
+}
+
+function _saveSettings(settings) {
+  try {
+    fs.writeFileSync(_settingsPath(), JSON.stringify(settings, null, 2));
+  } catch (e) {
+    console.warn('[Heartbeat] Settings save failed (non-fatal):', e.message);
+  }
+}
+
+function getSettings() { return _loadSettings(); }
+function setSetting(key, value) {
+  const settings = _loadSettings();
+  settings[key] = value;
+  _saveSettings(settings);
+  return settings;
+}
+
 // Real, module-scope tracker of the last time Joel actually sent a
-// message — updated from app.js/ai.js via markUserActivity() (see
-// export below), so "idle" reflects genuine inactivity, not just time
-// since the app opened.
+// message — kept for other real uses elsewhere in this file (not for
+// gating background research anymore, per the change above).
 let _lastUserActivityAt = Date.now();
 function markUserActivity() { _lastUserActivityAt = Date.now(); }
 
 async function _maybeRunSalesResearch() {
-  const state = _loadResearchState();
-  const idleFor = Date.now() - _lastUserActivityAt;
-  const sinceLastRun = Date.now() - (state.lastRunAt || 0);
+  const settings = _loadSettings();
+  if (!settings.backgroundResearchEnabled) return; // real, honest respect for Joel's own toggle
 
-  if (idleFor < _IDLE_THRESHOLD_MS) return; // real, active conversation — don't interrupt
+  const state = _loadResearchState();
+  const sinceLastRun = Date.now() - (state.lastRunAt || 0);
   if (sinceLastRun < _MIN_GAP_BETWEEN_RESEARCH_MS) return; // ran recently enough already
 
   const topic = RESEARCH_TOPICS[state.nextTopicIndex % RESEARCH_TOPICS.length];
-  console.log(`[Heartbeat] Running background research pass (silent, idle ${Math.round(idleFor / 60000)}min) — topic: ${topic}...`);
+  console.log(`[Heartbeat] Running background research pass (silent) — topic: ${topic}...`);
   try {
     const res = await fetch(`${VERCEL_URL}/api/social?platform=${topic}`);
     const data = await res.json();
@@ -506,6 +551,49 @@ async function _maybeRunSalesResearch() {
   _saveResearchState({ lastRunAt: Date.now(), nextTopicIndex: (state.nextTopicIndex + 1) % RESEARCH_TOPICS.length });
 }
 
+// ═══════════════════════════════════════════
+// REAL, Joel-requested — background worker for the Leads tab pipeline.
+// Closing the Leads tab must NOT stop an in-progress job (finding
+// businesses, scraping emails, sending outreach) — this is what makes
+// that genuinely true: the heartbeat calls the SAME real
+// lead-job-advance endpoint the tab itself polls, on its own 15-min
+// cadence, regardless of whether the tab is open. A few advance calls
+// per tick (not unlimited) keeps this tick itself fast and bounded.
+// ═══════════════════════════════════════════
+async function _maybeAdvanceLeadJobs() {
+  try {
+    const res = await fetch(`${VERCEL_URL}/api/social?platform=lead-jobs-list`);
+    const data = await res.json();
+    if (!data.ok) return;
+
+    const activeJobs = (data.jobs || []).filter(j => j.status === 'scraping_emails' || j.status === 'sending_outreach');
+    if (!activeJobs.length) return;
+
+    console.log(`[Heartbeat] Advancing ${activeJobs.length} active lead job(s) in the background...`);
+    for (const job of activeJobs) {
+      // Real, bounded — up to 5 advance calls per job per tick, so a
+      // job with many businesses/leads makes real, steady progress in
+      // the background without this one tick running unreasonably long.
+      for (let i = 0; i < 5; i++) {
+        try {
+          const advRes = await fetch(`${VERCEL_URL}/api/social?platform=lead-job-advance`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jobId: job.id }),
+          });
+          const advData = await advRes.json();
+          if (!advData.ok || advData.done) break; // real, honest stop — either failed or reached a natural pause point
+        } catch (e) {
+          console.warn(`[Heartbeat] Lead-job advance failed for ${job.id} (non-fatal):`, e.message);
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[Heartbeat] Lead-job background check failed (non-fatal):', e.message);
+  }
+}
+
 async function _tick(isFirstTick = false) {
   console.log('[Heartbeat] Real tick at', new Date().toLocaleTimeString(), isFirstTick ? '(first tick — reasoning/marketing skipped)' : '');
   try {
@@ -516,6 +604,7 @@ async function _tick(isFirstTick = false) {
     // when Joel opens the app, the pass should still run.
     await _maybeRunSocialMonitor();
     await _maybeRunSalesResearch();
+    await _maybeAdvanceLeadJobs();
 
     if (!isFirstTick) {
       const decision = await _reasonAboutTick();
@@ -704,5 +793,5 @@ function stopHeartbeat() {
 module.exports = {
   startHeartbeat, stopHeartbeat, setNotificationSink,
   addGoal, listGoals, removeGoal, recordMarketingPost,
-  markUserActivity,
+  markUserActivity, getSettings, setSetting,
 };
