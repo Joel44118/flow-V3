@@ -4,7 +4,9 @@
 
 const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, desktopCapturer, powerMonitor, globalShortcut } = require('electron');
 const path = require('path');
-const { startVoiceEngine, stopVoiceEngine, setRendererLogSink, startDictation, stopDictation } = require('./voice-engine');
+// NOTE: the old ./voice-engine require (SoX + local whisper.cpp) is
+// gone — scratched and rebuilt per Joel's explicit instruction. See
+// registerGlobalShortcuts() below for the new, much simpler replacement.
 const heartbeat = require('./heartbeat');
 
 // ── Main-process log forwarding to renderer DevTools ─────────────────────
@@ -472,18 +474,11 @@ ipcMain.handle('get_screen_size', () => {
 
 ipcMain.handle('get_build_info', () => buildInfo);
 
-// REAL, Joel-requested — live dictation mode: renderer requests start,
-// gets interim text streamed via 'dictation-update' and the final result
-// via 'dictation-final' (both pushed proactively, not returned from this
-// handle call, since dictation runs asynchronously in the background
-// until real silence is detected).
-ipcMain.handle('start_dictation', () => {
-  return startDictation({
-    onUpdate: (text) => { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('dictation-update', { text }); },
-    onFinal:  (text) => { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('dictation-final', { text }); },
-  });
-});
-ipcMain.handle('stop_dictation', () => { stopDictation(); return true; });
+// NOTE: the old start_dictation/stop_dictation IPC handlers (SoX-based)
+// are gone — scratched and rebuilt per Joel's explicit instruction.
+// Electron now uses core/whisper.js's MediaRecorder + Hugging Face
+// Whisper flow directly in the renderer, same as the web build, with no
+// main-process involvement needed for recording/transcription at all.
 
 // REAL, NEW: exposes Flow's standing goal list to the renderer, so Joel
 // can actually see and manage what Flow has decided is worth pursuing —
@@ -494,6 +489,11 @@ ipcMain.handle('heartbeat_add_goal', (_e, { description }) => heartbeat.addGoal(
 ipcMain.handle('heartbeat_remove_goal', (_e, { id }) => heartbeat.removeGoal(id));
 ipcMain.handle('heartbeat_record_marketing_post', () => heartbeat.recordMarketingPost());
 ipcMain.on('heartbeat_mark_user_activity', () => heartbeat.markUserActivity());
+// REAL, NEW — Settings panel backing IPC, Joel-requested. Real,
+// persisted toggles (starting with backgroundResearchEnabled), read/
+// written via heartbeat.js's small JSON settings file in userData.
+ipcMain.handle('flow_get_settings', () => heartbeat.getSettings());
+ipcMain.handle('flow_set_setting', (_e, key, value) => heartbeat.setSetting(key, value));
 
 ipcMain.on('win_minimize', () => mainWin?.minimize());
 ipcMain.on('win_maximize', () => { if (!mainWin) return; mainWin.isMaximized() ? mainWin.unmaximize() : mainWin.maximize(); });
@@ -908,6 +908,24 @@ function registerGlobalShortcuts() {
       mainWin.webContents.toggleDevTools();
     });
     if (!devToolsOk) console.warn('[Flow] Global shortcut Ctrl+Shift+I registration failed.');
+
+    // ═══════════════════════════════════════════
+    // REAL, SCRATCHED AND REBUILT — replaces the old spoken "hey flow"
+    // wake-word system. Ctrl+Shift+Space instantly shows/focuses the
+    // window and tells the renderer to start recording via the SAME
+    // MediaRecorder + Hugging Face Whisper flow already proven working
+    // on the web build (core/whisper.js) — no continuous audio capture,
+    // no native binaries, no compilation, no speech-detection false
+    // triggers. A real, simple, reliable replacement.
+    // ═══════════════════════════════════════════
+    const voiceHotkeyOk = globalShortcut.register('CommandOrControl+Shift+Space', () => {
+      if (!mainWin) return;
+      if (mainWin.isMinimized()) mainWin.restore();
+      mainWin.show();
+      mainWin.focus();
+      mainWin.webContents.send('trigger-voice-record');
+    });
+    if (!voiceHotkeyOk) console.warn('[Flow] Global shortcut Ctrl+Shift+Space registration failed — may conflict with another app.');
   } catch (e) {
     console.warn('[Flow] registerGlobalShortcuts failed:', e.message);
   }
@@ -944,102 +962,17 @@ function setupAutoStart() {
 // Joel already has working, just triggered locally instead of by clicking
 // the mic button.
 //
-// sox.exe is bundled at flow-electron/resources/sox/sox.exe via
-// package.json's build.extraResources, which places it in the packaged
-// app's resources directory — accessed at runtime via
-// process.resourcesPath (see startWakeWord below for why, and the real
-// bug this fixes).
-// REAL, UPDATED (this session): replaces the previous ONNX-classifier
-// wake-word pipeline with voice-engine.js's continuous-transcription
-// approach — Joel explicitly asked to stop chasing trained wake-word
-// models after multiple failed attempts. Same bundled sox.exe as before,
-// same extraResources pattern (now also bundling transcribe-cli.exe and
-// a Whisper GGUF model — see package.json + the CI workflow).
-function startWakeWord() {
-  const resourcesPath  = process.resourcesPath;
-  const soxBinaryPath  = path.join(resourcesPath, 'sox', 'sox.exe');
-  // REAL, NEW — a stable location that survives future app
-  // updates/reinstalls (unlike process.resourcesPath, which
-  // electron-builder replaces entirely on every new install). Used to
-  // store the Whisper model downloaded once on first real use, per
-  // Joel's explicit request to keep future auto-update downloads small.
-  const userDataPath = app.getPath('userData');
-
-  setRendererLogSink((channel, payload) => {
-    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(channel, payload);
-  });
-
-  // REAL, Joel-reported bug fix: this call's return value was previously
-  // discarded entirely. startVoiceEngine() returns false on real failure
-  // (missing transcribe-cli.exe, SoX binary, or a failed one-time model
-  // download) — with the result ignored, a failure looked IDENTICAL to
-  // "hey flow" simply not being said yet: no error, no notification,
-  // nothing. This is a real, plausible root cause for "hey flow does
-  // nothing" — the engine may never have actually started, silently.
-  startVoiceEngine({
-    resourcesPath,
-    soxBinaryPath,
-    userDataPath,
-    onWakeDetected: () => {
-      if (!mainWin) return;
-      if (mainWin.isMinimized()) mainWin.restore();
-      mainWin.show();
-      mainWin.focus();
-      mainWin.webContents.send('wakeword-detected');
-    },
-    // REAL, NEW — the actual transcribed command text, fired once the
-    // engine detects the user has stopped talking after a wake phrase.
-    // The renderer (app.js / content-lab.js) is responsible for actually
-    // routing this text into real actions — this only delivers it.
-    onCommand: (text) => {
-      if (!mainWin || mainWin.isDestroyed()) return;
-      mainWin.webContents.send('voice-command', { text });
-    },
-    // REAL, NEW — real progress during the one-time model download, so
-    // Joel sees an honest "downloading, X% done" rather than the app
-    // just appearing to hang on first real voice use after a fresh
-    // install.
-    onModelDownloadProgress: (downloaded, total) => {
-      if (!mainWin || mainWin.isDestroyed()) return;
-      mainWin.webContents.send('voice-model-download-progress', {
-        downloaded, total, percent: Math.round((downloaded / total) * 100),
-      });
-    },
-  }).then((started) => {
-    if (started === false) {
-      // Real, honest surfacing — sent to the SAME renderer log channel
-      // used elsewhere in this file, plus a real chat message once the
-      // window exists, so this is never silent again.
-      const msg = '⚠️ Voice engine failed to start — "hey flow" will not work this session. Check the console/logs for the specific reason (missing transcribe-cli.exe, missing sox.exe, or a failed one-time model download).';
-      console.error('[Main]', msg);
-      if (mainWin && !mainWin.isDestroyed()) {
-        mainWin.webContents.send('heartbeat-message', { text: msg, ts: Date.now() });
-        // REAL, Joel-requested — a genuine on/off signal for whether the
-        // mic is actually being listened to, distinct from the wake-word
-        // DETECTION event above (which only fires once "hey flow" is
-        // heard). This is what ui/app.js uses to light up #wake-indicator
-        // honestly, matching how every other app with an always-on mic
-        // (Windows' own mic indicator, Zoom, Discord, etc.) shows a real
-        // "I am listening right now" state rather than a static label.
-        mainWin.webContents.send('voice-engine-status', { listening: false, reason: 'failed-to-start' });
-      }
-    } else {
-      // Real, confirmed success — the engine is now genuinely capturing
-      // mic audio continuously via SoX and listening for the wake phrase.
-      if (mainWin && !mainWin.isDestroyed()) {
-        mainWin.webContents.send('voice-engine-status', { listening: true });
-      }
-    }
-  }).catch((e) => {
-    console.error('[Main] startVoiceEngine threw an unexpected error:', e.message);
-    if (mainWin && !mainWin.isDestroyed()) {
-      mainWin.webContents.send('voice-engine-status', { listening: false, reason: 'error', message: e.message });
-    }
-  });
-}
+// NOTE: startWakeWord() (SoX + local whisper.cpp continuous listening)
+// is gone — scratched and rebuilt per Joel's explicit instruction after
+// four separate real approaches (trained wake-word models, Deepgram
+// streaming, whisper.cpp compile, webkitSpeechRecognition) all failed
+// for his environment. See registerGlobalShortcuts() below for the new,
+// much simpler replacement: a global hotkey instantly triggers the mic,
+// using core/whisper.js's already-proven MediaRecorder + Hugging Face
+// Whisper flow — the same one the web build already used successfully.
 
 app.whenReady().then(() => {
-  createWindow(); createOverlay(); createTray(); setupAutoStart(); registerGlobalShortcuts(); startWakeWord();
+  createWindow(); createOverlay(); createTray(); setupAutoStart(); registerGlobalShortcuts();
 
   // REAL FIX/FEATURE: wires the heartbeat's self-initiated messages into
   // the actual chat UI when the window happens to be open, via the same
@@ -1063,4 +996,4 @@ app.on('window-all-closed',() => {
   // it to meaningfully decide.
   /* stay in tray */
 });
-app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); stopVoiceEngine(); heartbeat.stopHeartbeat(); });
+app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); heartbeat.stopHeartbeat(); });
