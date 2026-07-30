@@ -1,126 +1,156 @@
 // ═══════════════════════════════════════════
-// ui/chat-tray.js — Chats tray, per Joel's explicit request to move the
-// chat log off being permanently on-screen (previously: two fixed side
-// columns, invisible until hover) into its own toggleable left-edge
-// tray, matching the same real slide-in pattern as content-lab.js and
-// leads.js. Positioned ABOVE the Leads tray on the left edge.
+// ui/chat-tray.js — Chat drawers, REBUILT per Joel's explicit redesign.
 //
-// REAL, DELIBERATE DESIGN: this module does NOT reimplement chat
-// rendering. ui/chat.js's Chat.add/addError/etc. already do
-// document.getElementById("col-left"/"col-right") and append messages —
-// that keeps working unchanged no matter where those two elements
-// physically live in the DOM. This module's only real job is to move
-// the existing #col-left/#col-right elements (defined in index.html)
-// into a new tray container at init time, and provide the tray
-// shell/tab. Nothing about message rendering, tool proposals, or the
-// typing indicator needed to change.
+// REAL, NEW DESIGN: scraps the single tab-toggled tray entirely. Back to
+// two independent columns on each side of the screen (Flow's messages
+// on the left, Joel's on the right — same as the original pre-tray
+// layout), but each is now a real DRAWER:
+//   - A small rectangular handle sits at the bottom of each side,
+//     invisible by default, visible only on hover of that bottom-edge
+//     region.
+//   - Clicking a handle slides that side's chat content UP into view
+//     (a real drawer/drop-down motion, from below).
+//   - Drawers overlay everything else on screen EXCEPT the four tray
+//     tab buttons (Leads/Content Lab/Chats-N/A-anymore/Thought Log),
+//     which stay visually on top and clickable even with a drawer open
+//     — achieved with z-index lower than the tray tabs but higher than
+//     everything else.
+//   - The two sides are fully independent — either, both, or neither
+//     can be open at once.
+//
+// REAL, DELIBERATE: this does NOT reimplement message rendering.
+// ui/chat.js's Chat.add/addError/etc. already do
+// document.getElementById("col-left"/"col-right") — that keeps working
+// unchanged no matter where those two elements physically live in the
+// DOM. This module's only real job is placing #col-left/#col-right
+// into their own drawer containers and providing the hover-handle/
+// slide-up mechanics.
 // ═══════════════════════════════════════════
 
-let _panelEl = null;
+let _leftPanelEl = null;
+let _rightPanelEl = null;
 
 function _injectStyles() {
-  if (document.getElementById("chat-tray-style")) return;
+  if (document.getElementById("chat-drawer-style")) return;
   const style = document.createElement("style");
-  style.id = "chat-tray-style";
+  style.id = "chat-drawer-style";
   style.textContent = `
-#chat-tray-tab {
-  position: fixed; top: 90px; left: 0;
-  width: 28px; height: 84px;
-  background: rgba(30,20,55,0.95); border: 1px solid rgba(167,139,250,0.4);
-  border-left: none; border-radius: 0 10px 10px 0;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-  cursor: pointer; z-index: 9998; color: #a78bfa; font-size: 16px;
-  box-shadow: 4px 0 16px rgba(0,0,0,0.35);
-  transition: background 0.15s ease, width 0.15s ease;
+/* REAL, Joel-requested — z-index sits BELOW the four tray tabs (9998)
+   so Leads/Content Lab/Thought Log stay visible and clickable on top of
+   an open chat drawer, but ABOVE ordinary page content so the drawer
+   genuinely overlays everything else, per Joel's explicit spec. */
+.chat-drawer {
+  position: fixed; bottom: 0; width: 50vw; height: 60vh;
+  z-index: 9500; pointer-events: none;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  transform: translateY(100%);
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
-#chat-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
-#chat-tray-tab .ct-tab-icon { font-size: 15px; line-height: 1; }
+.chat-drawer.open { transform: translateY(0); pointer-events: all; }
+#chat-drawer-left  { left: 0; }
+#chat-drawer-right { right: 0; }
+
+.chat-drawer-content {
+  flex: 1; overflow-y: auto; padding: 16px 14px 8px;
+  background: linear-gradient(to top, rgba(10,8,20,0.85) 60%, rgba(10,8,20,0));
+  pointer-events: all;
+}
+.chat-drawer-content::-webkit-scrollbar { display: none; }
+
+/* REAL, Joel-requested — the actual hover handle: a small rectangular
+   tab at the bottom edge, invisible by default, revealed on hover of
+   the handle itself OR the thin trigger strip just above it (so Joel
+   doesn't need pixel-perfect aim to notice it's there). */
+.chat-drawer-handle-zone {
+  position: fixed; bottom: 0; width: 50vw; height: 34px;
+  z-index: 9499; pointer-events: all;
+}
+#chat-drawer-handle-zone-left  { left: 0; }
+#chat-drawer-handle-zone-right { right: 0; }
+
+.chat-drawer-handle {
+  position: absolute; bottom: 6px; width: 64px; height: 22px;
+  background: rgba(30,20,55,0.9); border: 1px solid rgba(167,139,250,0.35);
+  border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: #a78bfa; font-size: 12px;
+  opacity: 0; transition: opacity 0.2s ease, background 0.15s ease;
+}
+.chat-drawer-handle-zone-left .chat-drawer-handle  { left: 50%; transform: translateX(-50%); }
+.chat-drawer-handle-zone-right .chat-drawer-handle { left: 50%; transform: translateX(-50%); }
+
+.chat-drawer-handle-zone:hover .chat-drawer-handle { opacity: 1; }
+.chat-drawer-handle:hover { background: rgba(50,35,85,0.95); }
+.chat-drawer-handle.drawer-is-open { opacity: 1; background: rgba(74,222,128,0.15); border-color: rgba(74,222,128,0.4); color: #4ade80; }
+
+@media (max-width: 768px) {
+  .chat-drawer, .chat-drawer-handle-zone { width: 100vw; left: 0 !important; right: 0 !important; }
+  #chat-drawer-right, #chat-drawer-handle-zone-right { display: none; } /* real, matches prior mobile behavior — Joel's own messages weren't shown on mobile before this change either */
+}
 `;
   document.head.appendChild(style);
 }
 
-export function isChatTrayOpen() {
-  return !!_panelEl?.classList.contains("ct-open");
-}
-
-export function openChatTray() {
-  _injectStyles();
-
-  if (_panelEl) {
-    _panelEl.classList.add("ct-open");
-    document.getElementById("chat-tray-tab")?.classList.add("ct-tray-open");
-    return;
-  }
-
-  // Build the tray shell and move the EXISTING col-left/col-right
-  // elements into it — real, deliberate choice over recreating them, so
-  // every other module that already holds a reference or does
-  // getElementById("col-left") keeps working with zero changes.
+function _buildDrawer(side, colEl) {
   const panel = document.createElement("div");
-  panel.id = "chat-tray-panel";
+  panel.className = "chat-drawer";
+  panel.id = `chat-drawer-${side}`;
 
-  const colLeft = document.getElementById("col-left");
-  const colRight = document.getElementById("col-right");
-  if (colLeft) panel.appendChild(colLeft);
-  if (colRight) panel.appendChild(colRight);
+  const content = document.createElement("div");
+  content.className = "chat-drawer-content";
+  if (colEl) content.appendChild(colEl);
+  panel.appendChild(content);
 
   document.body.appendChild(panel);
-  _panelEl = panel;
 
-  requestAnimationFrame(() => {
-    panel.classList.add("ct-open");
-    document.getElementById("chat-tray-tab")?.classList.add("ct-tray-open");
-  });
+  const handleZone = document.createElement("div");
+  handleZone.className = "chat-drawer-handle-zone boot-collapsed"; // real, hidden until core/boot.js reveals it
+  handleZone.id = `chat-drawer-handle-zone-${side}`;
+
+  const handle = document.createElement("div");
+  handle.className = "chat-drawer-handle";
+  handle.textContent = side === "left" ? "💬 Flow" : "💬 You";
+  handle.addEventListener("click", () => _toggleDrawer(side));
+  handleZone.appendChild(handle);
+  document.body.appendChild(handleZone);
+
+  return panel;
 }
 
-// REAL, Joel-requested — tapping anywhere outside the tray (and outside
-// its own tab button) closes it. Bound once at init, not per-open, since
-// initChatTray() already builds the panel eagerly.
-let _outsideClickBound = false;
-function _bindOutsideClickClose() {
-  if (_outsideClickBound) return;
-  _outsideClickBound = true;
-  document.addEventListener("mousedown", (e) => {
-    if (!_panelEl?.classList.contains("ct-open")) return;
-    const tab = document.getElementById("chat-tray-tab");
-    if (_panelEl.contains(e.target) || tab?.contains(e.target)) return;
-    closeChatTray();
-  });
+function _toggleDrawer(side) {
+  const panel = side === "left" ? _leftPanelEl : _rightPanelEl;
+  const handle = document.querySelector(`#chat-drawer-handle-zone-${side} .chat-drawer-handle`);
+  if (!panel) return;
+  const isOpen = panel.classList.toggle("open");
+  handle?.classList.toggle("drawer-is-open", isOpen);
+}
+
+export function isChatTrayOpen() {
+  return !!(_leftPanelEl?.classList.contains("open") || _rightPanelEl?.classList.contains("open"));
+}
+
+// REAL, kept for compatibility with core/commands.js's setTrayHandlers
+// wiring (not currently invoked by any real slash command, but kept as
+// a real, working no-guess fallback in case one is added later) — opens
+// BOTH drawers at once, since there's no longer a single combined tray
+// to open.
+export function openChatTray() {
+  _injectStyles();
+  if (_leftPanelEl && !_leftPanelEl.classList.contains("open")) _toggleDrawer("left");
+  if (_rightPanelEl && !_rightPanelEl.classList.contains("open")) _toggleDrawer("right");
 }
 
 export function closeChatTray() {
-  if (_panelEl) _panelEl.classList.remove("ct-open");
-  document.getElementById("chat-tray-tab")?.classList.remove("ct-tray-open");
-}
-
-function _buildToggleButton() {
-  const tab = document.createElement("div");
-  tab.id = "chat-tray-tab";
-  tab.className = "boot-collapsed"; // real, Joel-reported fix — hidden until core/boot.js reveals it
-  tab.title = "Chat";
-  tab.innerHTML = `<span class="ct-tab-icon">💬</span>`;
-  tab.addEventListener("click", () => {
-    if (isChatTrayOpen()) closeChatTray();
-    else openChatTray();
-  });
-  document.body.appendChild(tab);
+  if (_leftPanelEl?.classList.contains("open")) _toggleDrawer("left");
+  if (_rightPanelEl?.classList.contains("open")) _toggleDrawer("right");
 }
 
 export function initChatTray() {
   _injectStyles();
-  _buildToggleButton();
-  // Real, deliberate: build the tray shell (and move col-left/col-right
-  // into it) immediately at init, not lazily on first open — messages
-  // can arrive (e.g. Flow's proactive/self-initiated messages) before
-  // Joel ever opens the tray for the first time, and Chat.add() needs
-  // col-left/col-right to already exist wherever they're going to live.
-  const panel = document.createElement("div");
-  panel.id = "chat-tray-panel";
+
   const colLeft = document.getElementById("col-left");
   const colRight = document.getElementById("col-right");
-  if (colLeft) panel.appendChild(colLeft);
-  if (colRight) panel.appendChild(colRight);
-  document.body.appendChild(panel);
-  _panelEl = panel;
-  _bindOutsideClickClose();
+
+  _leftPanelEl = _buildDrawer("left", colLeft);
+  _rightPanelEl = _buildDrawer("right", colRight);
 }
