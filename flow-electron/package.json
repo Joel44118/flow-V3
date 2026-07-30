@@ -1,6 +1,6 @@
 {
   "name": "flow-ai",
-  "version": "1.3.6",
+  "version": "1.3.7",
   "description": "Flow AI Desktop",
   "main": "main.js",
   "scripts": {
@@ -13,7 +13,6 @@
     "files": [
       "main.js",
       "preload.js",
-      "voice-engine.js",
       "heartbeat.js",
       "memory-store.js",
       "icon.png",
@@ -44,7 +43,7 @@
     "nsis": {
       "oneClick": true,
       "perMachine": false,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "Flow AI"
     }
@@ -56,7 +55,6 @@
   "dependencies": {
     "electron-updater": "^6.1.8",
     "@jitsi/robotjs": "^0.6.12",
-    "active-win": "^9.0.0",
-    "onnxruntime-node": "^1.19.0"
+    "active-win": "^9.0.0"
   }
 }
