@@ -1,6 +1,6 @@
 {
   "name": "flow-ai",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "description": "Flow AI Desktop",
   "main": "main.js",
   "scripts": {
@@ -24,11 +24,7 @@
       "node_modules/@jitsi/robotjs/**/*",
       "node_modules/active-win/**/*"
     ],
-    "extraResources": [
-      { "from": "resources/wakeword",   "to": "wakeword" },
-      { "from": "resources/sox",        "to": "sox" },
-      { "from": "resources/transcribe", "to": "transcribe" }
-    ],
+    "extraResources": [],
     "publish": {
       "provider": "github",
       "owner": "Joel44118",
