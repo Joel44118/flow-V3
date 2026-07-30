@@ -34,6 +34,7 @@ import { initContentLab, openContentLab, closeContentLab, isContentLabOpen, poll
 import { initThoughtLog, openThoughtLog } from "./ui/thought-log.js";
 import { initLeadsTray, openLeadsTray } from "./ui/leads.js";
 import { initChatTray, openChatTray } from "./ui/chat-tray.js";
+import { initSettings } from "./ui/settings.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -548,6 +549,7 @@ initContentLab(Chat, Orb);
 initThoughtLog();
 initLeadsTray();
 initChatTray();
+initSettings();
 setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray);
 
 // REAL, Joel-requested — polls for new research insights (content/sales/
@@ -725,57 +727,28 @@ sendBtn.addEventListener("click", doSend);
 // network/security-software environment, not a code bug. This uses
 // Hugging Face's hosted Whisper instead — same proven-working token
 // pattern already used by ui/imagine.js and ui/videogen.js — via
-// click-to-record, PLUS local wake-word ("Wake up Flow") in the Electron
-// build specifically. The Electron main process runs its own always-on
-// detection pipeline (flow-electron/wakeword-engine.js) and pushes a
-// 'wakeword-detected' IPC event here when it hears the phrase — see the
-// listener below. Web/browser builds still rely on click-to-record only,
-// since a browser tab can't keep a mic hot in the background.
+// ═══════════════════════════════════════════
+// REAL, SCRATCHED AND REBUILT per Joel's explicit instruction. The old
+// Electron-only "live dictation" (SoX + local whisper.cpp) and spoken
+// "hey flow" wake-word are BOTH gone — four separate real approaches to
+// hands-free wake-word failed across this project's history (trained
+// openWakeWord models, Deepgram streaming, whisper.cpp compile that
+// never shipped, and webkitSpeechRecognition — confirmed via research
+// to reliably fail inside Electron specifically). Rather than chase a
+// fifth approach, Electron and web now share the EXACT SAME simple,
+// already-proven click-to-record flow below (core/whisper.js's
+// MediaRecorder + Hugging Face Whisper) — genuinely simpler, zero
+// native binaries, zero compilation.
+//
+// Hands-free triggering is replaced by a global hotkey
+// (Ctrl+Shift+Space, Electron only — registered in main.js using the
+// SAME globalShortcut infrastructure already proven working for
+// Ctrl+Shift+F/I elsewhere in this app) that instantly starts the same
+// recording flow from anywhere on the PC — no spoken phrase needed.
+// ═══════════════════════════════════════════
 let _isRecording = false;
-let _isDictating = false;
 
-// REAL, Joel-requested: live dictation via Electron's voice-engine.js —
-// text streams into the actual visible input box as he talks, and
-// auto-sends once ~3-4s of real silence is detected. Only available in
-// the Electron build (window.__flowElectron.dictation exists there —
-// see preload.js); web/browser builds fall through to the existing
-// click-to-record HF-Whisper flow below, unchanged.
-async function _startDictationMode() {
-  _isDictating = true;
-  micBtn.classList.add("recording");
-  Orb.setState("listening");
-  window.__flowElectron.dictation.onUpdate((text) => {
-    if (_inputEl) _inputEl.value = text;
-  });
-  window.__flowElectron.dictation.onFinal((text) => {
-    _isDictating = false;
-    micBtn.classList.remove("recording");
-    Orb.setState("idle");
-    if (_inputEl) _inputEl.value = "";
-    if (text && text.trim()) flowSend(text.trim());
-  });
-  await window.__flowElectron.dictation.start();
-}
-
-micBtn.addEventListener("click", async () => {
-  // REAL, mode-aware dispatch: Electron gets real live dictation;
-  // web/browser keeps the existing click-to-record-then-transcribe flow
-  // completely unchanged below.
-  if (window.__flowElectron?.dictation) {
-    if (_isDictating) {
-      await window.__flowElectron.dictation.stop(); // real, forces early finalization — onFinal above still fires normally
-      return;
-    }
-    try {
-      await _startDictationMode();
-    } catch (e) {
-      _isDictating = false;
-      micBtn.classList.remove("recording");
-      Chat.addError?.(`Couldn't start dictation: ${e.message}`);
-    }
-    return;
-  }
-
+async function _toggleRecording() {
   if (!_isRecording) {
     try {
       await startRecording();
@@ -801,7 +774,15 @@ micBtn.addEventListener("click", async () => {
   } finally {
     cancelRecording?.();
   }
-});
+}
+
+micBtn.addEventListener("click", _toggleRecording);
+
+// REAL, NEW — the global-hotkey trigger (Ctrl+Shift+Space, Electron
+// only; silent no-op on web since window.__flowElectron doesn't exist
+// there). Reuses the EXACT SAME _toggleRecording function the mic button
+// itself calls — one real implementation, two ways to trigger it.
+window.__flowElectron?.voiceHotkey?.onTrigger(() => { _toggleRecording(); });
 
 // ── Wake word — "Wake up Flow" (Electron only) ──────────────────────────
 // window.__flowElectron only exists inside the Electron build (exposed by
@@ -822,108 +803,22 @@ if (window.__flowElectron?.heartbeat) {
   });
 }
 
-if (window.__flowElectron?.wakeword) {
-  // REAL FIX: prints every real wake-word log line into THIS console
-  // (DevTools, F12) — previously these only reached a terminal window
-  // that genuinely doesn't exist in the packaged app, so Joel's repeated
-  // "Hey Flow" tests showing nothing in DevTools meant nothing at all
-  // about whether wake-word was actually running; it was never wired to
-  // log here in the first place. Prefixed distinctly so it's easy to
-  // filter/spot among everything else in the console.
-  window.__flowElectron.wakeword.onLog?.(({ level, line, ts }) => {
-    const prefix = `[WakeWord @ ${new Date(ts).toLocaleTimeString()}]`;
-    if (level === "error") console.error(prefix, line);
-    else if (level === "warn") console.warn(prefix, line);
-    else console.log(prefix, line);
-  });
+// NOTE: the old spoken "hey flow" wake-word block (log forwarding,
+// model-download progress, detection listener) is gone — scratched and
+// rebuilt per Joel's explicit instruction. See the _toggleRecording /
+// voiceHotkey wiring above for the real replacement.
 
-  // REAL, NEW — shows honest progress during the one-time Whisper model
-  // download (first real voice use after a fresh install), so it's
-  // clear the app is genuinely working, not hanging. Only surfaces at
-  // real milestones (not on every single progress tick, which would
-  // spam the chat) — a message every 25% is genuinely useful without
-  // being noisy.
-  let _lastShownDownloadMilestone = -1;
-  window.__flowElectron.wakeword.onModelDownloadProgress?.(({ percent }) => {
-    const milestone = Math.floor(percent / 25) * 25;
-    if (milestone !== _lastShownDownloadMilestone && milestone > 0) {
-      _lastShownDownloadMilestone = milestone;
-      console.log(`[Voice] Downloading voice model (one-time): ${percent}%`);
-      if (milestone === 100) {
-        Chat.add?.("🎙️ Voice model downloaded — voice control is ready.", "bot");
-      }
-    }
-  });
-
-  // REAL, Joel-requested — a genuine "is the mic actually being
-  // listened to right now" indicator, distinct from wake-word DETECTION
-  // (which only fires once "hey flow" is actually heard). Toggles the
-  // real #wake-indicator element (already in index.html/styles.css, but
-  // previously just static decorative text — app.js never updated it).
-  // This answers Joel's real question directly: yes, the app should
-  // show this, and now it genuinely does, reflecting the real state
-  // reported by the voice engine itself rather than assuming success.
-  const wakeIndicatorEl = document.getElementById("wake-indicator");
-  window.__flowElectron.wakeword.onStatus?.(({ listening, reason, message }) => {
-    if (!wakeIndicatorEl) return;
-    if (listening) {
-      wakeIndicatorEl.classList.remove("failed");
-      wakeIndicatorEl.classList.add("active");
-      wakeIndicatorEl.innerHTML = `🎙️ Listening for <em>"Hey Flow"</em>`;
-      wakeIndicatorEl.title = "";
-    } else {
-      wakeIndicatorEl.classList.remove("active");
-      wakeIndicatorEl.classList.add("failed");
-      // Real, honest, visible failure state — this is what used to be
-      // "hey flow does nothing" with zero explanation; now the
-      // indicator itself tells Joel plainly that it's not listening,
-      // instead of silently looking identical to the working state.
-      wakeIndicatorEl.innerHTML = `⚠️ Voice control not running`;
-      wakeIndicatorEl.title = message || `Reason: ${reason || "unknown"} — check DevTools console for [WakeWord] logs.`;
-    }
-  });
-
-  window.__flowElectron.wakeword.onDetected(async () => {
-    // Ignore if already mid-recording (e.g. Joel clicked the mic manually
-    // right before saying the wake word) — avoids double-triggering the
-    // same start/stop cycle from two different sources at once.
-    if (_isRecording) return;
-
-    try {
-      await startRecording();
-      _isRecording = true;
-      micBtn.classList.add("recording");
-      Orb.setState("listening");
-    } catch (e) {
-      Chat.addError?.(`Couldn't access microphone: ${e.message}`);
-      return;
-    }
-
-    // Wake-word start has no manual "click again to stop" step — Flow
-    // needs to decide on its own when Joel has stopped talking. Reuses
-    // whatever silence/end-of-speech detection startRecording()/
-    // stopRecordingAndTranscribe() already implement internally; this
-    // just waits a fixed window before calling stop. If core/whisper.js
-    // has its own voice-activity-detection already built in, this timeout
-    // can likely be removed entirely — worth checking before assuming a
-    // fixed delay is the best approach long-term.
-    setTimeout(async () => {
-      if (!_isRecording) return; // already stopped some other way
-      _isRecording = false;
-      micBtn.classList.remove("recording");
-      Orb.setState("thinking");
-      try {
-        const text = await stopRecordingAndTranscribe();
-        Orb.setState("idle");
-        if (text) flowSend(text);
-      } catch (e) {
-        Orb.setState("idle");
-        Chat.addError?.(`Transcription failed: ${e.message}`);
-      } finally {
-        cancelRecording?.();
-      }
-    }, 4000); // 4s recording window after wake word — tune based on real testing
-  });
+// REAL, Joel-requested — the #wake-indicator element now shows an
+// honest, static hint for the new hotkey trigger, since there's no more
+// spoken-phrase detection state to reflect live. Simpler, and never
+// silently wrong about what's actually happening (unlike the old
+// "listening for hey flow" text, which stayed visually identical whether
+// the engine was truly running or had silently failed).
+const wakeIndicatorEl = document.getElementById("wake-indicator");
+if (wakeIndicatorEl) {
+  wakeIndicatorEl.innerHTML = window.__flowElectron
+    ? `🎙️ <em>Ctrl+Shift+Space</em> to talk`
+    : `🎙️ Click the mic to talk`;
 }
 
 // ── Main-process log forwarding (Electron only) ──────────────────────────
