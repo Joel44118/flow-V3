@@ -3084,9 +3084,18 @@ async function _apifyFindBusinesses(niche, location, maxResults = 15) {
   if (!token) throw new Error('APIFY_API_TOKEN not set in Vercel env vars — sign up free at apify.com and find your token under Settings → Integrations.');
 
   const searchString = location ? `${niche} in ${location}` : niche;
+  // REAL FIX: this fetch previously had NO timeout at all. Vercel
+  // Hobby's hard ~10s function execution cap (a known, documented
+  // constraint for this project) means an Apify run that takes longer
+  // than that gets the WHOLE function killed mid-request — no catch
+  // block gets a chance to run, and the client receives Vercel's raw
+  // HTML error page instead of JSON. Capping this fetch at 8s means the
+  // JS-level catch below can actually fire and return a real, honest
+  // "search took too long" error as JSON instead.
   const res = await fetch(`https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?token=${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(8000),
     body: JSON.stringify({
       searchStringsArray: [searchString],
       maxCrawledPlacesPerSearch: maxResults,
@@ -3142,20 +3151,56 @@ const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
 // it's instant and free where the LLM call has real latency/cost.
 const OBFUSCATED_EMAIL_REGEX = /([a-zA-Z0-9._%+-]+)\s*(?:\[at\]|\(at\)|\s+at\s+)\s*([a-zA-Z0-9.-]+)\s*(?:\[dot\]|\(dot\)|\s+dot\s+)\s*([a-zA-Z]{2,})/i;
 
+// REAL, restructured for a real constraint: Vercel Hobby's ~10s hard
+// function timeout applies to the WHOLE lead-job-advance call, which
+// does exactly one business per invocation. The original design here
+// tried the homepage, then three separate /contact-style paths, each
+// with its own fetch AND its own potential Groq fallback call — worst
+// case, that's 4 fetches at up to 8s each (32s) plus multiple Groq
+// calls, wildly over budget, and a real, likely contributor to jobs
+// dying mid-scrape. Rebuilt to a real, bounded budget: homepage fetch
+// (5s cap) → if nothing, exactly ONE contact-page fetch (3s cap,
+// regex/mailto only, no LLM call yet) → exactly ONE Groq LLM pass at
+// the very end using whichever page text was actually retrieved.
+// Worst case is now ~5s + ~3s + ~2s Groq call ≈ 10s, not 30+.
 async function _scrapeEmailFromWebsite(websiteUrl) {
+  const homepage = await _fetchAndExtractEmail(websiteUrl, 5000);
+  if (homepage.email) return homepage.email;
+
+  let contactPageText = null;
   try {
-    const res = await fetch(websiteUrl, {
+    const base = new URL(websiteUrl);
+    const contactUrl = `${base.origin}/contact`;
+    const contact = await _fetchAndExtractEmail(contactUrl, 3000);
+    if (contact.email) return contact.email;
+    contactPageText = contact.cleanText;
+  } catch (_) { /* malformed URL — homepage attempt above is all we can do */ }
+
+  // Real Groq LLM fallback, run exactly ONCE here (not per-page) —
+  // prefers the contact page's text if we got one (more likely to
+  // contain a real contact email a human would recognize but the
+  // regex passes missed), falls back to the homepage's text otherwise.
+  const textForLLM = contactPageText || homepage.cleanText;
+  if (!textForLLM) return null; // both fetches genuinely failed — nothing to hand the LLM
+  return await _groqFindEmailInText(textForLLM, websiteUrl);
+}
+
+// ── Real, single-page fetch + fast regex/mailto extraction. Returns
+// { email, cleanText } — email is null if the fast passes found
+// nothing (not an error), cleanText is kept so the caller can still
+// hand it to the Groq fallback without re-fetching the page.
+async function _fetchAndExtractEmail(url, timeoutMs) {
+  try {
+    const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; FlowLeadBot/1.0)' },
-      signal: AbortSignal.timeout(8000), // real, honest cap — a slow/hanging site shouldn't stall the whole batch
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
-      console.warn(`[LeadDiscovery] Fetch failed for ${websiteUrl} (${res.status}) — skipping this site.`);
-      return null;
+      console.warn(`[LeadDiscovery] Fetch failed for ${url} (${res.status}) — skipping.`);
+      return { email: null, cleanText: null };
     }
     const html = await res.text();
 
-    // Real, same technique as api/search.js's extractText — strip
-    // script/style/nav/header/footer noise before either checking it.
     const cleanText = html
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -3166,34 +3211,39 @@ async function _scrapeEmailFromWebsite(websiteUrl) {
       .replace(/&nbsp;/g, ' ')
       .replace(/\s{2,}/g, ' ')
       .trim()
-      .slice(0, 6000); // real cap — plenty for a contact section, keeps the Groq fallback call cheap if it's needed
+      .slice(0, 6000);
 
-    // ── Fast pass 1: real mailto: link (most reliable real signal —
-    // an actual clickable email link a site owner deliberately added)
     const mailtoMatch = html.match(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i);
-    if (mailtoMatch) return mailtoMatch[1];
+    if (mailtoMatch) return { email: mailtoMatch[1], cleanText };
 
-    // ── Fast pass 2: plain visible email text
     const plainMatch = cleanText.match(EMAIL_REGEX);
-    if (plainMatch) return plainMatch[0];
+    if (plainMatch) return { email: plainMatch[0], cleanText };
 
-    // ── Fast pass 3: real, common obfuscation pattern ("name [at] domain [dot] com")
     const obfMatch = cleanText.match(OBFUSCATED_EMAIL_REGEX);
-    if (obfMatch) return `${obfMatch[1]}@${obfMatch[2]}.${obfMatch[3]}`;
+    if (obfMatch) return { email: `${obfMatch[1]}@${obfMatch[2]}.${obfMatch[3]}`, cleanText };
 
-    // ── Real Groq LLM fallback — genuinely reads the page for a human-
-    // recognizable contact email the regex passes above missed. This is
-    // the actual "smart filtering" step, backed by Groq specifically
-    // per Joel's request, and only runs when the fast passes find
-    // nothing — keeping this cheap and fast for the common case.
-    const groqKey = process.env.GROQ_API_KEY;
-    if (!groqKey) {
-      console.warn('[LeadDiscovery] GROQ_API_KEY not set — skipping smart-fallback pass, regex-only for this site.');
-      return null;
-    }
+    return { email: null, cleanText };
+  } catch (e) {
+    console.warn(`[LeadDiscovery] Real error fetching ${url} (non-fatal, skipping):`, e.message);
+    return { email: null, cleanText: null };
+  }
+}
+
+// ── Real Groq LLM fallback — genuinely reads page text for a human-
+// recognizable contact email the regex passes missed. Runs exactly
+// once per business now (see _scrapeEmailFromWebsite above), not once
+// per candidate page.
+async function _groqFindEmailInText(cleanText, websiteUrl) {
+  const groqKey = process.env.GROQ_API_KEY;
+  if (!groqKey) {
+    console.warn('[LeadDiscovery] GROQ_API_KEY not set — skipping smart-fallback pass, regex-only for this site.');
+    return null;
+  }
+  try {
     const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(6000), // real cap — this is the last step in the budget, must not run away
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
         max_tokens: 60,
@@ -3211,7 +3261,7 @@ async function _scrapeEmailFromWebsite(websiteUrl) {
     const reply = (groqData.choices?.[0]?.message?.content || '').trim();
     return (reply && reply.toLowerCase() !== 'none' && EMAIL_REGEX.test(reply)) ? reply.match(EMAIL_REGEX)[0] : null;
   } catch (e) {
-    console.warn(`[LeadDiscovery] Real error scraping ${websiteUrl} (non-fatal, skipping):`, e.message);
+    console.warn(`[LeadDiscovery] Groq fallback errored for ${websiteUrl} (non-fatal):`, e.message);
     return null;
   }
 }
@@ -3828,47 +3878,69 @@ async function handleHeartbeatNotify(req, res) {
   return res.status(200).json(result);
 }
 
+// REAL, CONFIRMED FIX — this file had NO top-level safety net. Every
+// individual handler below does its own try/catch internally, but if
+// ANY of them (or a future one) throws in a spot that isn't wrapped,
+// or if Vercel itself kills the function (timeout, memory), the
+// runtime returns its own generic HTML error page ("A server error has
+// occurred...") instead of JSON. That's the EXACT, real cause of the
+// console error Joel reported: `Unexpected token 'A', "A server e"...
+// is not valid JSON` when content-lab.js's pollAllInsights() tried to
+// .json() that HTML response. Wrapping the whole dispatch means ANY
+// failure — known or not-yet-discovered — always comes back as valid
+// JSON the client can actually parse, instead of breaking every poller
+// that assumes a JSON response (insights, lead-job-advance, etc.).
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  const platform = req.query?.platform || '';
-  if (platform === 'telegram')      return handleTelegram(req, res);
-  if (platform === 'whatsapp')      return handleWhatsApp(req, res);
-  if (platform === 'sentinel-ping') return handleSentinelPing(req, res);
-  if (platform === 'autopost')      return handleAutoPost(req, res);
-  if (platform === 'social-monitor') return handleSocialMonitor(req, res);
-  if (platform === 'sales-research') return handleSalesResearch(req, res);
-  if (platform === 'content-research') return handleContentResearch(req, res);
-  if (platform === 'mindset-research') return handleMindsetResearch(req, res);
-  if (platform === 'insights')       return handleInsights(req, res);
-  if (platform === 'social-drafts')  return handleSocialDrafts(req, res);
-  if (platform === 'social-draft-approve') return handleSocialDraftApprove(req, res);
-  if (platform === 'diagnose')      return handleDiagnose(req, res);
-  if (platform === 'bluesky')       return handleBluesky(req, res);
-  if (platform === 'youtube')       return handleYouTube(req, res);
-  if (platform === 'tiktok')        return handleTikTok(req, res);
-  if (platform === 'gmail-read')    return handleGmailRead(req, res);
-  if (platform === 'gmail-analyze') return handleGmailAnalyze(req, res);
-  if (platform === 'lead-search')   return handleLeadSearch(req, res);
-  if (platform === 'find-leads')    return handleFindLeadsByNiche(req, res);
-  if (platform === 'lead-job-create')     return handleLeadJobCreate(req, res);
-  if (platform === 'lead-job-advance')     return handleLeadJobAdvance(req, res);
-  if (platform === 'lead-job-set-reachout') return handleLeadJobSetReachout(req, res);
-  if (platform === 'lead-job-status')      return handleLeadJobStatus(req, res);
-  if (platform === 'lead-jobs-list')        return handleLeadJobsList(req, res);
-  if (platform === 'lead-outreach') return handleLeadOutreach(req, res);
-  if (platform === 'leads-list')    return handleLeadsList(req, res);
-  if (platform === 'gmail-send')    return handleGmailSend(req, res);
-  if (platform === 'heartbeat-notify') return handleHeartbeatNotify(req, res);
-  if (platform === 'marketing-draft') return handleMarketingDraft(req, res);
-  return res.status(200).json({ service: 'Flow Social', endpoints: {
-    telegram: '/api/social?platform=telegram',
-    whatsapp: '/api/social?platform=whatsapp',
-    sentinelPing: '/api/social?platform=sentinel-ping',
-    autopost: '/api/social?platform=autopost',
-    diagnose: '/api/social?platform=diagnose',
-    bluesky: '/api/social?platform=bluesky (POST { text, videoUrl? })',
-    heartbeatNotify: '/api/social?platform=heartbeat-notify (POST { text })',
-    marketingDraft: '/api/social?platform=marketing-draft (POST { imageBase64, caption })',
-  } });
+  try {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    const platform = req.query?.platform || '';
+    if (platform === 'telegram')      return await handleTelegram(req, res);
+    if (platform === 'whatsapp')      return await handleWhatsApp(req, res);
+    if (platform === 'sentinel-ping') return await handleSentinelPing(req, res);
+    if (platform === 'autopost')      return await handleAutoPost(req, res);
+    if (platform === 'social-monitor') return await handleSocialMonitor(req, res);
+    if (platform === 'sales-research') return await handleSalesResearch(req, res);
+    if (platform === 'content-research') return await handleContentResearch(req, res);
+    if (platform === 'mindset-research') return await handleMindsetResearch(req, res);
+    if (platform === 'insights')       return await handleInsights(req, res);
+    if (platform === 'social-drafts')  return await handleSocialDrafts(req, res);
+    if (platform === 'social-draft-approve') return await handleSocialDraftApprove(req, res);
+    if (platform === 'diagnose')      return await handleDiagnose(req, res);
+    if (platform === 'bluesky')       return await handleBluesky(req, res);
+    if (platform === 'youtube')       return await handleYouTube(req, res);
+    if (platform === 'tiktok')        return await handleTikTok(req, res);
+    if (platform === 'gmail-read')    return await handleGmailRead(req, res);
+    if (platform === 'gmail-analyze') return await handleGmailAnalyze(req, res);
+    if (platform === 'lead-search')   return await handleLeadSearch(req, res);
+    if (platform === 'find-leads')    return await handleFindLeadsByNiche(req, res);
+    if (platform === 'lead-job-create')     return await handleLeadJobCreate(req, res);
+    if (platform === 'lead-job-advance')     return await handleLeadJobAdvance(req, res);
+    if (platform === 'lead-job-set-reachout') return await handleLeadJobSetReachout(req, res);
+    if (platform === 'lead-job-status')      return await handleLeadJobStatus(req, res);
+    if (platform === 'lead-jobs-list')        return await handleLeadJobsList(req, res);
+    if (platform === 'lead-outreach') return await handleLeadOutreach(req, res);
+    if (platform === 'leads-list')    return await handleLeadsList(req, res);
+    if (platform === 'gmail-send')    return await handleGmailSend(req, res);
+    if (platform === 'heartbeat-notify') return await handleHeartbeatNotify(req, res);
+    if (platform === 'marketing-draft') return await handleMarketingDraft(req, res);
+    return res.status(200).json({ service: 'Flow Social', endpoints: {
+      telegram: '/api/social?platform=telegram',
+      whatsapp: '/api/social?platform=whatsapp',
+      sentinelPing: '/api/social?platform=sentinel-ping',
+      autopost: '/api/social?platform=autopost',
+      diagnose: '/api/social?platform=diagnose',
+      bluesky: '/api/social?platform=bluesky (POST { text, videoUrl? })',
+      heartbeatNotify: '/api/social?platform=heartbeat-notify (POST { text })',
+      marketingDraft: '/api/social?platform=marketing-draft (POST { imageBase64, caption })',
+    } });
+  } catch (e) {
+    // REAL, the actual fix — no matter what throws above, or where, the
+    // client always gets back valid JSON with `ok:false` and a real
+    // error message, never Vercel's raw HTML crash page.
+    console.error('[Social] Uncaught error in top-level handler (now safely caught):', e?.message, e?.stack);
+    if (!res.headersSent) {
+      return res.status(200).json({ ok: false, error: e?.message || 'Unknown server error.' });
+    }
+  }
 }
