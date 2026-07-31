@@ -699,9 +699,8 @@ body::after {
    completes and removes it, exactly mirroring #top-bar.boot-collapsed
    and #app-footer.boot-collapsed above. Fixes the tabs showing through
    the boot screen (they previously had no boot-awareness at all). */
-#chat-drawer-handle-zone-left.boot-collapsed,
-#chat-drawer-handle-zone-right.boot-collapsed,
 #leads-tray-tab.boot-collapsed,
+#workflow-tray-tab.boot-collapsed,
 #content-lab-tray-tab.boot-collapsed,
 #thought-log-tab.boot-collapsed {
   opacity: 0; pointer-events: none;
