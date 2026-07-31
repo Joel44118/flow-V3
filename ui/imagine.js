@@ -16,6 +16,7 @@
 //    Triggers: everything else
 // ═══════════════════════════════════════════
 import { Speech } from "../core/speech.js";
+import { persistMedia, blobToDataUrl, getLiveMediaLog } from "../core/chat-persist.js";
 
 let _chat    = null;
 let _orb     = null;
@@ -340,6 +341,50 @@ function _renderCard(blobUrl, prompt, w, h, modelName) {
   col.appendChild(wrap);
   col.scrollTop = col.scrollHeight;
   // Image cards never fade out
+
+  // REAL FIX for Joel's reported bug — previously this card only ever
+  // existed as a blob: URL, which dies the moment the app reloads, and
+  // since nothing ever wrote a record of it anywhere, the whole card
+  // (not just the link) was gone on reload. Fetching the blob back from
+  // its own object URL and converting to a base64 data URL means this
+  // is now genuinely persisted — see core/chat-persist.js. Runs async,
+  // non-blocking, after the card is already visible.
+  fetch(blobUrl).then(r => r.blob()).then(blob => blobToDataUrl(blob)).then(dataUrl => {
+    persistMedia({ kind: "image", dataUrl, prompt, meta: (w && h ? `${w}×${h} · ${modelName}` : modelName) });
+  }).catch(e => console.warn("[Imagine] Couldn't persist this image for reload-survival (non-fatal, it'll still show for this session):", e.message));
+}
+
+// REAL, NEW — called once from app.js at boot, right alongside
+// Chat.loadHistory(), to reconstruct any image cards that survived
+// from a previous session. Only rebuilds from the LIVE log (not
+// archives) — archives are for the history browser, not the main feed.
+export function replayPersistedMedia() {
+  const col = document.getElementById("col-left");
+  if (!col) return;
+  const log = getLiveMediaLog();
+  log.forEach(entry => {
+    const wrap  = document.createElement("div");
+    wrap.className = "mwrap mleft img-card-wrap";
+    const label = document.createElement("div");
+    label.className = "mlabel";
+    label.textContent = "FLOW";
+    const card  = document.createElement("div");
+    card.className = "img-card";
+    const media = document.createElement(entry.kind === "video" ? "video" : "img");
+    media.src = entry.dataUrl;
+    media.style.cssText = "max-width:100%;border-radius:10px;display:block;cursor:pointer;";
+    if (entry.kind === "video") { media.controls = true; media.loop = true; }
+    else { media.onclick = () => window.open(entry.dataUrl, "_blank"); media.title = "Click to fullscreen"; }
+    const meta  = document.createElement("div");
+    meta.className = "img-meta";
+    meta.textContent = entry.meta || "";
+    card.appendChild(media);
+    card.appendChild(meta);
+    wrap.appendChild(label);
+    wrap.appendChild(card);
+    col.appendChild(wrap);
+  });
+  if (log.length) col.scrollTop = col.scrollHeight;
 }
 
 // ── Parse image request from text ─────────────────────────────────────────
