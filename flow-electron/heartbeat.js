@@ -491,13 +491,17 @@ function _settingsPath() { return path.join(app.getPath('userData'), 'flow-setti
 function _loadSettings() {
   try {
     const p = _settingsPath();
-    if (!fs.existsSync(p)) return { backgroundResearchEnabled: true };
+    if (!fs.existsSync(p)) return { backgroundResearchEnabled: true, handsFreeVoiceEnabled: false };
     const loaded = JSON.parse(fs.readFileSync(p, 'utf8'));
     if (typeof loaded.backgroundResearchEnabled !== 'boolean') loaded.backgroundResearchEnabled = true;
+    // REAL, new default — off, since hands-free voice (core/hands-free-
+    // vad.js) has a real trade-off (no wake-word gating) Joel should opt
+    // into deliberately rather than it silently turning on for existing users.
+    if (typeof loaded.handsFreeVoiceEnabled !== 'boolean') loaded.handsFreeVoiceEnabled = false;
     return loaded;
   } catch (e) {
     console.warn('[Heartbeat] Settings load failed (non-fatal, defaulting to enabled):', e.message);
-    return { backgroundResearchEnabled: true };
+    return { backgroundResearchEnabled: true, handsFreeVoiceEnabled: false };
   }
 }
 
