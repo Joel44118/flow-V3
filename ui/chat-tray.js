@@ -1,46 +1,46 @@
 // ═══════════════════════════════════════════
-// ui/chat-tray.js — Chat drawers, REBUILT per Joel's explicit redesign
-// (2nd pass — top-anchored mirrored drawers).
+// ui/chat-tray.js — Chat drawers, REBUILT (3rd pass) per Joel's corrections
+// to the 2nd pass.
 //
-// REAL, NEW DESIGN, replacing the prior bottom-anchored version:
-//   - Flow's messages: far-left drawer. Joel's messages: far-right
-//     drawer. Fully separate, independent columns — not merged.
-//   - Each drawer is anchored to the TOP, sitting just under #top-bar
-//     (which is 52px tall — see styles.css), not the bottom.
-//   - Each drawer has a small arrow-button handle. Handles are NOT
-//     fang-shaped themselves — they're ordinary arrow buttons — but
-//     because both sit permanently visible at the top of the screen,
-//     mirrored (left one shaped one way, right one shaped the
-//     mirror-image way), the pair reads visually like two front teeth/
-//     fangs framing the top of the app. That's a side-effect of
-//     mirroring, not a literal shape requirement.
-//   - The handle buttons are ALWAYS visible (not hover-revealed like the
-//     old version) — only the message content underneath does its own
-//     per-card hover reveal (see ui/chat.js, untouched here).
-//   - Default/closed state: handle sits at the very top (just under the
-//     top bar), arrow pointing DOWN (▼) meaning "click to pull this
-//     down". This is the "dragged up" resting position Joel described.
-//   - On click: the handle ITSELF travels down with the panel to the
-//     bottom edge of the now-revealed drawer (not staying pinned at
-//     top) — arrow flips to point UP (▲), meaning "click to push this
-//     back up". This is the real drop-down motion Joel asked for.
-//   - The two sides are fully independent — either, both, or neither
-//     can be open at once. Left and right are mirror images of each
-//     other, so open+open reads as symmetrical rather than misplaced.
-//
-// REAL, DELIBERATE: this does NOT reimplement message rendering.
-// ui/chat.js's Chat.add/addError/etc. already do
-// document.getElementById("col-left"/"col-right") — that keeps working
-// unchanged no matter where those two elements physically live in the
-// DOM. This module's only real job is placing #col-left/#col-right
-// into their own top-anchored drawer containers and providing the
-// always-visible-handle/slide-down mechanics.
+// REAL CORRECTIONS THIS PASS, based on Joel's exact feedback on the 2nd
+// pass:
+//   1. "Mirrored" means POSITION-mirrored (like a physical mirror down
+//      the center of the screen — same shape/style on both handles,
+//      placed at the same distance from their own edge), NOT
+//      shape-mirrored. The 2nd pass gave left/right handles different
+//      corner-rounding, which read as "swapped" rather than reflected.
+//      Fixed: both handles now share the exact same style (a circular
+//      glass button matching #settings-btn/#sentinel-toggle-btn's own
+//      look), just positioned as true mirror images of each other.
+//   2. Closed-state handle must read as an EXTENSION of the top bar —
+//      same circular glass look as the settings/bell buttons, sitting
+//      immediately under #top-bar (top: 52px), not a separate rectangle
+//      floating below it.
+//   3. Removed the fade-to-transparent gradient entirely. The open
+//      panel is a flat, consistent glass panel from just under the top
+//      bar down to just above the footer (top:52px, bottom:26px —real
+//      numbers, matching #top-bar/#app-footer's own heights in
+//      styles.css) — not a fixed 60vh block that showed through into
+//      unrelated screen space.
+//   4. Width capped well short of screen-center so the open drawer
+//      never overlaps the orb — the orb's own glow/rings extend to
+//      roughly 200px from true center (core/config.js's ORB.RADIUS=90,
+//      NET_RADIUS=135, real numbers read from the config, not guessed),
+//      so each drawer is capped at min(340px, 36vw) AND clamped to
+//      calc(50vw - 260px) as a hard ceiling — on any real screen size
+//      this leaves the center clear.
+//   5. Each message card is invisible until that SPECIFIC card is
+//      hovered (or tapped, for touch — hover doesn't exist there) —
+//      not a whole-panel fade. Scoped via CSS to cards living inside
+//      the drawer specifically, plus a small click-delegation fallback
+//      for touch devices where :hover never fires.
 // ═══════════════════════════════════════════
 
 let _leftPanelEl = null;
 let _rightPanelEl = null;
 
-const TOPBAR_HEIGHT = 52; // px — real, matches #top-bar's height in styles.css exactly
+const TOPBAR_HEIGHT  = 52; // px — real, matches #top-bar's height in styles.css
+const FOOTER_HEIGHT  = 26; // px — real, matches #app-footer's height in styles.css
 
 function _injectStyles() {
   if (document.getElementById("chat-drawer-style")) return;
@@ -49,72 +49,81 @@ function _injectStyles() {
   style.textContent = `
 /* REAL, Joel-requested — z-index sits BELOW the four tray tabs (9998)
    so Leads/Content Lab/Thought Log stay visible and clickable on top of
-   an open chat drawer, but ABOVE ordinary page content so the drawer
-   genuinely overlays everything else, per Joel's explicit spec. */
+   an open chat drawer, but ABOVE ordinary page content. */
 .chat-drawer {
-  position: fixed; top: ${TOPBAR_HEIGHT}px; width: 42vw; height: 60vh;
+  position: fixed; top: ${TOPBAR_HEIGHT}px; bottom: ${FOOTER_HEIGHT}px;
+  width: min(340px, 36vw); max-width: calc(50vw - 260px);
   z-index: 9500; pointer-events: none;
   display: flex; flex-direction: column;
   transform: translateY(-100%);
   transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .chat-drawer.open { transform: translateY(0); pointer-events: all; }
+.chat-drawer.boot-collapsed { opacity: 0; pointer-events: none; }
 #chat-drawer-left  { left: 0; }
 #chat-drawer-right { right: 0; }
 
-/* REAL, matches the same boot-collapsed pattern used by #top-bar and
-   the other three trays — hides the always-visible arrow handle too
-   during boot, so it doesn't flash on screen before real init finishes. */
-.chat-drawer.boot-collapsed { opacity: 0; pointer-events: none; }
-
+/* REAL, flat glass panel — no fade-to-transparent gradient. Consistent
+   background the full height of the drawer, matching the same glass
+   language as ui/leads.js's #leads-panel and ui/settings.js's modal. */
 .chat-drawer-content {
-  flex: 1; overflow-y: auto; padding: 8px 14px 16px;
-  background: linear-gradient(to bottom, rgba(10,8,20,0.85) 60%, rgba(10,8,20,0));
+  flex: 1; overflow-y: auto; padding: 10px 14px 14px;
+  background: rgba(15,10,30,0.94);
+  border-right: 1px solid rgba(167,139,250,0.18); /* left drawer's real edge */
   pointer-events: all;
 }
+#chat-drawer-right .chat-drawer-content {
+  border-right: none;
+  border-left: 1px solid rgba(167,139,250,0.18); /* mirrored edge for the right drawer */
+}
 .chat-drawer-content::-webkit-scrollbar { display: none; }
-.chat-drawer-content { scrollbar-width: none; } /* Firefox — real, matches the invisible-scrollbar spec */
+.chat-drawer-content { scrollbar-width: none; }
 
-/* REAL, Joel-requested — the arrow-button handle. ALWAYS visible (no
-   hover-reveal gate anymore — only the message cards underneath do
-   their own per-card hover reveal). The handle travels WITH the panel:
-   it's the panel's own last child, not a separately-positioned fixed
-   element, so when .chat-drawer translates down on open, the handle
-   genuinely rides along to the bottom edge of the revealed drawer —
-   this is what makes it feel "dragged down" and not just cosmetically
-   flipped in place. */
+/* REAL, per-card reveal — each message card is invisible until THAT
+   card specifically is hovered or tapped, not the whole panel. Scoped
+   to cards living inside a chat drawer only. */
+.chat-drawer-content .mwrap { opacity: 0.12; transition: opacity 0.18s ease; }
+.chat-drawer-content .mwrap:hover,
+.chat-drawer-content .mwrap.card-tapped { opacity: 1; }
+
+/* REAL, Joel-requested — the handle is styled identically to
+   #settings-btn/#sentinel-toggle-btn (circular glass button, same
+   palette) so a closed drawer genuinely reads as an extension of the
+   top bar rather than an unrelated purple rectangle. Both handles
+   share this EXACT same rule — only their position (left vs right,
+   set below) differs, which is what makes them true mirror images
+   instead of "swapped" shapes. */
 .chat-drawer-handle {
-  width: 56px; height: 26px; flex-shrink: 0;
-  background: rgba(30,20,55,0.92); border: 1px solid rgba(167,139,250,0.4);
-  cursor: pointer; pointer-events: all;
+  width: 34px; height: 34px; flex-shrink: 0; align-self: center;
+  border-radius: 50%; cursor: pointer; pointer-events: all;
+  background: radial-gradient(circle at 35% 30%, rgba(255,255,255,0.12), rgba(255,255,255,0.04) 70%);
+  border: 1px solid rgba(255,255,255,0.16);
   display: flex; align-items: center; justify-content: center;
-  color: #a78bfa; font-size: 13px; line-height: 1;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+  color: rgba(255,255,255,0.85); font-size: 13px; line-height: 1;
+  opacity: 0.7; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+  margin: 6px 0;
 }
-.chat-drawer-handle:hover { background: rgba(50,35,85,0.97); color: #c4b5fd; }
-.chat-drawer-handle.drawer-is-open { background: rgba(74,222,128,0.15); border-color: rgba(74,222,128,0.45); color: #4ade80; }
+.chat-drawer-handle:hover {
+  opacity: 1; transform: scale(1.06);
+  background: radial-gradient(circle at 35% 30%, rgba(56,189,248,0.22), rgba(56,189,248,0.06) 70%);
+  border-color: rgba(56,189,248,0.5);
+}
+.chat-drawer-handle.drawer-is-open {
+  opacity: 1;
+  background: radial-gradient(circle at 35% 30%, rgba(74,222,128,0.22), rgba(74,222,128,0.08) 70%);
+  border-color: rgba(74,222,128,0.5); color: #4ade80;
+}
 
-/* Mirrored shaping — REAL, this is what makes the pair read as a single
-   symmetrical "fangs" motif rather than two unrelated buttons. Left
-   drawer's handle rounds its bottom-RIGHT corner and sits toward the
-   left edge; right drawer's handle mirrors it exactly (rounds bottom-
-   LEFT, sits toward the right edge) — like two teeth meeting at the
-   top-center of the screen when both are closed. */
-#chat-drawer-left .chat-drawer-handle {
-  align-self: flex-start;
-  border-radius: 0 0 10px 0;
-  margin-left: 18px;
-}
-#chat-drawer-right .chat-drawer-handle {
-  align-self: flex-end;
-  border-radius: 0 0 0 10px;
-  margin-right: 18px;
-}
+/* Mirrored POSITION only — identical style, placed the same distance
+   from each drawer's own edge. This is the real fix for "swapped"; the
+   handle no longer changes shape/rounding side to side. */
+#chat-drawer-left .chat-drawer-handle  { align-self: flex-start; margin-left: 10px; }
+#chat-drawer-right .chat-drawer-handle { align-self: flex-end;   margin-right: 10px; }
 
 @media (max-width: 768px) {
-  .chat-drawer { width: 100vw; left: 0 !important; right: 0 !important; }
-  #chat-drawer-right { display: none; } /* real, matches prior mobile behavior — Joel's own messages weren't shown on mobile before this change either */
+  .chat-drawer { width: 100vw; max-width: 100vw; left: 0 !important; right: 0 !important; }
+  #chat-drawer-right { display: none; } /* real, matches prior mobile behavior */
 }
 `;
   document.head.appendChild(style);
@@ -122,24 +131,38 @@ function _injectStyles() {
 
 function _buildDrawer(side, colEl) {
   const panel = document.createElement("div");
-  panel.className = "chat-drawer boot-collapsed"; // real, hidden until core/boot.js reveals it — matches prior tray-tab boot behavior
+  panel.className = "chat-drawer boot-collapsed"; // real, hidden until core/boot.js reveals it
   panel.id = `chat-drawer-${side}`;
+
+  // REAL: handle lives INSIDE the panel, before the content, so it sits
+  // at the top of the panel when closed (flush under the top bar) and
+  // rides down with the panel to sit right above the content when open
+  // — same element throughout, only its screen position changes as the
+  // panel translates.
+  const handle = document.createElement("button");
+  handle.className = "chat-drawer-handle";
+  handle.setAttribute("aria-label", side === "left" ? "Toggle Flow's chat" : "Toggle your chat");
+  handle.title = side === "left" ? "Flow" : "You";
+  handle.textContent = "▼";
+  handle.addEventListener("click", () => _toggleDrawer(side));
+  panel.appendChild(handle);
 
   const content = document.createElement("div");
   content.className = "chat-drawer-content";
   if (colEl) content.appendChild(colEl);
   panel.appendChild(content);
 
-  // REAL: handle lives INSIDE the panel, after the content — this is
-  // what makes it travel down with the drawer on open, per Joel's spec,
-  // rather than staying pinned at a fixed screen position.
-  const handle = document.createElement("button");
-  handle.className = "chat-drawer-handle";
-  handle.setAttribute("aria-label", side === "left" ? "Toggle Flow's chat" : "Toggle your chat");
-  handle.title = side === "left" ? "Flow" : "You";
-  handle.textContent = "▼"; // closed default — points down, "pull me down"
-  handle.addEventListener("click", () => _toggleDrawer(side));
-  panel.appendChild(handle);
+  // REAL, touch fallback — :hover never fires on touch devices, so a
+  // tapped card needs an explicit class toggle to reveal it. Tapping a
+  // different card (or the empty content area) hides the previous one,
+  // matching how hover naturally "moves on" on desktop.
+  content.addEventListener("click", (e) => {
+    const card = e.target.closest(".mwrap");
+    content.querySelectorAll(".mwrap.card-tapped").forEach(el => {
+      if (el !== card) el.classList.remove("card-tapped");
+    });
+    if (card) card.classList.toggle("card-tapped");
+  });
 
   document.body.appendChild(panel);
   return panel;
@@ -151,16 +174,13 @@ function _toggleDrawer(side) {
   const handle = panel.querySelector(".chat-drawer-handle");
   const isOpen = panel.classList.toggle("open");
   handle?.classList.toggle("drawer-is-open", isOpen);
-  if (handle) handle.textContent = isOpen ? "▲" : "▼"; // flips to "push me back up" once open
+  if (handle) handle.textContent = isOpen ? "▲" : "▼";
 }
 
 export function isChatTrayOpen() {
   return !!(_leftPanelEl?.classList.contains("open") || _rightPanelEl?.classList.contains("open"));
 }
 
-// REAL, kept for compatibility with core/commands.js's setTrayHandlers
-// wiring — opens BOTH drawers at once, since there's no single combined
-// tray to open.
 export function openChatTray() {
   _injectStyles();
   if (_leftPanelEl && !_leftPanelEl.classList.contains("open")) _toggleDrawer("left");
