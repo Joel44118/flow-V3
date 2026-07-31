@@ -10,7 +10,7 @@
 // Flow always knows what you're working on.
 // ═══════════════════════════════════════════
 import { Storage } from "./storage.js";
-import { awardProjectXp } from "./leveling.js";
+import { awardProjectXp, awardGoalXp } from "./leveling.js";
 
 const KEY = "projects_v1";
 
@@ -76,8 +76,17 @@ export const Projects = {
   completeGoal(name, goalIdx) {
     const p = this.get(name);
     if (!p) return null;
+    const target = p.goals?.[goalIdx];
+    // REAL, Joel-requested — award EXP here, and ONLY here: a goal
+    // genuinely transitioning from not-done to done. Guards against
+    // re-awarding if this is ever called again on an already-completed
+    // goal (e.g. a duplicate click), and against awarding for an
+    // out-of-range index.
+    const isNewCompletion = target && !target.done;
     const goals = p.goals.map((g, i) => i === goalIdx ? { ...g, done: true, doneAt: Date.now() } : g);
-    return this.patch(name, { goals });
+    const result = this.patch(name, { goals });
+    if (isNewCompletion) awardGoalXp(target.text);
+    return result;
   },
 
   setStatus(name, status) {
