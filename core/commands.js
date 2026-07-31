@@ -36,6 +36,7 @@ let _openContentLab = null;
 let _openThoughtLog  = null;
 let _openLeadsTray   = null;
 let _openChatTray    = null;
+let _openWorkflowTray = null;
 
 export function setNotepad(n)          { _notepad       = n; }
 export function setSpeakFn(fn)         { _speak         = fn; }
@@ -48,11 +49,13 @@ export function setHistoryFn(fn)       { _getHistory = fn; }
 // no effect. "/find-leads" already had a working backend
 // (handleFindLeadsByNiche); this just also opens the Leads tray so Joel
 // can watch results land live instead of only seeing the chat summary.
-export function setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray) {
+// "/workflow" added alongside the new background-jobs panel.
+export function setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray, openWorkflowTray) {
   _openContentLab = openContentLab;
   _openThoughtLog = openThoughtLog;
   _openLeadsTray  = openLeadsTray;
   _openChatTray   = openChatTray;
+  _openWorkflowTray = openWorkflowTray;
 }
 
 // ── Site open map ──────────────────────────
@@ -157,6 +160,10 @@ export async function parseCommand(text) {
   if (/^\/leads?\b/i.test(t) && !_findLeadsMatch) {
     if (_openLeadsTray) { _openLeadsTray(); return null; }
     return "⚠️ Leads tray isn't wired up in this session yet.";
+  }
+  if (/^\/workflow\b/i.test(t)) {
+    if (_openWorkflowTray) { _openWorkflowTray(); return null; }
+    return "⚠️ Workflow tray isn't wired up in this session yet.";
   }
 
   if (/what.s the time|time now|current time/i.test(t))  return `It's ${getTime()}.`;
