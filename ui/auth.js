@@ -187,7 +187,18 @@ async function _loadFaceLandmarker() {
             modelAssetPath: "/api/mediapipe?f=face_landmarker.task",
             delegate: "CPU",
           },
-          runningMode: "IMAGE",
+          // REAL BUG FIX: this was "IMAGE" mode, but scanLoop() feeds it a
+          // continuously-playing <video> element via requestAnimationFrame,
+          // over and over — that's MediaPipe's VIDEO use case, not IMAGE
+          // (IMAGE mode is contracted for single static stills only). This
+          // almost certainly explains Joel's real regression ("stopped
+          // capturing my face since blink tracking was added") — adding
+          // outputFaceBlendshapes made each IMAGE-mode call do meaningfully
+          // more work per frame, which is far more likely to hit MediaPipe's
+          // internal state assumptions for repeated IMAGE-mode calls than
+          // the lighter landmark-only calls that worked before. Switched to
+          // the API's actual documented mode for this exact scenario.
+          runningMode: "VIDEO",
           numFaces: 1,
           // REAL SECURITY FIX: blendshapes were never enabled before —
           // meaning verification relied ONLY on static geometric ratios
@@ -263,7 +274,7 @@ function _cosineSimilarity(a, b) {
 
 async function _captureFaceVector(video) {
   const landmarker = await _loadFaceLandmarker();
-  const result = landmarker.detect(video);
+  const result = landmarker.detectForVideo(video, performance.now());
   if (!result.faceLandmarks?.length) return null;
   return _computeFaceVector(result.faceLandmarks[0]);
 }
@@ -402,6 +413,7 @@ function _buildFaceCapture(mode, onResult, onCancel) {
   const hint       = document.getElementById("flow-face-hint");
   let stream = null, rafId = null, closed = false, locking = false;
   let goodFrameCount = 0;
+  let _consecutiveErrors = 0; // real, new — tracks repeated per-frame detection failures so they surface instead of freezing silently
   // REAL LIVENESS STATE: tracks a genuine open→closed→open blink cycle
   // across real frames. A static photo or someone just holding
   // completely still never produces this transition — it requires an
@@ -461,7 +473,8 @@ function _buildFaceCapture(mode, onResult, onCancel) {
 
     try {
       const landmarker = await _loadFaceLandmarker();
-      const result = landmarker.detect(video);
+      const result = landmarker.detectForVideo(video, performance.now());
+      _consecutiveErrors = 0; // real reset — a successful frame means whatever errored before has cleared
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       const brightness = _measureBrightness();
@@ -580,7 +593,23 @@ function _buildFaceCapture(mode, onResult, onCancel) {
         distFill.style.width = "0%";
         goodFrameCount = 0;
       }
-    } catch (_) {}
+    } catch (e) {
+      // REAL FIX: this was `catch (_) {}` — a completely silent catch that
+      // swallowed EVERY per-frame error with zero trace. That's exactly
+      // why the "IMAGE mode on a live video feed" bug above was invisible:
+      // whatever MediaPipe was actually throwing every frame just vanished,
+      // leaving the scan frozen with no error, no mesh, nothing — which is
+      // indistinguishable from "not capturing my face at all." Now it logs
+      // the real error and, after repeated consecutive failures, surfaces
+      // an honest message instead of freezing silently forever.
+      console.warn("[FaceAuth] Frame detection error:", e.message);
+      _consecutiveErrors++;
+      if (_consecutiveErrors >= 15) {
+        status.textContent = "Face scan hit a repeated error";
+        hint.textContent = "Try 'Use PIN instead' below, or reload and try again.";
+        ring.className = "bad";
+      }
+    }
 
     if (!closed && !locking) rafId = requestAnimationFrame(scanLoop);
   }
