@@ -142,6 +142,27 @@ async function _buildModalContent(body) {
     checked: effectiveSettings.backgroundResearchEnabled,
     onChange: async (val) => { await _setSetting("backgroundResearchEnabled", val); },
   }));
+
+  // REAL, NEW — hands-free voice via continuous VAD (core/hands-free-
+  // vad.js), no hotkey or wake word needed. Defaults OFF: without a
+  // wake word, this transcribes ANY speech while it's on, not just
+  // speech meant for Flow — an honest trade-off Joel opts into
+  // deliberately rather than something silently always-on.
+  body.appendChild(_buildToggleRow({
+    key: "handsFreeVoiceEnabled",
+    label: "Hands-free voice",
+    desc: "Flow listens continuously and transcribes whenever it detects speech — no hotkey, no wake word. Real trade-off: it can't tell if speech is meant for it, so it reacts to anything spoken while this is on.",
+    checked: !!effectiveSettings.handsFreeVoiceEnabled,
+    onChange: async (val) => {
+      await _setSetting("handsFreeVoiceEnabled", val);
+      try {
+        const { setHandsFreeVoiceEnabled } = await import("../core/hands-free-vad.js");
+        await setHandsFreeVoiceEnabled(val);
+      } catch (e) {
+        console.warn("[Settings] Hands-free voice toggle failed:", e.message);
+      }
+    },
+  }));
 }
 
 export async function openSettings() {
