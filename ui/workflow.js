@@ -1,29 +1,40 @@
 // ═══════════════════════════════════════════
-// ui/workflow.js — REAL, NEW: background workflow panel.
+// ui/workflow.js — REAL, REBUILT (2nd pass): n8n-style draggable/
+// connectable workflow canvas, per Joel's explicit request.
 //
-// Joel asked to SEE what's running in the background — active, running,
-// and failed — like a workflow view, not just trust it's happening.
-// REAL, HONEST SCOPE: the only genuine server-tracked job system that
-// currently exists in this codebase is the lead-generation pipeline
-// (api/social.js's lead-job-* endpoints, backed by real KV records with
-// a real status machine: finding_businesses → scraping_emails →
-// awaiting_reachout_instructions → sending_outreach → complete/failed/
-// no_leads_found). This panel surfaces THAT real data — it does NOT
-// fabricate a generic "worker" abstraction for things that don't
-// actually have job-tracking today (background research rotation, for
-// instance, runs on a timer and saves insights, but has no per-run job
-// record to show here). Being honest about that scope now is better
-// than building a panel that LOOKS comprehensive but is quietly showing
-// nothing for most of what it implies.
-//
-// Positioned at top:90px, left:0 — deliberately mirrors Content Lab's
-// own top:90px/right:0 tab, so the four tray tabs read as two
-// symmetrical pairs (Content Lab ↔ Workflow, Thought Log ↔ Leads)
-// rather than an unbalanced stack down one side.
+// HONEST SCOPE NOTE, read this before extending: three real nodes are
+// shown — Flow (hands-free voice), Lead Gen (the real lead-job
+// pipeline), Research (background research rotation). Positions and
+// connections are draggable and persist (localStorage). Connections
+// are NOT just decorative — disconnecting a node from Flow genuinely
+// turns that feature OFF (writes to the same real settings backing
+// core/hands-free-vad.js and flow-electron/heartbeat.js's research
+// loop). Reconnecting does NOT automatically turn it back on — you
+// still flip its own toggle — cutting the wire is a real "stop", but
+// the wire being present isn't itself "the reason it's running", to
+// avoid a confusing hidden-dependency. Lead Gen's node reflects real,
+// live job status polled from api/social.js?platform=lead-jobs-list
+// (the one genuinely job-tracked system, same honest scope as the 1st
+// pass's list view) — its connection doesn't gate anything (there's no
+// clean way to pause the Electron-main-process job runner from here
+// without new IPC plumbing) and is presented as status-only, clearly
+// labeled, rather than pretending it does something it doesn't.
 // ═══════════════════════════════════════════
+
+const STORAGE_KEY = "flow-workflow-canvas-v1";
 
 let _panelEl = null;
 let _pollTimer = null;
+let _canvasState = null; // { nodes: {id:{x,y}}, connections: [[a,b],...] }
+let _dragNode = null;
+let _dragOffset = { x: 0, y: 0 };
+let _connectingFrom = null;
+
+const NODES = [
+  { id: "flow",     label: "Flow",     icon: "🧠", desc: "Hands-free voice",       settingKey: "handsFreeVoiceEnabled" },
+  { id: "leadgen",  label: "Lead Gen", icon: "💼", desc: "Live job status (read-only)", settingKey: null },
+  { id: "research", label: "Research", icon: "🔎", desc: "Background research",     settingKey: "backgroundResearchEnabled" },
+];
 
 function _injectStyles() {
   if (document.getElementById("workflow-tray-style")) return;
@@ -41,10 +52,11 @@ function _injectStyles() {
   transition: background 0.15s ease, width 0.15s ease;
 }
 #workflow-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
+#workflow-tray-tab.boot-collapsed { opacity: 0; pointer-events: none; }
 
 #workflow-panel {
-  position: fixed; top: 0; left: 0; bottom: 0;
-  width: min(440px, 92vw);
+  position: fixed; top: 52px; left: 0; bottom: 26px;
+  width: min(560px, 92vw);
   background: rgba(15,10,30,0.98); border-right: 1px solid rgba(167,139,250,0.4);
   box-shadow: 12px 0 40px rgba(0,0,0,0.5);
   z-index: 9999; display: flex; flex-direction: column;
@@ -57,126 +69,257 @@ function _injectStyles() {
 
 #workflow-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 18px; border-bottom: 1px solid rgba(167,139,250,0.2); flex-shrink: 0;
+  padding: 14px 16px; border-bottom: 1px solid rgba(167,139,250,0.2); flex-shrink: 0;
 }
-#workflow-header .wf-title { font-size: 15px; font-weight: 700; color: #d8d4ff; }
+#workflow-header .wf-title { font-size: 14px; font-weight: 700; color: #d8d4ff; }
 #workflow-close-btn { background: none; border: none; color: #9ca3af; font-size: 18px; cursor: pointer; padding: 4px 8px; }
 #workflow-close-btn:hover { color: #e5e7eb; }
 
-#workflow-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
-#workflow-body::-webkit-scrollbar { display: none; }
-
-.wf-scope-note { font-size: 11px; color: rgba(255,255,255,0.35); font-style: italic; margin-bottom: 14px; line-height: 1.5; }
-.wf-empty { font-size: 11px; color: rgba(255,255,255,0.35); font-style: italic; padding: 8px 0; }
-
-.wf-job {
-  border: 1px solid rgba(167,139,250,0.2); background: rgba(255,255,255,0.03);
-  border-radius: 10px; padding: 12px; margin-bottom: 10px;
+#workflow-canvas {
+  position: relative; flex: 1; overflow: hidden;
+  background-image: radial-gradient(rgba(167,139,250,0.08) 1px, transparent 1px);
+  background-size: 18px 18px;
+  cursor: grab;
 }
-.wf-job-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
-.wf-job-name { font-size: 12px; font-weight: 700; color: #d8d4ff; }
-.wf-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 6px; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.03em; }
-.wf-badge.running { background: rgba(56,189,248,0.15); color: #38bdf8; border: 1px solid rgba(56,189,248,0.4); }
-.wf-badge.complete { background: rgba(74,222,128,0.15); color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }
-.wf-badge.failed { background: rgba(248,113,113,0.15); color: #f87171; border: 1px solid rgba(248,113,113,0.4); }
-.wf-badge.paused { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.4); }
-.wf-job-step { font-size: 12px; color: #e5e7eb; line-height: 1.5; margin-bottom: 8px; }
-.wf-progress-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.08); overflow: hidden; }
-.wf-progress-fill { height: 100%; background: linear-gradient(90deg, #a78bfa, #38bdf8); transition: width 0.3s ease; }
-.wf-job-spinner {
-  width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px;
-  border: 2px solid rgba(56,189,248,0.3); border-top-color: #38bdf8;
-  animation: wf-spin 0.8s linear infinite; vertical-align: middle;
+#workflow-connections { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+
+.wf-node {
+  position: absolute; width: 150px;
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(167,139,250,0.35);
+  border-radius: 10px; padding: 10px; cursor: grab; user-select: none;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
 }
-@keyframes wf-spin { to { transform: rotate(360deg); } }
+.wf-node:active { cursor: grabbing; }
+.wf-node-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.wf-node-icon { font-size: 16px; }
+.wf-node-label { font-size: 12px; font-weight: 700; color: #d8d4ff; }
+.wf-node-desc { font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 8px; line-height: 1.4; }
+.wf-node-status { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 5px; display: inline-block; margin-bottom: 6px; }
+.wf-node-status.on  { background: rgba(74,222,128,0.15); color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }
+.wf-node-status.off { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.4); border: 1px solid rgba(255,255,255,0.12); }
+
+.wf-node-toggle {
+  width: 34px; height: 18px; border-radius: 9px; background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2); position: relative; cursor: pointer; flex-shrink: 0;
+}
+.wf-node-toggle.on { background: rgba(74,222,128,0.35); border-color: rgba(74,222,128,0.6); }
+.wf-node-toggle-knob {
+  position: absolute; top: 1px; left: 1px; width: 14px; height: 14px; border-radius: 50%;
+  background: #e5e7eb; transition: transform 0.15s ease;
+}
+.wf-node-toggle.on .wf-node-toggle-knob { transform: translateX(16px); background: #4ade80; }
+
+.wf-node-port {
+  position: absolute; width: 10px; height: 10px; border-radius: 50%;
+  background: rgba(167,139,250,0.5); border: 2px solid rgba(167,139,250,0.9);
+  cursor: crosshair; top: 50%; margin-top: -5px;
+}
+.wf-node-port.left  { left: -6px; }
+.wf-node-port.right { right: -6px; }
+.wf-node-port:hover { background: #a78bfa; }
+.wf-node-port.connecting { background: #38bdf8; border-color: #38bdf8; }
+
+.wf-scope-note { position: absolute; bottom: 8px; left: 12px; right: 12px; font-size: 10px; color: rgba(255,255,255,0.3); font-style: italic; pointer-events: none; }
 `;
   document.head.appendChild(style);
 }
 
-const RUNNING_STATUSES = ['finding_businesses', 'scraping_emails', 'sending_outreach'];
-const PAUSED_STATUSES = ['awaiting_reachout_instructions'];
-
-function _statusMeta(status) {
-  if (RUNNING_STATUSES.includes(status)) return { badge: 'running', label: 'Running' };
-  if (PAUSED_STATUSES.includes(status)) return { badge: 'paused', label: 'Awaiting input' };
-  if (status === 'complete') return { badge: 'complete', label: 'Complete' };
-  return { badge: 'failed', label: status === 'no_leads_found' ? 'No leads found' : 'Failed' };
+function _loadCanvasState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  // Real, sensible default layout — Flow in the middle, Lead Gen and
+  // Research on either side, already connected to Flow out of the box.
+  return {
+    nodes: {
+      flow:     { x: 190, y: 140 },
+      leadgen:  { x: 30,  y: 40 },
+      research: { x: 350, y: 40 },
+    },
+    connections: [["flow", "leadgen"], ["flow", "research"]],
+  };
 }
 
-function _renderJobs(body, jobs) {
-  body.innerHTML = "";
+function _saveCanvasState() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(_canvasState)); } catch (_) {}
+}
 
-  const note = document.createElement("div");
-  note.className = "wf-scope-note";
-  note.textContent = "Real, live status from the lead-generation pipeline — the one background job system currently tracked server-side. (Background research rotation runs on a timer without per-run job records, so it doesn't have a row here yet.)";
-  body.appendChild(note);
+function _isConnected(a, b) {
+  return _canvasState.connections.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+}
 
-  if (!jobs.length) {
-    const empty = document.createElement("div");
-    empty.className = "wf-empty";
-    empty.textContent = "No lead jobs have run yet.";
-    body.appendChild(empty);
-    return;
+function _toggleConnection(a, b) {
+  const existing = _canvasState.connections.findIndex(([x, y]) => (x === a && y === b) || (x === b && y === a));
+  if (existing >= 0) {
+    _canvasState.connections.splice(existing, 1);
+    // REAL EFFECT — disconnecting a settings-backed node from Flow
+    // genuinely turns that feature off, not just a visual change.
+    [a, b].forEach(id => {
+      const node = NODES.find(n => n.id === id);
+      if (node?.settingKey && (a === "flow" || b === "flow")) {
+        _applySettingChange(node.settingKey, false);
+      }
+    });
+  } else {
+    _canvasState.connections.push([a, b]);
+    // Real, deliberate — reconnecting does NOT auto re-enable. Explained
+    // in the header comment: avoids a hidden "wire = on" dependency that
+    // would be confusing to reason about later.
   }
+  _saveCanvasState();
+  _renderConnections();
+}
 
-  // Real, most-recent-first — matches how Joel actually thinks about
-  // "what's active right now" vs. old finished runs.
-  const sorted = [...jobs].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-
-  sorted.forEach(job => {
-    const meta = _statusMeta(job.status);
-    const card = document.createElement("div");
-    card.className = "wf-job";
-
-    const head = document.createElement("div");
-    head.className = "wf-job-head";
-    const name = document.createElement("span");
-    name.className = "wf-job-name";
-    name.textContent = job.niche || job.instructions || job.id;
-    const badge = document.createElement("span");
-    badge.className = `wf-badge ${meta.badge}`;
-    badge.textContent = meta.label;
-    head.appendChild(name);
-    head.appendChild(badge);
-    card.appendChild(head);
-
-    const step = document.createElement("div");
-    step.className = "wf-job-step";
-    if (meta.badge === 'running') {
-      const spinner = document.createElement("span");
-      spinner.className = "wf-job-spinner";
-      step.appendChild(spinner);
+async function _applySettingChange(key, value) {
+  try {
+    if (window.__flowElectron?.settings) {
+      await window.__flowElectron.settings.set(key, value);
     }
-    step.appendChild(document.createTextNode(job.currentStep || ""));
-    card.appendChild(step);
-
-    const total = job.businesses?.length || 0;
-    if (total > 0) {
-      const track = document.createElement("div");
-      track.className = "wf-progress-track";
-      const fill = document.createElement("div");
-      fill.className = "wf-progress-fill";
-      const pct = job.status === 'complete'
-        ? 100
-        : Math.round(((job.scrapedCount || 0) / total) * 100);
-      fill.style.width = `${pct}%`;
-      track.appendChild(fill);
-      card.appendChild(track);
+    if (key === "handsFreeVoiceEnabled") {
+      const { setHandsFreeVoiceEnabled } = await import("../core/hands-free-vad.js");
+      await setHandsFreeVoiceEnabled(value);
     }
+  } catch (e) {
+    console.warn("[Workflow] Failed to apply setting change:", e.message);
+  }
+  _renderNodes();
+}
 
-    body.appendChild(card);
+function _renderConnections() {
+  const svg = document.getElementById("workflow-connections");
+  if (!svg) return;
+  svg.innerHTML = "";
+  _canvasState.connections.forEach(([a, b]) => {
+    const na = _canvasState.nodes[a], nb = _canvasState.nodes[b];
+    if (!na || !nb) return;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", na.x + 75); line.setAttribute("y1", na.y + 30);
+    line.setAttribute("x2", nb.x + 75); line.setAttribute("y2", nb.y + 30);
+    line.setAttribute("stroke", "rgba(167,139,250,0.5)");
+    line.setAttribute("stroke-width", "2");
+    line.setAttribute("stroke-dasharray", "4 3");
+    svg.appendChild(line);
   });
 }
 
-async function _pollJobs(body) {
+let _leadJobsSummary = { running: 0, total: 0 };
+
+function _renderNodes() {
+  const canvas = document.getElementById("workflow-canvas");
+  if (!canvas) return;
+  canvas.querySelectorAll(".wf-node").forEach(el => el.remove());
+
+  NODES.forEach(nodeDef => {
+    const pos = _canvasState.nodes[nodeDef.id];
+    const el = document.createElement("div");
+    el.className = "wf-node";
+    el.style.left = `${pos.x}px`;
+    el.style.top = `${pos.y}px`;
+    el.dataset.nodeId = nodeDef.id;
+
+    const head = document.createElement("div");
+    head.className = "wf-node-head";
+    head.innerHTML = `<span class="wf-node-icon">${nodeDef.icon}</span><span class="wf-node-label">${nodeDef.label}</span>`;
+    el.appendChild(head);
+
+    const desc = document.createElement("div");
+    desc.className = "wf-node-desc";
+    desc.textContent = nodeDef.desc;
+    el.appendChild(desc);
+
+    if (nodeDef.id === "leadgen") {
+      const status = document.createElement("div");
+      status.className = `wf-node-status ${_leadJobsSummary.running > 0 ? "on" : "off"}`;
+      status.textContent = _leadJobsSummary.running > 0
+        ? `${_leadJobsSummary.running} job(s) running`
+        : `${_leadJobsSummary.total} total, idle`;
+      el.appendChild(status);
+    } else if (nodeDef.settingKey) {
+      const isOn = !!_currentSettings?.[nodeDef.settingKey];
+      const toggle = document.createElement("div");
+      toggle.className = `wf-node-toggle ${isOn ? "on" : ""}`;
+      toggle.innerHTML = `<div class="wf-node-toggle-knob"></div>`;
+      toggle.addEventListener("mousedown", (e) => e.stopPropagation());
+      toggle.addEventListener("click", (e) => {
+        e.stopPropagation();
+        _applySettingChange(nodeDef.settingKey, !isOn);
+      });
+      el.appendChild(toggle);
+    }
+
+    // Ports — click one, then click another node's port to connect/disconnect.
+    ["left", "right"].forEach(side => {
+      const port = document.createElement("div");
+      port.className = `wf-node-port ${side}`;
+      port.addEventListener("mousedown", (e) => {
+        e.stopPropagation();
+        if (_connectingFrom && _connectingFrom !== nodeDef.id) {
+          _toggleConnection(_connectingFrom, nodeDef.id);
+          _connectingFrom = null;
+          canvas.querySelectorAll(".wf-node-port").forEach(p => p.classList.remove("connecting"));
+        } else {
+          _connectingFrom = nodeDef.id;
+          canvas.querySelectorAll(".wf-node-port").forEach(p => p.classList.remove("connecting"));
+          port.classList.add("connecting");
+        }
+      });
+      el.appendChild(port);
+    });
+
+    // Drag to reposition — real, persisted.
+    el.addEventListener("mousedown", (e) => {
+      if (e.target.classList.contains("wf-node-port") || e.target.closest(".wf-node-toggle")) return;
+      _dragNode = nodeDef.id;
+      const rect = el.getBoundingClientRect();
+      _dragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    });
+
+    canvas.appendChild(el);
+  });
+
+  _renderConnections();
+}
+
+let _currentSettings = null;
+
+async function _loadSettingsAndRender() {
+  try {
+    _currentSettings = window.__flowElectron?.settings ? await window.__flowElectron.settings.get() : {};
+  } catch (_) { _currentSettings = {}; }
+  _renderNodes();
+}
+
+async function _pollLeadJobs() {
   try {
     const res = await fetch("/api/social?platform=lead-jobs-list");
     const data = await res.json();
     if (!data.ok) return;
-    _renderJobs(body, data.jobs || []);
+    const jobs = data.jobs || [];
+    const RUNNING = ["finding_businesses", "scraping_emails", "sending_outreach"];
+    _leadJobsSummary = { running: jobs.filter(j => RUNNING.includes(j.status)).length, total: jobs.length };
+    _renderNodes();
   } catch (e) {
-    console.warn("[Workflow] Poll failed (non-fatal):", e.message);
+    console.warn("[Workflow] Lead job poll failed (non-fatal):", e.message);
   }
+}
+
+function _bindCanvasDrag() {
+  const canvas = document.getElementById("workflow-canvas");
+  if (!canvas) return;
+  canvas.addEventListener("mousemove", (e) => {
+    if (!_dragNode) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left - _dragOffset.x;
+    const y = e.clientY - rect.top - _dragOffset.y;
+    _canvasState.nodes[_dragNode] = { x: Math.max(0, x), y: Math.max(0, y) };
+    const el = canvas.querySelector(`[data-node-id="${_dragNode}"]`);
+    if (el) { el.style.left = `${x}px`; el.style.top = `${y}px`; }
+    _renderConnections();
+  });
+  window.addEventListener("mouseup", () => {
+    if (_dragNode) { _saveCanvasState(); _dragNode = null; }
+  });
 }
 
 export function isWorkflowTrayOpen() {
@@ -185,11 +328,11 @@ export function isWorkflowTrayOpen() {
 
 export async function openWorkflowTray() {
   _injectStyles();
+  _canvasState = _canvasState || _loadCanvasState();
 
   if (_panelEl) {
     _panelEl.classList.add("wf-open");
-    document.getElementById("workflow-tray-tab")?.classList.add("wf-tray-open");
-    _pollTimer = setInterval(() => _pollJobs(_panelEl.querySelector("#workflow-body")), 3000);
+    _pollTimer = setInterval(_pollLeadJobs, 3000);
     return;
   }
 
@@ -198,7 +341,7 @@ export async function openWorkflowTray() {
 
   const header = document.createElement("div");
   header.id = "workflow-header";
-  header.innerHTML = `<span class="wf-title">⚙️ Workflow</span>`;
+  header.innerHTML = `<span class="wf-title">🔗 Workflow</span>`;
   const closeBtn = document.createElement("button");
   closeBtn.id = "workflow-close-btn";
   closeBtn.textContent = "✕";
@@ -206,39 +349,31 @@ export async function openWorkflowTray() {
   header.appendChild(closeBtn);
   panel.appendChild(header);
 
-  const body = document.createElement("div");
-  body.id = "workflow-body";
-  panel.appendChild(body);
+  const canvas = document.createElement("div");
+  canvas.id = "workflow-canvas";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.id = "workflow-connections";
+  canvas.appendChild(svg);
+  const note = document.createElement("div");
+  note.className = "wf-scope-note";
+  note.textContent = "Drag nodes, drag between ports to connect/disconnect. Disconnecting Flow from a toggle-backed node turns that feature off for real.";
+  canvas.appendChild(note);
+  panel.appendChild(canvas);
 
   document.body.appendChild(panel);
   _panelEl = panel;
 
-  await _pollJobs(body);
-  _pollTimer = setInterval(() => _pollJobs(body), 3000);
+  await _loadSettingsAndRender();
+  await _pollLeadJobs();
+  _bindCanvasDrag();
+  _pollTimer = setInterval(_pollLeadJobs, 3000);
 
-  requestAnimationFrame(() => {
-    panel.classList.add("wf-open");
-    document.getElementById("workflow-tray-tab")?.classList.add("wf-tray-open");
-  });
-  _bindOutsideClickClose();
+  requestAnimationFrame(() => panel.classList.add("wf-open"));
 }
 
 export function closeWorkflowTray() {
   if (_panelEl) _panelEl.classList.remove("wf-open");
-  document.getElementById("workflow-tray-tab")?.classList.remove("wf-tray-open");
   if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
-}
-
-let _outsideClickBound = false;
-function _bindOutsideClickClose() {
-  if (_outsideClickBound) return;
-  _outsideClickBound = true;
-  document.addEventListener("mousedown", (e) => {
-    if (!_panelEl?.classList.contains("wf-open")) return;
-    const tab = document.getElementById("workflow-tray-tab");
-    if (_panelEl.contains(e.target) || tab?.contains(e.target)) return;
-    closeWorkflowTray();
-  });
 }
 
 function _buildToggleButton() {
@@ -246,7 +381,7 @@ function _buildToggleButton() {
   tab.id = "workflow-tray-tab";
   tab.className = "boot-collapsed";
   tab.title = "Workflow";
-  tab.innerHTML = `<span>⚙️</span>`;
+  tab.innerHTML = `<span>🔗</span>`;
   tab.addEventListener("click", () => {
     if (isWorkflowTrayOpen()) closeWorkflowTray();
     else openWorkflowTray();
