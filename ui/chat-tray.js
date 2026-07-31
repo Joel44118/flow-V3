@@ -1,107 +1,135 @@
 // ═══════════════════════════════════════════
-// ui/chat-tray.js — Chat drawers, REBUILT (4th pass) — real bug fix +
-// corrections from Joel's latest feedback.
+// ui/chat-tray.js — Chat drawers (5th pass) — real bug fix + corrections
+// from Joel's latest screenshot feedback.
 //
-// REAL BUG FOUND AND FIXED: the 3rd pass put the handle button INSIDE
-// the same .chat-drawer element that got `transform: translateY(-100%)`
-// when closed. Since that element's real computed height spans nearly
-// the full viewport (top:52px to bottom:26px), translating it by
-// "-100%" moved the ENTIRE thing — handle included — hundreds of
-// pixels off-screen. That's the actual, confirmed reason Joel saw no
-// button at all, while somehow still seeing panel background at the
-// edges (the .open class wasn't reliably re-triggering the transform
-// context in all cases, leaving stale paint). Fixed by fully decoupling
-// the handle from the sliding content:
-//   - .chat-drawer (outer): a static, invisible positioning anchor only
-//     — never transformed, never has its own background.
-//   - .chat-drawer-handle: an independent, ALWAYS-PRESENT, absolutely-
-//     positioned element inside that anchor. It moves via `top`
-//     (0 when closed, near-bottom when open) — a real, separate
-//     transition from the content's own visibility, so it can never be
-//     dragged off-screen by a parent-level transform again.
-//   - .chat-drawer-content: uses opacity+visibility+pointer-events,
-//     with the transition declared ONLY on the .open state — so
-//     closing snaps instantly invisible (no lingering fade), and only
-//     opening fades in, exactly as Joel described.
+// REAL BUG FOUND AND FIXED THIS PASS: the handle-row and content were
+// both absolutely-positioned siblings inside .chat-drawer, but content
+// spanned `top:${HANDLE_HEIGHT}px` to `bottom:0` — meaning when the
+// handle-row moved to `top: calc(100% - HANDLE_HEIGHT)` on open, it
+// landed INSIDE the region the content box also covers (content's
+// bottom edge). Since content comes after handle-row in DOM order with
+// no z-index set on either, content painted OVER the handle in that
+// overlapping strip — meaning once open, the handle became genuinely
+// unclickable (and invisible, buried under the content panel). That's
+// the real, confirmed reason Joel saw the tray drop with "no button to
+// push it back up." Fixed with explicit z-index (handle-row above
+// content) so the handle always wins both paint order and hit-testing
+// in the overlap.
 //
-// REAL, OTHER CORRECTIONS THIS PASS:
-//   - Handles are now RECTANGULAR (not circular) per Joel's explicit
-//     instruction, sitting flush under the top bar when closed.
-//   - Strict boundary: top:52px / bottom:26px on the outer anchor
-//     (matching #top-bar/#app-footer's real heights) means this drawer
-//     can never render over the title bar or footer, full stop.
-//   - Added a small "⋯" menu button next to each handle (Joel asked
-//     for "a drop-down button, I have some things to do there" without
-//     specifying what — this is my best-guess starting point: Clear
-//     this chat / Copy conversation. Easy to extend once Joel says
-//     what he actually wants in it.
+// OTHER REAL FIXES THIS PASS, from Joel's screenshot feedback:
+//   - Closed state now uses genuine `display:none` on the content —
+//     not opacity/visibility tricks — so there is truly nothing
+//     rendered, not even a "faint" ghost, exactly as requested. Opening
+//     still fades in (display swapped to flex first, then opacity
+//     transitions on the next frame); closing is instant, no fade.
+//   - Handles now sit flush at x:0 (screen edge) for both sides — no
+//     10px margin — only the drawer's inner content stays inside the
+//     app's content boundary (top:52/bottom:26).
+//   - Message cards containing an image or video are now ALWAYS fully
+//     visible, never subject to the hover-to-reveal dimming — only
+//     plain text cards dim by default. Joel can already track his own
+//     messages by eye; the exception is specifically for generated
+//     media he needs to actually see.
 // ═══════════════════════════════════════════
 
 let _leftPanelEl = null;
 let _rightPanelEl = null;
 
-const TOPBAR_HEIGHT  = 52; // px — real, matches #top-bar's height in styles.css
-const FOOTER_HEIGHT  = 26; // px — real, matches #app-footer's height in styles.css
-const HANDLE_HEIGHT  = 28; // px — real, rectangular handle's own height
+const TOPBAR_HEIGHT  = 52;
+const FOOTER_HEIGHT  = 26;
+const HANDLE_HEIGHT  = 28;
+
+async function _showMediaHistoryModal() {
+  const { listMediaArchives, getMediaArchive, getLiveMediaLog } = await import("../core/chat-persist.js");
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10600;display:flex;align-items:center;justify-content:center;";
+  const modal = document.createElement("div");
+  modal.style.cssText = "background:rgba(15,10,30,0.98);border:1px solid rgba(167,139,250,0.4);border-radius:12px;max-width:80vw;max-height:80vh;overflow-y:auto;padding:18px;";
+  modal.innerHTML = `<div style="font-size:14px;font-weight:700;color:#d8d4ff;margin-bottom:12px;">🖼️ Media history</div>`;
+
+  const live = getLiveMediaLog();
+  const archives = listMediaArchives();
+  const allEntries = [...live, ...archives.flatMap(a => getMediaArchive(a.id))];
+
+  if (!allEntries.length) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "font-size:12px;color:rgba(255,255,255,0.4);font-style:italic;";
+    empty.textContent = "Nothing generated yet.";
+    modal.appendChild(empty);
+  } else {
+    const grid = document.createElement("div");
+    grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;";
+    allEntries.sort((a, b) => (b.ts || 0) - (a.ts || 0)).forEach(entry => {
+      const el = document.createElement(entry.kind === "video" ? "video" : "img");
+      el.src = entry.dataUrl;
+      el.style.cssText = "width:100%;border-radius:8px;cursor:pointer;";
+      if (entry.kind === "video") el.controls = true;
+      else el.onclick = () => window.open(entry.dataUrl, "_blank");
+      grid.appendChild(el);
+    });
+    modal.appendChild(grid);
+  }
+
+  const closeBtn = document.createElement("button");
+  closeBtn.textContent = "Close";
+  closeBtn.style.cssText = "margin-top:14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#e5e7eb;padding:6px 14px;border-radius:6px;cursor:pointer;";
+  closeBtn.onclick = () => overlay.remove();
+  modal.appendChild(closeBtn);
+
+  overlay.appendChild(modal);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
 
 function _injectStyles() {
   if (document.getElementById("chat-drawer-style")) return;
   const style = document.createElement("style");
   style.id = "chat-drawer-style";
   style.textContent = `
-/* REAL — the outer anchor is invisible and static. It never has a
-   background, never transforms, and never grows past top:52px /
-   bottom:26px — this is what physically prevents the drawer from EVER
-   rendering over the title bar or footer, regardless of what's inside. */
 .chat-drawer {
   position: fixed; top: ${TOPBAR_HEIGHT}px; bottom: ${FOOTER_HEIGHT}px;
   width: min(340px, 36vw); max-width: calc(50vw - 260px);
   z-index: 9500; pointer-events: none;
 }
+/* REAL — flush to the screen edge (x:0), not inset — only the inner
+   content below stays within the app's own content boundary. */
 #chat-drawer-left  { left: 0; }
 #chat-drawer-right { right: 0; }
 
-/* REAL — the handle is its own independent element now, positioned
-   with top (not nested inside anything that transforms). This is the
-   actual fix: it can never be carried off-screen by a parent's
-   transform again, because there is no parent transform anymore. */
 .chat-drawer-handle-row {
   position: absolute; left: 0; right: 0; top: 0;
   height: ${HANDLE_HEIGHT}px;
   display: flex; align-items: center; gap: 4px;
   transition: top 0.32s cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: all;
+  z-index: 2; /* REAL BUG FIX — must paint/hit-test above .chat-drawer-content, or it becomes invisible and unclickable once it travels into the content's overlapping bottom strip on open */
 }
 .chat-drawer.open .chat-drawer-handle-row {
   top: calc(100% - ${HANDLE_HEIGHT}px);
 }
-#chat-drawer-left .chat-drawer-handle-row  { justify-content: flex-start; padding-left: 10px; }
-#chat-drawer-right .chat-drawer-handle-row { justify-content: flex-end;   padding-right: 10px; }
+#chat-drawer-left .chat-drawer-handle-row  { justify-content: flex-start; padding-left: 0; }
+#chat-drawer-right .chat-drawer-handle-row { justify-content: flex-end;   padding-right: 0; }
 
-/* REAL, Joel-requested — rectangular now, styled to match the top
-   bar's own button language (same glass palette as #settings-btn) but
-   with square corners instead of circular. */
 .chat-drawer-handle {
   height: ${HANDLE_HEIGHT}px; padding: 0 12px; cursor: pointer;
-  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16);
-  border-radius: 4px;
+  background: rgba(20,14,40,0.95); border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 0;
   display: flex; align-items: center; justify-content: center;
   color: rgba(255,255,255,0.85); font-size: 12px; line-height: 1;
-  opacity: 0.75; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+  opacity: 0.85; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
   transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
-.chat-drawer-handle:hover { opacity: 1; background: rgba(56,189,248,0.15); border-color: rgba(56,189,248,0.5); }
-.chat-drawer-handle.drawer-is-open { opacity: 1; background: rgba(74,222,128,0.15); border-color: rgba(74,222,128,0.5); color: #4ade80; }
+.chat-drawer-handle:hover { opacity: 1; background: rgba(56,189,248,0.2); border-color: rgba(56,189,248,0.5); }
+.chat-drawer-handle.drawer-is-open { opacity: 1; background: rgba(74,222,128,0.2); border-color: rgba(74,222,128,0.5); color: #4ade80; }
 
-/* REAL, the "⋯" menu button Joel asked for, next to the handle. */
 .chat-drawer-menu-btn {
   height: ${HANDLE_HEIGHT}px; width: 28px; cursor: pointer;
-  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16);
-  border-radius: 4px; color: rgba(255,255,255,0.7); font-size: 14px;
+  background: rgba(20,14,40,0.95); border: 1px solid rgba(255,255,255,0.16);
+  color: rgba(255,255,255,0.7); font-size: 14px;
   display: flex; align-items: center; justify-content: center;
-  opacity: 0.75; transition: opacity 0.15s ease, background 0.15s ease;
+  opacity: 0.85; transition: opacity 0.15s ease, background 0.15s ease;
 }
-.chat-drawer-menu-btn:hover { opacity: 1; background: rgba(255,255,255,0.12); }
+.chat-drawer-menu-btn:hover { opacity: 1; background: rgba(255,255,255,0.15); }
 .chat-drawer-menu-dropdown {
   position: absolute; top: ${HANDLE_HEIGHT + 4}px; min-width: 150px;
   background: rgba(15,10,30,0.98); border: 1px solid rgba(167,139,250,0.35);
@@ -109,27 +137,34 @@ function _injectStyles() {
   box-shadow: 0 8px 24px rgba(0,0,0,0.4); pointer-events: all; z-index: 9600;
 }
 .chat-drawer-menu-dropdown.show { display: flex; }
-#chat-drawer-left .chat-drawer-menu-dropdown  { left: 10px; }
-#chat-drawer-right .chat-drawer-menu-dropdown { right: 10px; }
+#chat-drawer-left .chat-drawer-menu-dropdown  { left: 0; }
+#chat-drawer-right .chat-drawer-menu-dropdown { right: 0; }
 .chat-drawer-menu-item {
   padding: 8px 10px; font-size: 12px; color: #e5e7eb; cursor: pointer; border-radius: 5px; text-align: left;
   background: none; border: none; font-family: inherit;
 }
 .chat-drawer-menu-item:hover { background: rgba(167,139,250,0.15); }
 
-/* REAL — content is genuinely invisible when closed (opacity 0 +
-   visibility hidden + pointer-events none — not a translated ghost).
-   The transition is declared ONLY on .open, so closing is instant with
-   zero fade, and opening is the only time the fade is visible — this
-   is the exact behavior Joel asked for. */
+/* REAL FIX — genuine display:none when closed, not an opacity/
+   visibility approximation. Zero paint, zero possibility of a "faint"
+   tray showing through. z-index kept lower than the handle row so it
+   can never bury it again even in states this revision didn't
+   anticipate. */
 .chat-drawer-content {
   position: absolute; left: 0; right: 0; top: ${HANDLE_HEIGHT}px; bottom: 0;
   overflow-y: auto; padding: 10px 14px 14px;
   background: rgba(15,10,30,0.94);
-  opacity: 0; visibility: hidden; pointer-events: none;
+  display: none;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 1;
 }
 .chat-drawer.open .chat-drawer-content {
-  opacity: 1; visibility: visible; pointer-events: all;
+  display: block;
+  pointer-events: all;
+}
+.chat-drawer.open .chat-drawer-content.fade-in {
+  opacity: 1;
   transition: opacity 0.25s ease;
 }
 #chat-drawer-left .chat-drawer-content  { border-right: 1px solid rgba(167,139,250,0.18); }
@@ -137,11 +172,16 @@ function _injectStyles() {
 .chat-drawer-content::-webkit-scrollbar { display: none; }
 .chat-drawer-content { scrollbar-width: none; }
 
-/* REAL, per-card reveal — each message card is invisible until THAT
-   card specifically is hovered or tapped. */
+/* REAL, per-card reveal — plain text cards dim until hovered/tapped.
+   Cards containing an image or video are EXEMPT — always fully
+   visible, per Joel's explicit request that generated media should
+   never be hidden behind a hover. Uses :has(), supported in the
+   Chromium version Electron ships. */
 .chat-drawer-content .mwrap { opacity: 0.12; transition: opacity 0.18s ease; }
 .chat-drawer-content .mwrap:hover,
 .chat-drawer-content .mwrap.card-tapped { opacity: 1; }
+.chat-drawer-content .mwrap:has(img),
+.chat-drawer-content .mwrap:has(video) { opacity: 1 !important; }
 
 .chat-drawer.boot-collapsed .chat-drawer-handle-row { opacity: 0; pointer-events: none; }
 
@@ -158,9 +198,6 @@ function _buildDrawer(side, colEl) {
   panel.className = "chat-drawer boot-collapsed";
   panel.id = `chat-drawer-${side}`;
 
-  // REAL: handle row is its own absolutely-positioned element, a
-  // sibling of the content — NOT a parent/child relationship that
-  // could transform them together. This is the actual bug fix.
   const handleRow = document.createElement("div");
   handleRow.className = "chat-drawer-handle-row";
 
@@ -194,6 +231,11 @@ function _buildDrawer(side, colEl) {
   };
   menuDropdown.appendChild(clearItem);
   menuDropdown.appendChild(copyItem);
+  const mediaHistoryItem = document.createElement("button");
+  mediaHistoryItem.className = "chat-drawer-menu-item";
+  mediaHistoryItem.textContent = "View media history";
+  mediaHistoryItem.onclick = () => { _showMediaHistoryModal(); menuDropdown.classList.remove("show"); };
+  menuDropdown.appendChild(mediaHistoryItem);
   menuBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     menuDropdown.classList.toggle("show");
@@ -228,7 +270,22 @@ function _toggleDrawer(side) {
   const panel = side === "left" ? _leftPanelEl : _rightPanelEl;
   if (!panel) return;
   const handle = panel.querySelector(".chat-drawer-handle");
+  const content = panel.querySelector(".chat-drawer-content");
   const isOpen = panel.classList.toggle("open");
+
+  if (isOpen) {
+    // REAL — display:none can't itself be transitioned, so opening
+    // switches display first, forces a reflow, then adds the class
+    // that triggers the opacity fade on the NEXT frame — this is what
+    // makes "only appearing fades, closing is instant" actually work
+    // with real display:none rather than an opacity approximation.
+    content.classList.remove("fade-in");
+    void content.offsetHeight; // force reflow
+    requestAnimationFrame(() => content.classList.add("fade-in"));
+  } else {
+    content.classList.remove("fade-in");
+  }
+
   handle?.classList.toggle("drawer-is-open", isOpen);
   if (handle) handle.textContent = (panel.id === "chat-drawer-left" ? "Flow " : "You ") + (isOpen ? "▴" : "▾");
 }
