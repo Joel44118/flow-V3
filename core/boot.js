@@ -130,6 +130,7 @@ export async function runBootSequence() {
   document.getElementById("chat-drawer-left")?.classList.remove("boot-collapsed");
   document.getElementById("chat-drawer-right")?.classList.remove("boot-collapsed");
   document.getElementById("leads-tray-tab")?.classList.remove("boot-collapsed");
+  document.getElementById("workflow-tray-tab")?.classList.remove("boot-collapsed");
   document.getElementById("content-lab-tray-tab")?.classList.remove("boot-collapsed");
   document.getElementById("thought-log-tab")?.classList.remove("boot-collapsed");
 
