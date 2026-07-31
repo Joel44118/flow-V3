@@ -28,7 +28,7 @@ import { Orb }         from "./ui/orb.js";
 import { Notepad }     from "./ui/notepad.js";
 import { handleFiles, initFileUpload } from "./ui/fileupload.js";
 import { initStagedFiles, stageFiles, clearStaged, getStagedFiles, hasStagedFiles } from "./ui/stagedfiles.js";
-import { initImagine, generateImage, removeBackground } from "./ui/imagine.js";
+import { initImagine, generateImage, removeBackground, replayPersistedMedia } from "./ui/imagine.js";
 import { initVideoGen, generateVideo, generateVideoFromImage } from "./ui/videogen.js";
 import { initMarketing, generateMarketingPost } from "./ui/marketing.js";
 import { initContentLab, openContentLab, closeContentLab, isContentLabOpen, pollAllInsights } from "./ui/content-lab.js";
@@ -1105,6 +1105,12 @@ initLeveling(
 
   await loadFromCloud();
   Chat.loadHistory();
+  // REAL FIX for Joel's reported bug — Chat.loadHistory() only ever
+  // restored plain text (from Memory's semantic store); generated
+  // images/videos had no persistence path at all (see core/chat-
+  // persist.js for the real root cause and fix). This reconstructs them
+  // from the same boot sequence, right alongside the text restore.
+  replayPersistedMedia();
   Alarms.init((t) => Speech.speak(t));
   Weather.get();
   startAutoSync();
