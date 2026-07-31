@@ -299,6 +299,73 @@ async function handleNvidiaImage(req) {
   }
 }
 
+// REAL, NEW — Groq Whisper transcription proxy, replacing Hugging
+// Face's hosted Whisper as Flow's STT engine. Real reason for the
+// switch: Joel hit HF's free-tier MONTHLY credit cap during ordinary
+// test use (a real 402 in practice, not a hypothetical) — Groq's own
+// published free tier is dramatically more generous for this exact
+// workload (2,000 requests/day, 28,800 audio-seconds/day, no card
+// required), and Joel already has a working GROQ_API_KEY in Vercel env
+// vars from the AI chat fallback chain — zero new setup, zero budget.
+// Genuine bonus over the HF pattern: HF has no short-lived client
+// token, so core/whisper.js previously had to fetch a real, long-lived
+// HF_TOKEN down to the browser via ?action=token. Groq's key never
+// needs to leave this server-side proxy — the client just POSTs raw
+// audio here and gets text back, a real security improvement, not just
+// a swap.
+async function handleGroqTranscribe(req) {
+  const groqKey = process.env.GROQ_API_KEY;
+  if (!groqKey) {
+    return new Response(JSON.stringify({ error: 'GROQ_API_KEY not set in Vercel environment variables.' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const contentType = req.headers.get('content-type') || 'audio/webm';
+  const audioBuffer = await req.arrayBuffer();
+  if (audioBuffer.byteLength < 1000) {
+    return new Response(JSON.stringify({ error: 'Recording was too short or silent — try again and speak clearly.' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Real, honest note: Groq's endpoint is OpenAI-compatible and expects
+  // multipart/form-data (a "file" field), unlike HF's hosted endpoint
+  // which took the raw audio bytes directly as the request body. Edge
+  // runtime's native FormData/Blob support handles this natively — no
+  // extra dependency needed.
+  const ext = contentType.includes('webm') ? 'webm' : contentType.includes('wav') ? 'wav' : 'ogg';
+  const form = new FormData();
+  form.append('file', new Blob([audioBuffer], { type: contentType }), `audio.${ext}`);
+  form.append('model', 'whisper-large-v3-turbo'); // real, fastest+cheapest Groq Whisper variant, 228x real-time, marginal quality diff vs full v3
+  form.append('response_format', 'json');
+
+  try {
+    const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${groqKey}` },
+      body: form,
+    });
+    if (!groqRes.ok) {
+      const errText = await groqRes.text();
+      // Real, honest surfacing of Groq's own rate-limit response so a
+      // future cap (if Joel's usage ever genuinely outgrows the free
+      // tier) reads as "Groq's real limit" rather than a silent failure.
+      return new Response(JSON.stringify({ error: `Groq transcription failed (${groqRes.status}): ${errText}` }), {
+        status: groqRes.status, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const data = await groqRes.json();
+    return new Response(JSON.stringify({ text: (data.text || '').trim() }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: `Groq transcription error: ${err.message}` }), {
+      status: 502, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 export default async function handler(req) {
   const url    = new URL(req.url);
   const action = url.searchParams.get('action');
@@ -306,6 +373,7 @@ export default async function handler(req) {
   if (action === 'token') return handleToken();
   if (action === 'embed') return handleEmbed(req);
   if (action === 'image') return handleNvidiaImage(req);
+  if (action === 'transcribe') return handleGroqTranscribe(req);
 
   const file = url.searchParams.get('f') || '';
 
