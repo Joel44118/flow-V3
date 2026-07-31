@@ -272,7 +272,7 @@ function _renderJob(body, job) {
     const newSearchHint = document.createElement("div");
     newSearchHint.className = "lt-history-link";
     newSearchHint.textContent = "Start a new search ↻";
-    newSearchHint.onclick = () => _resetToInputForm(body);
+    newSearchHint.onclick = () => _resetToInputForm(body, job);
     body.appendChild(newSearchHint);
   }
   if (job.status === 'failed' || job.status === 'no_leads_found') {
@@ -281,20 +281,46 @@ function _renderJob(body, job) {
     const retryHint = document.createElement("div");
     retryHint.className = "lt-history-link";
     retryHint.textContent = "Try a different search ↻";
-    retryHint.onclick = () => _resetToInputForm(body);
+    retryHint.onclick = () => _resetToInputForm(body, job);
     body.appendChild(retryHint);
   }
 }
 
-function _resetToInputForm(body) {
+// REAL FIX for the exact bug Joel reported: "brought the list of leads
+// briefly and then snapped to a single bar immediately — no matter
+// what I do, reloading, quitting, it all still brings me to that."
+// Root cause: once a job legitimately reaches 'failed' or
+// 'no_leads_found' (e.g. every scraped site genuinely had no findable
+// email), the OLD code cleared straight to a blank, empty input box —
+// which looks IDENTICAL to a fresh, never-searched state. Reopening the
+// tray later (after the terminal state is already saved) always lands
+// on that same blank box, with zero indication a search even ran or
+// why it stopped, which reads exactly like Joel described: broken.
+// Fix: carry the just-finished job's real summary along and show it as
+// a small, dismissible-by-searching-again card ABOVE the fresh input,
+// instead of wiping it. This makes the terminal state visually
+// distinct from "never searched yet" and honest about what happened.
+function _resetToInputForm(body, lastJob) {
   _stopPolling();
   _activeJobId = null;
   _saveActiveJobId(null);
-  _renderInputForm(body);
+  _renderInputForm(body, lastJob);
 }
 
-function _renderInputForm(body) {
+function _renderInputForm(body, lastJob) {
   body.innerHTML = "";
+
+  if (lastJob) {
+    const summary = document.createElement("div");
+    summary.className = "lt-step-banner";
+    summary.style.opacity = "0.75";
+    const scraped = lastJob.scrapedCount ?? lastJob.businesses?.length ?? 0;
+    const total = lastJob.businesses?.length ?? 0;
+    summary.innerHTML = lastJob.status === 'no_leads_found'
+      ? `<span>⚠️ Last search ("${lastJob.niche || lastJob.instructions}") scraped ${scraped}/${total} businesses but found no usable contact emails. Try a different niche or add a location.</span>`
+      : `<span>⚠️ Last search ("${lastJob.niche || lastJob.instructions}") didn't complete: ${lastJob.currentStep || 'unknown error'}.</span>`;
+    body.appendChild(summary);
+  }
 
   const hint = document.createElement("div");
   hint.className = "lt-empty";
@@ -359,7 +385,7 @@ export async function openLeadsTray() {
         _renderJob(body, data.job);
         _startPolling(body);
       } else {
-        _renderInputForm(body);
+        _renderInputForm(body, data.ok ? data.job : null);
       }
     } catch (_) {
       _renderInputForm(body);
