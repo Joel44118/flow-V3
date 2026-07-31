@@ -49,7 +49,7 @@ function _injectStyles() {
 #leads-tray-tab .lt-tab-icon { font-size: 15px; line-height: 1; }
 
 #leads-panel {
-  position: fixed; top: 0; left: 0; bottom: 0;
+  position: fixed; top: 52px; left: 0; bottom: 26px;
   width: min(440px, 92vw);
   background: rgba(15,10,30,0.98); border-right: 1px solid rgba(167,139,250,0.4);
   box-shadow: 12px 0 40px rgba(0,0,0,0.5);
