@@ -46,7 +46,18 @@ const XP_VALUES = {
                       // explicit correction (45) — self-judgment is a weaker signal
                       // than Joel deliberately flagging something as wrong, so it
                       // should never be worth as much, even though it's real.
-  project:    150,  // a genuinely new project created
+  project:    150,  // REAL, Joel-requested change: no longer awarded. Kept in the
+                     // table (rather than deleted) only so old history entries that
+                     // already used this value still make sense if ever displayed —
+                     // see awardProjectXp below, which is now a documented no-op.
+  goalCompleted: 20, // REAL, NEW — Joel's requested replacement for the flat
+                     // project-creation award. Genuine, per-goal EXP: every
+                     // individual goal crossed off inside a project earns this,
+                     // rather than one lump sum for merely creating the project
+                     // shell. Naturally scales with how much real work a project
+                     // actually contains, instead of rewarding project-creation
+                     // itself (which Joel pointed out was awarding EXP for doing
+                     // nothing — just adding a generic project).
   selfTool:   60,   // Flow successfully self-extended: proposed a tool AND Joel
                      // approved it. Calibrated between knowledge (25) and project
                      // (150) — a genuine new permanent capability, requiring Joel's
@@ -194,10 +205,23 @@ export function awardCasualLearningXp(summary) {
   _awardXp(XP_VALUES.casualLearning, `Learned (self-judged): ${(summary || "").slice(0, 60)}`);
 }
 
-// Call from Projects.save ONLY when idx === -1 (a genuinely new project,
-// not an edit to an existing one).
-export function awardProjectXp(projectName) {
-  _awardXp(XP_VALUES.project, `New project: ${projectName}`);
+// REAL, Joel-requested change: creating a project no longer awards EXP
+// on its own — he pointed out that adding even a generic, empty
+// project was earning EXP for doing nothing. Kept as a no-op (not
+// deleted) so core/projects.js's existing call site doesn't need an
+// extra conditional — it just does nothing now. Real EXP for project
+// work now comes from awardGoalXp below, tied to actually finishing
+// something inside the project.
+export function awardProjectXp(_projectName) {
+  // Intentionally does nothing — see comment above.
+}
+
+// Call from Projects.completeGoal, ONLY when a goal transitions from
+// not-done to done (never on project creation, never on re-saving an
+// already-completed goal) — this is the real, new mechanism for
+// project-related EXP Joel asked for.
+export function awardGoalXp(goalText) {
+  _awardXp(XP_VALUES.goalCompleted, `Goal completed: ${(goalText || "").slice(0, 60)}`);
 }
 
 // Call ONLY from the self-tools approval flow (ui/chat.js, when Joel
