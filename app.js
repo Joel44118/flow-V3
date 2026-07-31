@@ -12,6 +12,7 @@ import { sendMessage, sendToAI, setUI, setClientActionHandler } from "./core/ai.
 import { initSlash, getSlashState, clearSlash } from "./ui/slash.js";
 import { activateAgent, deactivateAgent, getActiveAgent, onAgentChange, AGENTS } from "./core/agent.js";
 import { startRecording, stopRecordingAndTranscribe, cancelRecording } from "./core/whisper.js";
+import { initHandsFreeVAD, setHandsFreeVoiceEnabled } from "./core/hands-free-vad.js";
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
 import {
@@ -33,6 +34,7 @@ import { initMarketing, generateMarketingPost } from "./ui/marketing.js";
 import { initContentLab, openContentLab, closeContentLab, isContentLabOpen, pollAllInsights } from "./ui/content-lab.js";
 import { initThoughtLog, openThoughtLog } from "./ui/thought-log.js";
 import { initLeadsTray, openLeadsTray } from "./ui/leads.js";
+import { initWorkflowTray, openWorkflowTray } from "./ui/workflow.js";
 import { initChatTray, openChatTray } from "./ui/chat-tray.js";
 import { initSettings } from "./ui/settings.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
@@ -548,9 +550,10 @@ initMarketing(Chat, Orb);
 initContentLab(Chat, Orb);
 initThoughtLog();
 initLeadsTray();
+initWorkflowTray();
 initChatTray();
 initSettings();
-setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray);
+setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray, openWorkflowTray);
 
 // REAL, Joel-requested — polls for new research insights (content/sales/
 // mindset rotation from the Electron heartbeat) on its OWN interval,
@@ -783,6 +786,25 @@ micBtn.addEventListener("click", _toggleRecording);
 // there). Reuses the EXACT SAME _toggleRecording function the mic button
 // itself calls — one real implementation, two ways to trigger it.
 window.__flowElectron?.voiceHotkey?.onTrigger(() => { _toggleRecording(); });
+
+// REAL, NEW — hands-free voice via continuous VAD (no hotkey, no wake
+// word). Transcribed speech is fed into the EXACT SAME flowSend() the
+// hotkey/mic-button path uses — one real send function, three ways to
+// reach it (click, hotkey, hands-free). Off by default — see
+// core/hands-free-vad.js for the real, honest trade-off this makes
+// (no wake word means no gating on WHO is speaking) and why it's an
+// explicit opt-in toggle rather than always-on.
+initHandsFreeVAD({
+  onTranscript: (text) => { flowSend(text); },
+  onStateChange: (state) => { Orb.setState(state); },
+});
+if (window.__flowElectron?.settings) {
+  window.__flowElectron.settings.get().then((s) => {
+    if (s?.handsFreeVoiceEnabled) setHandsFreeVoiceEnabled(true).catch((e) => {
+      Chat.addError?.(`Hands-free voice couldn't start: ${e.message}`);
+    });
+  }).catch(() => {});
+}
 
 // ── Wake word — "Wake up Flow" (Electron only) ──────────────────────────
 // window.__flowElectron only exists inside the Electron build (exposed by
