@@ -349,31 +349,44 @@ export function isLeadsTrayOpen() {
 export async function openLeadsTray() {
   _injectStyles();
 
+  // REAL BUG FIX: this used to short-circuit entirely on a reused panel
+  // — just toggling the CSS class and returning, without ever
+  // re-checking server state or re-rendering #leads-body. Whatever was
+  // left in the body from earlier (a half-finished poll cycle, a stale
+  // "no job" render, anything) just stayed there indefinitely — this is
+  // almost certainly the real cause of the panel showing nothing but a
+  // bare search box with no hint text or button: some prior state left
+  // the body in an inconsistent partial-render, and reopening never
+  // corrected it. Now every open re-fetches real status and rebuilds
+  // the body fresh, regardless of whether the panel element itself is
+  // being reused.
+  let body;
   if (_panelEl) {
     _panelEl.classList.add("lt-open");
     document.getElementById("leads-tray-tab")?.classList.add("lt-tray-open");
-    return;
+    body = _panelEl.querySelector("#leads-body");
+    body.innerHTML = ""; // real, explicit clear before rebuilding — no stale leftovers can survive this
+  } else {
+    const panel = document.createElement("div");
+    panel.id = "leads-panel";
+
+    const header = document.createElement("div");
+    header.id = "leads-header";
+    header.innerHTML = `<span class="lt-title">💼 Leads</span>`;
+    const closeBtn = document.createElement("button");
+    closeBtn.id = "leads-close-btn";
+    closeBtn.textContent = "✕";
+    closeBtn.onclick = () => closeLeadsTray();
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+
+    body = document.createElement("div");
+    body.id = "leads-body";
+    panel.appendChild(body);
+
+    document.body.appendChild(panel);
+    _panelEl = panel;
   }
-
-  const panel = document.createElement("div");
-  panel.id = "leads-panel";
-
-  const header = document.createElement("div");
-  header.id = "leads-header";
-  header.innerHTML = `<span class="lt-title">💼 Leads</span>`;
-  const closeBtn = document.createElement("button");
-  closeBtn.id = "leads-close-btn";
-  closeBtn.textContent = "✕";
-  closeBtn.onclick = () => closeLeadsTray();
-  header.appendChild(closeBtn);
-  panel.appendChild(header);
-
-  const body = document.createElement("div");
-  body.id = "leads-body";
-  panel.appendChild(body);
-
-  document.body.appendChild(panel);
-  _panelEl = panel;
 
   const savedJobId = _loadActiveJobId();
   if (savedJobId) {
@@ -395,7 +408,7 @@ export async function openLeadsTray() {
   }
 
   requestAnimationFrame(() => {
-    panel.classList.add("lt-open");
+    _panelEl.classList.add("lt-open");
     document.getElementById("leads-tray-tab")?.classList.add("lt-tray-open");
   });
   _bindOutsideClickClose();
