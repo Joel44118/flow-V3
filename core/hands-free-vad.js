@@ -99,6 +99,23 @@ function _float32ToWavBlob(float32Audio, sampleRate = 16000) {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
+let _sensitivity = 0.5; // 0.2 (very sensitive, picks up quiet/far speech) .. 0.9 (only clear, close speech)
+
+// REAL, NEW — maps Joel's 0.2-0.9 slider directly onto vad-web's own
+// positiveSpeechThreshold (its real, documented sensitivity knob:
+// higher = requires louder/clearer speech before triggering). If VAD
+// is currently running, tears down and rebuilds it with the new
+// threshold — vad-web doesn't support changing this on a live
+// instance, so a clean restart is the real, correct way to apply it.
+export async function setVadSensitivity(value) {
+  _sensitivity = Math.max(0.2, Math.min(0.9, value));
+  if (_micVad) {
+    try { _micVad.destroy(); } catch (_) {}
+    _micVad = null;
+    await setHandsFreeVoiceEnabled(true);
+  }
+}
+
 // REAL, exported — call once with callbacks. Actual start/stop is
 // separate via setHandsFreeVoiceEnabled() so the Settings toggle can
 // flip it without re-registering callbacks.
@@ -127,6 +144,9 @@ export async function setHandsFreeVoiceEnabled(enabled) {
         // silence before it considers your turn over) to 4 (≈384ms) —
         // genuinely faster turn-taking, the actual "reply faster" ask.
         redemptionFrames: 4,
+        // REAL — Joel's sensitivity slider (ui/full-voice-mode.js)
+        // applied here directly, vad-web's own real threshold knob.
+        positiveSpeechThreshold: _sensitivity,
         onSpeechStart: () => {
           // REAL barge-in — if Flow is mid-reply when you start talking
           // again, cut his audio immediately so you're never stuck
@@ -143,6 +163,12 @@ export async function setHandsFreeVoiceEnabled(enabled) {
             const wavBlob = _float32ToWavBlob(audioFloat32);
             const { transcribeBlob } = await import("./whisper.js");
             const text = await transcribeBlob(wavBlob);
+            // REAL NOTE: no special "fast provider" routing added here —
+            // checked api/chat.js's real provider chain, and Cerebras is
+            // ALREADY the first-tried, fastest provider for ordinary
+            // conversational intent. Adding a separate preferFast flag
+            // here would just duplicate what's already the default path
+            // for most voice-mode messages, for no real gain.
             if (text) _onTranscript?.(text);
           } catch (e) {
             console.warn("[HandsFreeVAD] Transcription failed (non-fatal, staying in listening mode):", e.message);
