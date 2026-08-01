@@ -45,6 +45,8 @@ contextBridge.exposeInMainWorld('__flowElectron', {
   // that gate from the renderer side.
   osControl: {
     replaySkill: (skill) => ipcRenderer.invoke('flow_replay_skill', skill),
+    runNamedSkill: (name) => ipcRenderer.invoke('flow_run_named_skill', name),
+    listSkills: () => ipcRenderer.invoke('flow_list_skills'),
     onStep: (callback) => ipcRenderer.on('os-control-step', (_event, data) => callback(data)),
     onAborted: (callback) => ipcRenderer.on('os-control-aborted', (_event, data) => callback(data)),
   },
