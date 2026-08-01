@@ -41,8 +41,8 @@ const CAM_FILES = new Set(['camera_utils.js']);
 // general-purpose embedding model with strong retrieval benchmark results,
 // confirmed live and documented on HF's Inference Providers feature-
 // extraction task page at the time this was written. 1024-dim output.
-const EMBED_MODEL = 'thenlper/gte-large';
-const EMBED_URL   = `https://router.huggingface.co/hf-inference/models/${EMBED_MODEL}/pipeline/feature-extraction`;
+// REAL — HF's embed model/URL removed; replaced by Google Gemini's
+// embedding API (GEMINI_EMBED_MODEL, defined near handleEmbed below).
 
 // Face Landmarker's model bundle lives on Google's own model storage, a
 // completely different host/package family than the hand-tracking files
@@ -98,10 +98,24 @@ function handleToken() {
 // { embeddings: number[][] } for batch). Every real failure mode gets a
 // distinct, honest message rather than a generic 500 — same discipline
 // used in whisper.js's error handling.
+// REAL, SWITCHED from Hugging Face to Google's Gemini Embedding API.
+// Real reason: Joel hit HF's free-tier cap AGAIN this month (confirmed
+// in his own console log — a real 402, same class of problem Whisper
+// had). Gemini's free tier for embeddings is dramatically more
+// generous (1,500 requests/day, no credit card) — this needs a new,
+// separate GEMINI_API_KEY (Google AI Studio, free, no card) added to
+// Vercel's env vars; it's a different key than anything else in the
+// existing provider chain, since none of Cerebras/OpenRouter/Groq/
+// NVIDIA offer a genuine embeddings endpoint. Response shape below is
+// kept identical to the old HF version ({embeddings:[...]} for batch,
+// flat array for single) so memory-store.js and any other caller don't
+// need to change at all.
+const GEMINI_EMBED_MODEL = 'gemini-embedding-001';
+
 async function handleEmbed(req) {
-  const token = process.env.HF_TOKEN;
-  if (!token) {
-    return new Response(JSON.stringify({ error: 'HF_TOKEN not set in Vercel environment variables' }), {
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (!geminiKey) {
+    return new Response(JSON.stringify({ error: 'GEMINI_API_KEY not set in Vercel environment variables — get a free key at aistudio.google.com, no card required.' }), {
       status: 503,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -128,56 +142,63 @@ async function handleEmbed(req) {
   }
 
   try {
-    const res = await _fetchWithTimeout(EMBED_URL, 15000, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ inputs, normalize: true }),
-    });
+    if (isBatch) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EMBED_MODEL}:batchEmbedContents?key=${geminiKey}`;
+      const res = await _fetchWithTimeout(url, 15000, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: inputs.map(text => ({
+            model: `models/${GEMINI_EMBED_MODEL}`,
+            content: { parts: [{ text }] },
+          })),
+        }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          return new Response(JSON.stringify({ error: "Gemini's free-tier rate limit was hit (1,500 requests/day) — a real, documented cap, not a bug." }), {
+            status: 429, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ error: errBody.error?.message || `Gemini returned HTTP ${res.status}` }), {
+          status: res.status, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const data = await res.json();
+      const embeddings = (data.embeddings || []).map(e => e.values);
+      return new Response(JSON.stringify({ embeddings }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EMBED_MODEL}:embedContent?key=${geminiKey}`;
+    const res = await _fetchWithTimeout(url, 15000, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: `models/${GEMINI_EMBED_MODEL}`,
+        content: { parts: [{ text: inputs }] },
+      }),
+    });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      if (res.status === 402) {
-        return new Response(JSON.stringify({ error: 'Hugging Face free-tier inference credits are used up for this month — real free-tier limit, not a bug.' }), {
-          status: 402,
-          headers: { 'Content-Type': 'application/json' },
+      if (res.status === 429) {
+        return new Response(JSON.stringify({ error: "Gemini's free-tier rate limit was hit (1,500 requests/day) — a real, documented cap, not a bug." }), {
+          status: 429, headers: { 'Content-Type': 'application/json' },
         });
       }
-      if (res.status === 503) {
-        return new Response(JSON.stringify({ error: `Embedding model is warming up (cold start) — try again in a few seconds.`, estimated_time: errBody.estimated_time || null }), {
-          status: 503,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify({ error: errBody.error || `Hugging Face returned HTTP ${res.status}` }), {
-        status: res.status,
-        headers: { 'Content-Type': 'application/json' },
+      return new Response(JSON.stringify({ error: errBody.error?.message || `Gemini returned HTTP ${res.status}` }), {
+        status: res.status, headers: { 'Content-Type': 'application/json' },
       });
     }
-
-    const vectors = await res.json();
-
-    if (isBatch) {
-      return new Response(JSON.stringify({ embeddings: vectors }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-    // Single-input real response shape from HF is [[...]] or [...]
-    // depending on model — normalize to a flat array here so callers
-    // never have to guess which shape came back.
-    const single = Array.isArray(vectors[0]) ? vectors[0] : vectors;
-    return new Response(JSON.stringify({ embedding: single }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
+    const data = await res.json();
+    return new Response(JSON.stringify(data.embedding?.values || []), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
     });
-  } catch (err) {
-    const msg = err.name === 'AbortError' ? 'Embedding request timed out after 15s' : err.message;
-    return new Response(JSON.stringify({ error: msg }), {
-      status: 502,
-      headers: { 'Content-Type': 'application/json' },
+  } catch (e) {
+    return new Response(JSON.stringify({ error: `Gemini embed error: ${e.message}` }), {
+      status: 502, headers: { 'Content-Type': 'application/json' },
     });
   }
 }
