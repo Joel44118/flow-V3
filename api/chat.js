@@ -472,6 +472,20 @@ const FLOW_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'toggle_full_voice_mode',
+      description: "Turn Flow's Full Voice Mode on or off — continuous, hands-free listening with no hotkey needed (real trade-off: no wake word, so it reacts to any speech while it's on, not just speech meant for Flow). This is judgment-based, not a keyword trigger: call it when Joel's actual intent is clearly to switch this on/off — 'let's go hands-free', 'I don't want to keep pressing the hotkey', 'turn off full voice mode', 'stop listening automatically' all genuinely mean this. Do NOT call it for something that merely mentions voice or listening in passing (e.g. 'can you hear me okay?', a question about how it works, or 'read that back to me') — only call it when turning the mode on or off is the actual thing being asked for. When genuinely unsure whether Joel means this, ask him directly in your reply instead of guessing by calling the tool.",
+      parameters: {
+        type: 'object',
+        properties: {
+          enable: { type: 'boolean', description: 'true to turn Full Voice Mode on, false to turn it off' },
+        },
+        required: ['enable'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'open_notepad',
       description: 'Open the notepad UI. Call this when Joel wants to jot something down or asks you to write something visible, not just remember it in conversation.',
       parameters: { type: 'object', properties: {}, required: [] },
@@ -632,6 +646,9 @@ async function executeFlowTool(toolName, args) {
   }
   if (toolName === 'toggle_sentinel') {
     return { handled: false, clientAction: 'toggle_sentinel', result: null };
+  }
+  if (toolName === 'toggle_full_voice_mode') {
+    return { handled: false, clientAction: 'toggle_full_voice_mode', clientArgs: { enable: !!args?.enable }, result: null };
   }
   if (toolName === 'open_notepad') {
     return { handled: false, clientAction: 'open_notepad', result: null };
