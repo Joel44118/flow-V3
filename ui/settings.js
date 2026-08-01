@@ -150,7 +150,7 @@ async function _buildModalContent(body) {
   // deliberately rather than something silently always-on.
   body.appendChild(_buildToggleRow({
     key: "handsFreeVoiceEnabled",
-    label: "Hands-free voice",
+    label: "Full Voice Mode",
     desc: "Flow listens continuously and transcribes whenever it detects speech — no hotkey, no wake word. Real trade-off: it can't tell if speech is meant for it, so it reacts to anything spoken while this is on.",
     checked: !!effectiveSettings.handsFreeVoiceEnabled,
     onChange: async (val) => {
