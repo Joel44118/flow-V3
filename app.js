@@ -383,6 +383,21 @@ setClientActionHandler(async (action, args) => {
     }
     return;
   }
+  if (action === "toggle_full_voice_mode") {
+    const enable = !!args?.enable;
+    try {
+      await setHandsFreeVoiceEnabled(enable);
+      if (window.__flowElectron?.settings) {
+        await window.__flowElectron.settings.set("handsFreeVoiceEnabled", enable);
+      }
+      Chat.add(enable
+        ? "🎙️ Full Voice Mode is on — I'm listening continuously now, no hotkey needed. Heads up: without a wake word, I'll react to anything spoken while this is on."
+        : "Full Voice Mode is off.", "bot");
+    } catch (e) {
+      Chat.addError(`Couldn't switch Full Voice Mode: ${e.message}`);
+    }
+    return;
+  }
   if (action === "open_notepad") {
     Notepad.open();
     Chat.add("📝 Notepad's open.", "bot");
