@@ -541,6 +541,36 @@ ipcMain.handle('flow_replay_skill', async (event, skill) => {
     return { aborted: true, reason: 'error', error: e.message };
   }
 });
+
+// REAL, NEW — voice-triggered named-skill lookup + replay. Storage-only
+// for now (see skill-store.js's own header) since recording isn't built
+// yet — if no skill exists under that name, this returns a real, honest
+// "not found" rather than pretending to run something.
+ipcMain.handle('flow_run_named_skill', async (event, name) => {
+  try {
+    const { getSkill } = require('./skill-store.js');
+    const skill = getSkill(name);
+    if (!skill) {
+      return { aborted: true, reason: 'not_found', error: `No recorded skill named "${name}" exists yet.` };
+    }
+    const { replaySkill } = require('./os-control.js');
+    return await replaySkill(skill, {
+      onStep: (step, i, total) => { event.sender.send('os-control-step', { step, i, total }); },
+    });
+  } catch (e) {
+    console.error('[Flow] Named skill replay failed:', e.message);
+    return { aborted: true, reason: 'error', error: e.message };
+  }
+});
+
+ipcMain.handle('flow_list_skills', async () => {
+  try {
+    const { listSkills } = require('./skill-store.js');
+    return listSkills();
+  } catch (e) {
+    return [];
+  }
+});
 ipcMain.handle('flow_set_setting', (_e, key, value) => heartbeat.setSetting(key, value));
 
 ipcMain.on('win_minimize', () => mainWin?.minimize());
