@@ -111,7 +111,7 @@ function _injectStyles() {
 #chat-drawer-right .chat-drawer-handle-row { justify-content: flex-end;   padding-right: 20px; }
 
 .chat-drawer-handle {
-  height: ${HANDLE_HEIGHT}px; padding: 0 12px; cursor: pointer;
+  height: ${HANDLE_HEIGHT}px; padding: 0 20px; cursor: pointer;
   background: rgba(20,14,40,0.95); border: 1px solid rgba(255,255,255,0.16);
   border-radius: 0;
   display: flex; align-items: center; justify-content: center;
