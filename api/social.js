@@ -9,6 +9,39 @@ const WA_PHONE  = process.env.WHATSAPP_PHONE_ID;
 const WA_VERIFY = process.env.WHATSAPP_VERIFY_TOKEN;
 const KV_URL    = process.env.KV_REST_API_URL;
 const KV_KEY    = process.env.KV_REST_API_TOKEN;
+
+// REAL, SHARED FIX for a systemic bug found via Joel's own console logs
+// (job.status undefined, then "ids.filter is not a function") — this
+// project has a documented history of KV values ending up
+// double-JSON-encoded (the raw stored string itself being JSON-
+// encoded again on top). A single JSON.parse() then returns a STRING
+// or otherwise-wrong type instead of the real array/object — which is
+// still "truthy" so callers don't notice until they call .filter() or
+// .status on it and it silently isn't the right shape. This was
+// previously duplicated ad-hoc (and inconsistently) across TEN
+// separate call sites in this file — every one of them had the exact
+// same fragility. Fixed at the root with one shared, defensive parser:
+// parses repeatedly while the result is still a string, and always
+// returns a real value of the expected shape (or the given fallback),
+// never a stray string masquerading as an array or object.
+function _parseKvValue(raw, fallback) {
+  if (!raw?.result) return fallback;
+  let parsed = raw.result;
+  try {
+    let attempts = 0;
+    while (typeof parsed === 'string' && attempts < 3) {
+      parsed = JSON.parse(parsed);
+      attempts++;
+    }
+  } catch (_) {
+    return fallback;
+  }
+  // Guard the shape too — if fallback is an array but parsed isn't,
+  // or vice versa, something is still wrong; fall back rather than
+  // handing a caller a value it'll crash on.
+  if (Array.isArray(fallback) && !Array.isArray(parsed)) return fallback;
+  return parsed ?? fallback;
+}
 const SITE      = 'https://flow-v3-mu.vercel.app';
 
 // ── Shared: per-chat conversation history in KV ───────────────────────────
@@ -994,8 +1027,7 @@ async function _saveInsight(insight) {
   }).catch(() => {});
 
   const raw = await fetch(`${KV_URL}/get/${INSIGHT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  let ids = [];
-  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  let ids = _parseKvValue(raw, []);
   ids = [...ids, id].slice(-100); // real, capped rolling history — plenty to draw richer context from without unbounded growth
   await fetch(`${KV_URL}/set/${INSIGHT_INDEX_KEY()}`, {
     method: 'POST',
@@ -1009,8 +1041,7 @@ async function _saveInsight(insight) {
 async function _loadRecentInsights(n = 5) {
   if (!KV_URL || !KV_KEY) return [];
   const raw = await fetch(`${KV_URL}/get/${INSIGHT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  let ids = [];
-  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  let ids = _parseKvValue(raw, []);
   const recentIds = ids.slice(-n);
   const insights = await Promise.all(recentIds.map(id =>
     fetch(`${KV_URL}/get/${INSIGHT_KEY(id)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } })
@@ -1032,8 +1063,7 @@ async function _loadRecentInsights(n = 5) {
 async function _recallRelevantInsights(query, { maxResults = 5, platformHint = null } = {}) {
   if (!KV_URL || !KV_KEY) return [];
   const raw = await fetch(`${KV_URL}/get/${INSIGHT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  let ids = [];
-  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  let ids = _parseKvValue(raw, []);
   if (!ids.length) return [];
 
   const allInsights = (await Promise.all(ids.map(id =>
@@ -1463,8 +1493,7 @@ async function handleSocialDrafts(req, res) {
   if (!KV_URL || !KV_KEY) return res.status(200).json({ ok: true, drafts: [] });
   try {
     const raw = await fetch(`${KV_URL}/get/${SOCIAL_DRAFT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-    let ids = [];
-    try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+    let ids = _parseKvValue(raw, []);
 
     const drafts = await Promise.all(ids.map(async (id) => {
       const d = await fetch(`${KV_URL}/get/${SOCIAL_DRAFT_KEY(id)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
@@ -2125,8 +2154,7 @@ async function _saveSocialDraft(draftId, draft) {
 async function _addToSocialDraftIndex(draftId) {
   if (!KV_URL || !KV_KEY) return;
   const raw = await fetch(`${KV_URL}/get/${SOCIAL_DRAFT_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  let ids = [];
-  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  let ids = _parseKvValue(raw, []);
   ids = [...ids.filter(id => id !== draftId), draftId].slice(-20);
   await fetch(`${KV_URL}/set/${SOCIAL_DRAFT_INDEX_KEY()}`, {
     method: 'POST',
@@ -2853,14 +2881,13 @@ async function _saveLead(leadId, lead) {
 async function _loadLead(leadId) {
   if (!KV_URL || !KV_KEY) return null;
   const raw = await fetch(`${KV_URL}/get/${LEAD_KEY(leadId)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  return raw?.result ? JSON.parse(raw.result) : null;
+  return _parseKvValue(raw, null);
 }
 
 async function _addToLeadIndex(leadId) {
   if (!KV_URL || !KV_KEY) return;
   const raw = await fetch(`${KV_URL}/get/${LEAD_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  let ids = [];
-  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  let ids = _parseKvValue(raw, []);
   ids = [...ids.filter(id => id !== leadId), leadId].slice(-200); // real, capped rolling index
   await fetch(`${KV_URL}/set/${LEAD_INDEX_KEY()}`, {
     method: 'POST',
@@ -2872,8 +2899,7 @@ async function _addToLeadIndex(leadId) {
 async function _loadAllLeads() {
   if (!KV_URL || !KV_KEY) return [];
   const raw = await fetch(`${KV_URL}/get/${LEAD_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  let ids = [];
-  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  let ids = _parseKvValue(raw, []);
   const leads = await Promise.all(ids.map(_loadLead));
   return leads.filter(Boolean);
 }
@@ -3355,39 +3381,18 @@ async function _saveLeadJob(jobId, job) {
 async function _loadLeadJob(jobId) {
   if (!KV_URL || !KV_KEY) return null;
   const raw = await fetch(`${KV_URL}/get/${LEAD_JOB_KEY(jobId)}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  if (!raw?.result) return null;
-
-  // REAL BUG FIX — confirmed via Joel's own console logs: job.status
-  // was coming back undefined on the client even though data.job was
-  // truthy. Root cause: this project has a DOCUMENTED history of a
-  // double-JSON-encoding failure in its KV storage layer (see the
-  // earlier, separate fix for chat/insight records) — and it looks like
-  // the SAME class of bug was never applied to this newer lead-job
-  // code. If raw.result was stored/returned double-encoded, a single
-  // JSON.parse() here returns a STRING, not an object — which is
-  // "truthy" (so data.job passes as present) but has no real .status
-  // property (hence undefined). Parsing repeatedly while the result is
-  // still a string makes this resilient regardless of which layer
-  // double-encoded it.
-  let parsed = raw.result;
-  try {
-    let attempts = 0;
-    while (typeof parsed === 'string' && attempts < 3) {
-      parsed = JSON.parse(parsed);
-      attempts++;
-    }
-  } catch (e) {
-    console.warn(`[LeadJob] Failed to parse job ${jobId} from KV (non-fatal, treated as not found):`, e.message);
-    return null;
-  }
+  // REAL — now consolidated onto the one shared _parseKvValue helper
+  // (see its definition near the top of this file) rather than
+  // duplicating its own inline double-parse logic, now that the
+  // systemic bug has a single, real fix point instead of ten.
+  const parsed = _parseKvValue(raw, null);
   return (parsed && typeof parsed === 'object') ? parsed : null;
 }
 
 async function _addToLeadJobIndex(jobId) {
   if (!KV_URL || !KV_KEY) return;
   const raw = await fetch(`${KV_URL}/get/${LEAD_JOB_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  let ids = [];
-  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  let ids = _parseKvValue(raw, []);
   ids = [...ids.filter(id => id !== jobId), jobId].slice(-20); // real, small cap — recent jobs only
   await fetch(`${KV_URL}/set/${LEAD_JOB_INDEX_KEY()}`, {
     method: 'POST',
@@ -3399,8 +3404,7 @@ async function _addToLeadJobIndex(jobId) {
 async function _loadAllLeadJobs() {
   if (!KV_URL || !KV_KEY) return [];
   const raw = await fetch(`${KV_URL}/get/${LEAD_JOB_INDEX_KEY()}`, { headers: { Authorization: `Bearer ${KV_KEY}` } }).then(r => r.json()).catch(() => null);
-  let ids = [];
-  try { ids = raw?.result ? JSON.parse(raw.result) : []; } catch (_) { ids = []; }
+  let ids = _parseKvValue(raw, []);
   const jobs = await Promise.all(ids.map(_loadLeadJob));
   return jobs.filter(Boolean);
 }
