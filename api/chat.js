@@ -486,6 +486,20 @@ const FLOW_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'run_recorded_skill',
+      description: "Run a named, previously-recorded OS-control skill by name (e.g. Joel says 'do the invoice thing' or names a specific skill) — this actually controls Joel's mouse/keyboard to replay recorded steps, real OS automation, not a simulation. ALWAYS shows Joel a visible confirmation with a cancellable countdown before executing, regardless of how this is called — that gate cannot be skipped. HONEST CURRENT STATE: skill recording isn't built yet, so this will likely find nothing and should report that plainly rather than pretending it ran something. Only call this when Joel is clearly asking to run/replay a specific recorded action sequence, not for general screen questions.",
+      parameters: {
+        type: 'object',
+        properties: {
+          skillName: { type: 'string', description: 'The name of the skill to run, as Joel referred to it' },
+        },
+        required: ['skillName'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'open_notepad',
       description: 'Open the notepad UI. Call this when Joel wants to jot something down or asks you to write something visible, not just remember it in conversation.',
       parameters: { type: 'object', properties: {}, required: [] },
@@ -649,6 +663,9 @@ async function executeFlowTool(toolName, args) {
   }
   if (toolName === 'toggle_full_voice_mode') {
     return { handled: false, clientAction: 'toggle_full_voice_mode', clientArgs: { enable: !!args?.enable }, result: null };
+  }
+  if (toolName === 'run_recorded_skill') {
+    return { handled: false, clientAction: 'run_recorded_skill', clientArgs: { skillName: args?.skillName }, result: null };
   }
   if (toolName === 'open_notepad') {
     return { handled: false, clientAction: 'open_notepad', result: null };
