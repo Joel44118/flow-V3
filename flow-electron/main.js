@@ -522,6 +522,25 @@ ipcMain.on('heartbeat_mark_user_activity', () => heartbeat.markUserActivity());
 // persisted toggles (starting with backgroundResearchEnabled), read/
 // written via heartbeat.js's small JSON settings file in userData.
 ipcMain.handle('flow_get_settings', () => heartbeat.getSettings());
+
+// REAL, Joel-explicit-override — IPC bridge for OS-level skill replay.
+// Every call goes through os-control.js's replaySkill(), which ALWAYS
+// shows the confirmation overlay first (requireConfirmation defaults
+// true) regardless of caller — the renderer cannot silently skip that
+// gate by omitting an option.
+ipcMain.handle('flow_replay_skill', async (event, skill) => {
+  try {
+    const { replaySkill } = require('./os-control.js');
+    return await replaySkill(skill, {
+      onStep: (step, i, total) => {
+        event.sender.send('os-control-step', { step, i, total });
+      },
+    });
+  } catch (e) {
+    console.error('[Flow] Skill replay failed:', e.message);
+    return { aborted: true, reason: 'error', error: e.message };
+  }
+});
 ipcMain.handle('flow_set_setting', (_e, key, value) => heartbeat.setSetting(key, value));
 
 ipcMain.on('win_minimize', () => mainWin?.minimize());
@@ -955,6 +974,17 @@ function registerGlobalShortcuts() {
       mainWin.webContents.send('trigger-voice-record');
     });
     if (!voiceHotkeyOk) console.warn('[Flow] Global shortcut Ctrl+Shift+Space registration failed — may conflict with another app.');
+
+    // REAL, Joel-explicit-override — registers Ctrl+Shift+Escape as the
+    // emergency stop for OS-level automation (flow-electron/os-control.js).
+    // Registered here, at startup, not lazily when automation first runs
+    // — so it's always live the instant anything could need it.
+    try {
+      const { registerEmergencyStop } = require('./os-control.js');
+      registerEmergencyStop();
+    } catch (e) {
+      console.warn('[Flow] os-control.js emergency-stop registration failed (OS control features will refuse to run without it):', e.message);
+    }
   } catch (e) {
     console.warn('[Flow] registerGlobalShortcuts failed:', e.message);
   }
