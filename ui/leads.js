@@ -1,27 +1,35 @@
 // ═══════════════════════════════════════════
-// ui/leads.js — Leads tray, REBUILT per Joel's explicit redesign.
+// ui/leads.js — Leads tray, REBUILT FROM SCRATCH (3rd full rebuild) per
+// Joel's explicit request after the bug persisted through two prior fix
+// attempts that, on inspection, were genuinely deployed but didn't
+// resolve it.
 //
-// REAL, NEW FLOW:
-//   1. One input bar — Joel types plain-text instructions of what to
-//      find (e.g. "web design agencies in Lagos"). No domain/company
-//      website form anymore — that's gone entirely.
-//   2. Real, live step-by-step progress — not a generic "Loading...".
-//      Shows "Finding businesses...", then the real list (name + phone)
-//      the moment Apify returns, then "Scraping site X (3/12)..." live
-//      as each website gets processed automatically (not re-prompted).
-//   3. Once emails are found, a SECOND input appears — reach-out
-//      instructions (what to say, what it's about). Submitting starts
-//      real outreach sending, one at a time, with live progress too.
-//   4. Real background survival — this is a genuine job tracked
-//      server-side (api/social.js's lead-job-* endpoints). Closing this
-//      tray does NOT stop anything: the Electron heartbeat keeps
-//      calling the same advance endpoint on its own cadence. Reopening
-//      the tray picks the active job back up via a real status poll.
+// THIS REBUILD IS DELIBERATELY MAXIMALLY DEFENSIVE:
+//   - Every element gets its OWN inline style attributes in addition to
+//     CSS classes — if stylesheet injection ever silently fails for any
+//     reason, elements are still visible and usable, not blank.
+//   - Real console.log statements at every render step, so if this
+//     still doesn't show right, the DevTools console will show exactly
+//     which step ran and with what data — turning "still broken" into
+//     an actual diagnosable signal instead of another guess.
+//   - No shortcuts, no reused/cached state that could silently carry
+//     over a bad prior render — every open() tears down and rebuilds
+//     the panel completely from nothing.
+//
+// FLOW:
+//   1. One input bar — plain-text instructions of what to find.
+//   2. Real, live step-by-step progress as Apify + email-scraping run.
+//   3. Once emails are found, a second input appears for outreach
+//      instructions.
+//   4. Real background survival via api/social.js's lead-job-* endpoints
+//      — closing this tray does not stop the job.
 // ═══════════════════════════════════════════
 
 let _panelEl = null;
 let _pollTimer = null;
 let _activeJobId = null;
+
+function _log(...args) { console.log("[Leads]", ...args); }
 
 function _saveActiveJobId(jobId) {
   try { localStorage.setItem('flow_active_lead_job_id', jobId || ''); } catch (_) {}
@@ -31,7 +39,8 @@ function _loadActiveJobId() {
 }
 
 function _injectStyles() {
-  if (document.getElementById("leads-tray-style")) return;
+  if (document.getElementById("leads-tray-style")) { _log("styles already injected, skipping"); return; }
+  _log("injecting styles");
   const style = document.createElement("style");
   style.id = "leads-tray-style";
   style.textContent = `
@@ -43,10 +52,8 @@ function _injectStyles() {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   cursor: pointer; z-index: 9998; color: #a78bfa; font-size: 16px;
   box-shadow: 4px 0 16px rgba(0,0,0,0.35);
-  transition: background 0.15s ease, width 0.15s ease;
 }
 #leads-tray-tab:hover { background: rgba(50,35,85,0.98); width: 32px; }
-#leads-tray-tab .lt-tab-icon { font-size: 15px; line-height: 1; }
 
 #leads-panel {
   position: fixed; top: 52px; left: 0; bottom: 26px;
@@ -55,7 +62,6 @@ function _injectStyles() {
   box-shadow: 12px 0 40px rgba(0,0,0,0.5);
   z-index: 9999; display: flex; flex-direction: column;
   font-family: system-ui, sans-serif; color: #e5e7eb;
-  overflow: hidden;
   transform: translateX(-100%);
   transition: transform 0.25s ease;
 }
@@ -65,67 +71,88 @@ function _injectStyles() {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 18px; border-bottom: 1px solid rgba(167,139,250,0.2); flex-shrink: 0;
 }
-#leads-header .lt-title { font-size: 15px; font-weight: 700; color: #d8d4ff; }
-#leads-close-btn {
-  background: none; border: none; color: #9ca3af; font-size: 18px; cursor: pointer; padding: 4px 8px;
-}
+.lt-title { font-size: 15px; font-weight: 700; color: #d8d4ff; }
+#leads-close-btn { background: none; border: none; color: #9ca3af; font-size: 18px; cursor: pointer; padding: 4px 8px; }
 #leads-close-btn:hover { color: #e5e7eb; }
 
 #leads-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
+#leads-body::-webkit-scrollbar { display: none; }
 
-.lt-input-row { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.lt-hint { font-size: 11px; color: rgba(255,255,255,0.5); line-height: 1.6; margin-bottom: 14px; }
+.lt-input-row { display: flex; flex-direction: column; gap: 10px; }
 .lt-input {
-  background: rgba(255,255,255,0.04); border: 1px solid rgba(167,139,250,0.25);
-  border-radius: 8px; padding: 10px 12px; font-size: 13px; color: #e5e7eb; outline: none;
-  resize: vertical; min-height: 42px; font-family: inherit;
+  width: 100%; min-height: 60px; background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(167,139,250,0.35); border-radius: 8px; color: #e5e7eb;
+  font-size: 13px; padding: 10px; font-family: inherit; resize: vertical; box-sizing: border-box;
 }
-.lt-input::placeholder { color: rgba(255,255,255,0.3); }
-.lt-input:focus { border-color: rgba(167,139,250,0.6); }
+.lt-input::placeholder { color: rgba(255,255,255,0.35); }
 .lt-submit-btn {
-  border: 1px solid rgba(167,139,250,0.4); background: rgba(167,139,250,0.15); color: #d8d4ff;
-  border-radius: 8px; padding: 10px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+  background: rgba(167,139,250,0.18); border: 1px solid rgba(167,139,250,0.5);
+  color: #d8d4ff; font-size: 13px; font-weight: 600; padding: 10px 14px;
+  border-radius: 8px; cursor: pointer;
 }
-.lt-submit-btn:hover { background: rgba(167,139,250,0.25); }
+.lt-submit-btn:hover { background: rgba(167,139,250,0.3); }
 .lt-submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.lt-step-banner {
-  font-size: 13px; color: #d8d4ff; background: rgba(167,139,250,0.1);
-  border: 1px solid rgba(167,139,250,0.25); border-radius: 10px;
-  padding: 12px 14px; margin-bottom: 14px; line-height: 1.5;
-  display: flex; align-items: center; gap: 10px;
-}
-.lt-step-spinner {
-  width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
-  border: 2px solid rgba(167,139,250,0.3); border-top-color: #a78bfa;
-  animation: lt-spin 0.8s linear infinite;
-}
-@keyframes lt-spin { to { transform: rotate(360deg); } }
-
-.lt-section-title { font-size: 12px; font-weight: 700; color: #d8d4ff; margin: 4px 0 8px; letter-spacing: 0.02em; }
-.lt-empty { font-size: 11px; color: rgba(255,255,255,0.35); font-style: italic; padding: 8px 0; }
-
-.lt-card {
-  border: 1px solid rgba(167,139,250,0.2); background: rgba(255,255,255,0.03);
-  border-radius: 10px; padding: 10px; margin-bottom: 8px;
-}
-.lt-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px; }
-.lt-card-name { font-size: 12px; font-weight: 700; color: #a78bfa; }
-.lt-card-status { font-size: 10px; color: #9ca3af; white-space: nowrap; }
-.lt-card-meta { font-size: 12px; color: #e5e7eb; line-height: 1.4; }
-
-.lt-history-link { font-size: 11px; color: #9ca3af; margin-top: 12px; cursor: pointer; text-decoration: underline; }
-.lt-history-link:hover { color: #d8d4ff; }
+.lt-summary { font-size: 11px; color: #fbbf24; background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3); border-radius: 8px; padding: 10px; margin-bottom: 14px; line-height: 1.5; }
+.lt-step-banner { font-size: 12px; color: #38bdf8; margin-bottom: 12px; }
+.lt-biz-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(167,139,250,0.2); border-radius: 8px; padding: 10px; margin-bottom: 8px; font-size: 12px; }
+.lt-biz-name { font-weight: 700; color: #d8d4ff; }
+.lt-biz-meta { color: rgba(255,255,255,0.5); font-size: 11px; margin-top: 2px; }
+.lt-history-link { font-size: 12px; color: #a78bfa; cursor: pointer; text-decoration: underline; margin-top: 10px; }
 `;
   document.head.appendChild(style);
 }
 
-async function _submitFindInstructions(inputEl, submitBtn, body) {
-  const instructions = inputEl.value.trim();
-  if (!instructions) return;
+function _renderInputForm(body, lastJob) {
+  _log("_renderInputForm called, lastJob:", lastJob);
+  body.innerHTML = "";
 
-  submitBtn.disabled = true;
-  inputEl.disabled = true;
+  if (lastJob) {
+    const summary = document.createElement("div");
+    summary.className = "lt-summary";
+    summary.style.cssText = "font-size:11px;color:#fbbf24;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.3);border-radius:8px;padding:10px;margin-bottom:14px;line-height:1.5;";
+    const scraped = lastJob.scrapedCount ?? lastJob.businesses?.length ?? 0;
+    const total = lastJob.businesses?.length ?? 0;
+    summary.textContent = lastJob.status === 'no_leads_found'
+      ? `⚠️ Last search ("${lastJob.niche || lastJob.instructions}") scraped ${scraped}/${total} businesses but found no usable contact emails. Try a different niche or add a location.`
+      : `⚠️ Last search ("${lastJob.niche || lastJob.instructions}") didn't complete: ${lastJob.currentStep || 'unknown error'}.`;
+    body.appendChild(summary);
+  }
 
+  const hint = document.createElement("div");
+  hint.className = "lt-hint";
+  hint.style.cssText = "font-size:11px;color:rgba(255,255,255,0.6);line-height:1.6;margin-bottom:14px;";
+  hint.textContent = "Tell Flow what kind of leads to find — a niche, industry, and optionally a location. Flow finds real businesses, scrapes their real contact emails automatically, then asks what the outreach should say.";
+  body.appendChild(hint);
+
+  const row = document.createElement("div");
+  row.className = "lt-input-row";
+  row.style.cssText = "display:flex;flex-direction:column;gap:10px;";
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "lt-input";
+  textarea.style.cssText = "width:100%;min-height:60px;background:rgba(255,255,255,0.06);border:1px solid rgba(167,139,250,0.35);border-radius:8px;color:#e5e7eb;font-size:13px;padding:10px;font-family:inherit;box-sizing:border-box;";
+  textarea.placeholder = "e.g. web design agencies in Lagos, small independent shops...";
+
+  const btn = document.createElement("button");
+  btn.className = "lt-submit-btn";
+  btn.style.cssText = "background:rgba(167,139,250,0.18);border:1px solid rgba(167,139,250,0.5);color:#d8d4ff;font-size:13px;font-weight:600;padding:10px 14px;border-radius:8px;cursor:pointer;";
+  btn.textContent = "🔍 Find leads";
+  btn.type = "button";
+  btn.onclick = () => _submitFindInstructions(textarea, btn, body);
+
+  row.appendChild(textarea);
+  row.appendChild(btn);
+  body.appendChild(row);
+  _log("_renderInputForm finished — body now has", body.children.length, "children");
+}
+
+async function _submitFindInstructions(textarea, btn, body) {
+  const instructions = textarea.value.trim();
+  if (!instructions) { textarea.style.borderColor = "#f87171"; return; }
+  btn.disabled = true;
+  btn.textContent = "Starting...";
   try {
     const res = await fetch("/api/social?platform=lead-job-create", {
       method: "POST",
@@ -134,9 +161,18 @@ async function _submitFindInstructions(inputEl, submitBtn, body) {
     });
     const data = await res.json();
     if (!data.ok) {
-      alert(`Failed to start: ${data.error}`);
-      submitBtn.disabled = false;
-      inputEl.disabled = false;
+      body.innerHTML = "";
+      const err = document.createElement("div");
+      err.className = "lt-summary";
+      err.style.cssText = "font-size:12px;color:#f87171;padding:10px;";
+      err.textContent = `Couldn't start the search: ${data.error || "unknown error"}`;
+      body.appendChild(err);
+      const retry = document.createElement("div");
+      retry.className = "lt-history-link";
+      retry.style.cssText = "font-size:12px;color:#a78bfa;cursor:pointer;text-decoration:underline;margin-top:10px;";
+      retry.textContent = "Try again";
+      retry.onclick = () => _renderInputForm(body);
+      body.appendChild(retry);
       return;
     }
     _activeJobId = data.job.id;
@@ -144,123 +180,64 @@ async function _submitFindInstructions(inputEl, submitBtn, body) {
     _renderJob(body, data.job);
     _startPolling(body);
   } catch (e) {
-    alert(`Failed to start: ${e.message}`);
-    submitBtn.disabled = false;
-    inputEl.disabled = false;
+    body.innerHTML = "";
+    const err = document.createElement("div");
+    err.style.cssText = "font-size:12px;color:#f87171;padding:10px;";
+    err.textContent = `Real network error: ${e.message}`;
+    body.appendChild(err);
   }
-}
-
-async function _submitReachoutInstructions(jobId, inputEl, submitBtn, body) {
-  const instructions = inputEl.value.trim();
-  if (!instructions) return;
-
-  submitBtn.disabled = true;
-  inputEl.disabled = true;
-
-  try {
-    const res = await fetch("/api/social?platform=lead-job-set-reachout", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jobId, instructions }),
-    });
-    const data = await res.json();
-    if (!data.ok) {
-      alert(`Failed: ${data.error}`);
-      submitBtn.disabled = false;
-      inputEl.disabled = false;
-      return;
-    }
-    _renderJob(body, data.job);
-  } catch (e) {
-    alert(`Failed: ${e.message}`);
-    submitBtn.disabled = false;
-    inputEl.disabled = false;
-  }
-}
-
-async function _pollAndAdvance(body) {
-  if (!_activeJobId) return;
-  try {
-    const res = await fetch("/api/social?platform=lead-job-advance", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jobId: _activeJobId }),
-    });
-    const data = await res.json();
-    if (!data.ok) return;
-    _renderJob(body, data.job);
-
-    if (data.job.status === 'complete' || data.job.status === 'failed' || data.job.status === 'no_leads_found') {
-      _stopPolling();
-    }
-  } catch (e) {
-    console.warn("[Leads] Poll/advance failed (non-fatal):", e.message);
-  }
-}
-
-function _startPolling(body) {
-  _stopPolling();
-  _pollTimer = setInterval(() => _pollAndAdvance(body), 2000);
-}
-
-function _stopPolling() {
-  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
 }
 
 function _renderJob(body, job) {
+  _log("_renderJob called, job status:", job.status);
   body.innerHTML = "";
 
-  const banner = document.createElement("div");
-  banner.className = "lt-step-banner";
-  const isActive = job.status === 'scraping_emails' || job.status === 'sending_outreach' || job.status === 'finding_businesses';
-  if (isActive) {
-    const spinner = document.createElement("div");
-    spinner.className = "lt-step-spinner";
-    banner.appendChild(spinner);
-  }
-  const stepText = document.createElement("span");
-  stepText.textContent = job.currentStep;
-  banner.appendChild(stepText);
-  body.appendChild(banner);
+  const step = document.createElement("div");
+  step.className = "lt-step-banner";
+  step.style.cssText = "font-size:12px;color:#38bdf8;margin-bottom:12px;";
+  step.textContent = job.currentStep || `Status: ${job.status}`;
+  body.appendChild(step);
 
-  if (job.businesses?.length) {
-    const title = document.createElement("div");
-    title.className = "lt-section-title";
-    title.textContent = `Businesses found (${job.businesses.length})`;
-    body.appendChild(title);
-
-    job.businesses.forEach((biz, idx) => {
-      const matchedLead = job.leads?.find(l => l.domain === biz.website);
-      const card = document.createElement("div");
-      card.className = "lt-card";
-      const header = document.createElement("div");
-      header.className = "lt-card-header";
-      const statusLabel = matchedLead ? "✅ Email found" : (job.scrapedCount > idx ? "— no email" : "⏳ pending");
-      header.innerHTML = `<span class="lt-card-name">${biz.name}</span><span class="lt-card-status">${statusLabel}</span>`;
-      card.appendChild(header);
-      const meta = document.createElement("div");
-      meta.className = "lt-card-meta";
-      meta.textContent = `${biz.phone || "no phone listed"}${matchedLead ? ` · ${matchedLead.email}` : ""}`;
-      card.appendChild(meta);
-      body.appendChild(card);
-    });
-  }
+  (job.businesses || []).forEach(biz => {
+    const card = document.createElement("div");
+    card.className = "lt-biz-card";
+    card.style.cssText = "background:rgba(255,255,255,0.04);border:1px solid rgba(167,139,250,0.2);border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px;";
+    const name = document.createElement("div");
+    name.style.cssText = "font-weight:700;color:#d8d4ff;";
+    name.textContent = biz.name || biz.website || "Unnamed business";
+    const meta = document.createElement("div");
+    meta.style.cssText = "color:rgba(255,255,255,0.5);font-size:11px;margin-top:2px;";
+    meta.textContent = [biz.phone, biz.email].filter(Boolean).join(" · ") || "Scraping...";
+    card.appendChild(name);
+    card.appendChild(meta);
+    body.appendChild(card);
+  });
 
   if (job.status === 'awaiting_reachout_instructions') {
-    const title = document.createElement("div");
-    title.className = "lt-section-title";
-    title.textContent = "What should the outreach say?";
-    body.appendChild(title);
-
     const row = document.createElement("div");
-    row.className = "lt-input-row";
+    row.style.cssText = "display:flex;flex-direction:column;gap:10px;margin-top:12px;";
     const textarea = document.createElement("textarea");
-    textarea.className = "lt-input";
-    textarea.placeholder = "e.g. Introduce Joelflowstack's web/bot development services, mention we build custom automation tools, keep it warm and low-pressure...";
+    textarea.style.cssText = "width:100%;min-height:60px;background:rgba(255,255,255,0.06);border:1px solid rgba(167,139,250,0.35);border-radius:8px;color:#e5e7eb;font-size:13px;padding:10px;font-family:inherit;box-sizing:border-box;";
+    textarea.placeholder = "What should the outreach message say?";
     const btn = document.createElement("button");
-    btn.className = "lt-submit-btn";
-    btn.textContent = `📤 Send outreach to ${job.leads.length} lead${job.leads.length === 1 ? "" : "s"}`;
-    btn.onclick = () => _submitReachoutInstructions(job.id, textarea, btn, body);
+    btn.style.cssText = "background:rgba(167,139,250,0.18);border:1px solid rgba(167,139,250,0.5);color:#d8d4ff;font-size:13px;font-weight:600;padding:10px 14px;border-radius:8px;cursor:pointer;";
+    btn.textContent = "📤 Start outreach";
+    btn.type = "button";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = "Starting...";
+      try {
+        const res = await fetch("/api/social?platform=lead-job-set-reachout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: _activeJobId, reachoutInstructions: textarea.value.trim() }),
+        });
+        const data = await res.json();
+        if (data.ok) { _renderJob(body, data.job); _startPolling(body); }
+      } catch (e) {
+        _log("outreach start failed:", e.message);
+      }
+    };
     row.appendChild(textarea);
     row.appendChild(btn);
     body.appendChild(row);
@@ -269,77 +246,51 @@ function _renderJob(body, job) {
   if (job.status === 'complete') {
     _saveActiveJobId(null);
     _activeJobId = null;
-    const newSearchHint = document.createElement("div");
-    newSearchHint.className = "lt-history-link";
-    newSearchHint.textContent = "Start a new search ↻";
-    newSearchHint.onclick = () => _resetToInputForm(body, job);
-    body.appendChild(newSearchHint);
+    const link = document.createElement("div");
+    link.className = "lt-history-link";
+    link.style.cssText = "font-size:12px;color:#a78bfa;cursor:pointer;text-decoration:underline;margin-top:10px;";
+    link.textContent = "Start a new search ↻";
+    link.onclick = () => _renderInputForm(body, job);
+    body.appendChild(link);
   }
   if (job.status === 'failed' || job.status === 'no_leads_found') {
     _saveActiveJobId(null);
     _activeJobId = null;
-    const retryHint = document.createElement("div");
-    retryHint.className = "lt-history-link";
-    retryHint.textContent = "Try a different search ↻";
-    retryHint.onclick = () => _resetToInputForm(body, job);
-    body.appendChild(retryHint);
+    const link = document.createElement("div");
+    link.className = "lt-history-link";
+    link.style.cssText = "font-size:12px;color:#a78bfa;cursor:pointer;text-decoration:underline;margin-top:10px;";
+    link.textContent = "Try a different search ↻";
+    link.onclick = () => _renderInputForm(body, job);
+    body.appendChild(link);
   }
+  _log("_renderJob finished — body now has", body.children.length, "children");
 }
 
-// REAL FIX for the exact bug Joel reported: "brought the list of leads
-// briefly and then snapped to a single bar immediately — no matter
-// what I do, reloading, quitting, it all still brings me to that."
-// Root cause: once a job legitimately reaches 'failed' or
-// 'no_leads_found' (e.g. every scraped site genuinely had no findable
-// email), the OLD code cleared straight to a blank, empty input box —
-// which looks IDENTICAL to a fresh, never-searched state. Reopening the
-// tray later (after the terminal state is already saved) always lands
-// on that same blank box, with zero indication a search even ran or
-// why it stopped, which reads exactly like Joel described: broken.
-// Fix: carry the just-finished job's real summary along and show it as
-// a small, dismissible-by-searching-again card ABOVE the fresh input,
-// instead of wiping it. This makes the terminal state visually
-// distinct from "never searched yet" and honest about what happened.
-function _resetToInputForm(body, lastJob) {
+function _startPolling(body) {
   _stopPolling();
-  _activeJobId = null;
-  _saveActiveJobId(null);
-  _renderInputForm(body, lastJob);
+  _pollTimer = setInterval(() => _pollAndAdvance(body), 2000);
+}
+function _stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
 }
 
-function _renderInputForm(body, lastJob) {
-  body.innerHTML = "";
-
-  if (lastJob) {
-    const summary = document.createElement("div");
-    summary.className = "lt-step-banner";
-    summary.style.opacity = "0.75";
-    const scraped = lastJob.scrapedCount ?? lastJob.businesses?.length ?? 0;
-    const total = lastJob.businesses?.length ?? 0;
-    summary.innerHTML = lastJob.status === 'no_leads_found'
-      ? `<span>⚠️ Last search ("${lastJob.niche || lastJob.instructions}") scraped ${scraped}/${total} businesses but found no usable contact emails. Try a different niche or add a location.</span>`
-      : `<span>⚠️ Last search ("${lastJob.niche || lastJob.instructions}") didn't complete: ${lastJob.currentStep || 'unknown error'}.</span>`;
-    body.appendChild(summary);
+async function _pollAndAdvance(body) {
+  if (!_activeJobId) { _stopPolling(); return; }
+  try {
+    const res = await fetch(`/api/social?platform=lead-job-advance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId: _activeJobId }),
+    });
+    const data = await res.json();
+    if (!data.ok) { _log("advance returned not-ok (non-fatal):", data.error); return; }
+    _renderJob(body, data.job);
+    if (['complete', 'failed', 'no_leads_found', 'awaiting_reachout_instructions'].includes(data.job.status)) {
+      _stopPolling();
+    }
+  } catch (e) {
+    _log("poll failed (non-fatal):", e.message);
   }
-
-  const hint = document.createElement("div");
-  hint.className = "lt-empty";
-  hint.style.marginBottom = "12px";
-  hint.textContent = "Tell Flow what kind of leads to find — a niche, industry, and optionally a location. Flow finds real businesses, scrapes their real contact emails automatically, then asks what the outreach should say.";
-  body.appendChild(hint);
-
-  const row = document.createElement("div");
-  row.className = "lt-input-row";
-  const textarea = document.createElement("textarea");
-  textarea.className = "lt-input";
-  textarea.placeholder = "e.g. web design agencies in Lagos, small independent shops...";
-  const btn = document.createElement("button");
-  btn.className = "lt-submit-btn";
-  btn.textContent = "🔍 Find leads";
-  btn.onclick = () => _submitFindInstructions(textarea, btn, body);
-  row.appendChild(textarea);
-  row.appendChild(btn);
-  body.appendChild(row);
 }
 
 export function isLeadsTrayOpen() {
@@ -347,52 +298,52 @@ export function isLeadsTrayOpen() {
 }
 
 export async function openLeadsTray() {
+  _log("openLeadsTray() called");
   _injectStyles();
 
-  // REAL BUG FIX: this used to short-circuit entirely on a reused panel
-  // — just toggling the CSS class and returning, without ever
-  // re-checking server state or re-rendering #leads-body. Whatever was
-  // left in the body from earlier (a half-finished poll cycle, a stale
-  // "no job" render, anything) just stayed there indefinitely — this is
-  // almost certainly the real cause of the panel showing nothing but a
-  // bare search box with no hint text or button: some prior state left
-  // the body in an inconsistent partial-render, and reopening never
-  // corrected it. Now every open re-fetches real status and rebuilds
-  // the body fresh, regardless of whether the panel element itself is
-  // being reused.
-  let body;
+  // REAL, DELIBERATE THIS REBUILD: tear down and rebuild the ENTIRE
+  // panel from scratch on every open — no reuse, no shortcuts, no
+  // possibility of stale state surviving from before. If this is still
+  // broken after this, the console logs above will show exactly where.
   if (_panelEl) {
-    _panelEl.classList.add("lt-open");
-    document.getElementById("leads-tray-tab")?.classList.add("lt-tray-open");
-    body = _panelEl.querySelector("#leads-body");
-    body.innerHTML = ""; // real, explicit clear before rebuilding — no stale leftovers can survive this
-  } else {
-    const panel = document.createElement("div");
-    panel.id = "leads-panel";
-
-    const header = document.createElement("div");
-    header.id = "leads-header";
-    header.innerHTML = `<span class="lt-title">💼 Leads</span>`;
-    const closeBtn = document.createElement("button");
-    closeBtn.id = "leads-close-btn";
-    closeBtn.textContent = "✕";
-    closeBtn.onclick = () => closeLeadsTray();
-    header.appendChild(closeBtn);
-    panel.appendChild(header);
-
-    body = document.createElement("div");
-    body.id = "leads-body";
-    panel.appendChild(body);
-
-    document.body.appendChild(panel);
-    _panelEl = panel;
+    _panelEl.remove();
+    _panelEl = null;
   }
+  _stopPolling();
+
+  const panel = document.createElement("div");
+  panel.id = "leads-panel";
+
+  const header = document.createElement("div");
+  header.id = "leads-header";
+  const title = document.createElement("span");
+  title.className = "lt-title";
+  title.style.cssText = "font-size:15px;font-weight:700;color:#d8d4ff;";
+  title.textContent = "💼 Leads";
+  const closeBtn = document.createElement("button");
+  closeBtn.id = "leads-close-btn";
+  closeBtn.textContent = "✕";
+  closeBtn.onclick = () => closeLeadsTray();
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+  panel.appendChild(header);
+
+  const body = document.createElement("div");
+  body.id = "leads-body";
+  panel.appendChild(body);
+
+  document.body.appendChild(panel);
+  _panelEl = panel;
+  _log("panel built and appended to document.body");
 
   const savedJobId = _loadActiveJobId();
+  _log("savedJobId from localStorage:", savedJobId);
+
   if (savedJobId) {
     try {
       const res = await fetch(`/api/social?platform=lead-job-status&jobId=${encodeURIComponent(savedJobId)}`);
       const data = await res.json();
+      _log("job status fetch result:", data);
       if (data.ok && data.job && !['complete', 'failed', 'no_leads_found'].includes(data.job.status)) {
         _activeJobId = savedJobId;
         _renderJob(body, data.job);
@@ -400,7 +351,8 @@ export async function openLeadsTray() {
       } else {
         _renderInputForm(body, data.ok ? data.job : null);
       }
-    } catch (_) {
+    } catch (e) {
+      _log("job status fetch threw (rendering fresh form):", e.message);
       _renderInputForm(body);
     }
   } else {
@@ -408,10 +360,9 @@ export async function openLeadsTray() {
   }
 
   requestAnimationFrame(() => {
-    _panelEl.classList.add("lt-open");
+    panel.classList.add("lt-open");
     document.getElementById("leads-tray-tab")?.classList.add("lt-tray-open");
   });
-  _bindOutsideClickClose();
 }
 
 export function closeLeadsTray() {
@@ -432,20 +383,18 @@ function _bindOutsideClickClose() {
   });
 }
 
-function _buildToggleButton() {
+export function initLeadsTray() {
+  _log("initLeadsTray() called");
+  _injectStyles();
   const tab = document.createElement("div");
   tab.id = "leads-tray-tab";
   tab.className = "boot-collapsed";
   tab.title = "Leads";
-  tab.innerHTML = `<span class="lt-tab-icon">💼</span>`;
+  tab.innerHTML = `<span>💼</span>`;
   tab.addEventListener("click", () => {
     if (isLeadsTrayOpen()) closeLeadsTray();
     else openLeadsTray();
   });
   document.body.appendChild(tab);
-}
-
-export function initLeadsTray() {
-  _injectStyles();
-  _buildToggleButton();
+  _bindOutsideClickClose();
 }
