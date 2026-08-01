@@ -39,6 +39,16 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     set: (key, value) => ipcRenderer.invoke('flow_set_setting', key, value),
   },
 
+  // REAL, Joel-explicit-override — OS-level skill replay. Every call
+  // goes through main.js's flow_replay_skill handler, which ALWAYS
+  // shows a confirmation overlay first — this bridge cannot bypass
+  // that gate from the renderer side.
+  osControl: {
+    replaySkill: (skill) => ipcRenderer.invoke('flow_replay_skill', skill),
+    onStep: (callback) => ipcRenderer.on('os-control-step', (_event, data) => callback(data)),
+    onAborted: (callback) => ipcRenderer.on('os-control-aborted', (_event, data) => callback(data)),
+  },
+
   // ── Flow Sentinel ────────────────────────────────────────────────────
   // Ambient context awareness — Electron-only, requires OS-level access
   sentinel: {
