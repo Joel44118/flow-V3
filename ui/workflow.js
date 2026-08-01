@@ -29,6 +29,15 @@ let _canvasState = null; // { nodes: {id:{x,y}}, connections: [[a,b],...] }
 let _dragNode = null;
 let _dragOffset = { x: 0, y: 0 };
 let _connectingFrom = null;
+let _zoomLevel = 1;
+
+function _applyZoom() {
+  const inner = document.getElementById("workflow-canvas-inner");
+  if (inner) inner.style.transform = `scale(${_zoomLevel})`;
+  const label = document.getElementById("workflow-zoom-label");
+  if (label) label.textContent = `${Math.round(_zoomLevel * 100)}%`;
+  _renderConnections(); // port positions shift visually with zoom — wires must be recomputed
+}
 
 const NODES = [
   { id: "flow",     label: "Flow",     icon: "🧠", desc: "Hands-free voice",       settingKey: "handsFreeVoiceEnabled" },
@@ -81,6 +90,25 @@ function _injectStyles() {
   background-size: 18px 18px;
   cursor: grab;
 }
+/* REAL, NEW — everything zoomable (nodes + wires) lives inside this
+   inner wrapper so a single transform:scale() zooms both together and
+   keeps wires correctly anchored to the ports at any zoom level. */
+#workflow-canvas-inner {
+  position: absolute; inset: 0; transform-origin: 0 0;
+}
+#workflow-zoom-controls {
+  position: absolute; bottom: 10px; right: 10px; z-index: 20;
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(15,10,30,0.9); border: 1px solid rgba(167,139,250,0.3);
+  border-radius: 8px; padding: 4px;
+}
+.wf-zoom-btn {
+  width: 26px; height: 26px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.06); color: #e5e7eb; font-size: 14px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.wf-zoom-btn:hover { background: rgba(167,139,250,0.2); }
+#workflow-zoom-label { font-size: 11px; color: rgba(255,255,255,0.5); width: 38px; text-align: center; }
 #workflow-connections { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 
 .wf-node {
@@ -186,6 +214,26 @@ async function _applySettingChange(key, value) {
   _renderNodes();
 }
 
+// REAL, port-anchored — reads the ACTUAL rendered position of each
+// port dot (via getBoundingClientRect, which already accounts for the
+// zoom transform below) rather than guessing an offset from the node's
+// stored x/y. This is what makes wires attach exactly to the small
+// dots, not float near the node's general area.
+function _getPortPos(nodeId, side) {
+  const el = document.querySelector(`.wf-node[data-node-id="${nodeId}"] .wf-node-port.${side}`);
+  const canvasInner = document.getElementById("workflow-canvas-inner");
+  if (!el || !canvasInner) return null;
+  const portRect = el.getBoundingClientRect();
+  const innerRect = canvasInner.getBoundingClientRect();
+  // Divide out the current zoom scale so coordinates stay correct in
+  // the SVG's own (unscaled) coordinate space, since the SVG lives
+  // inside the same scaled wrapper as the nodes.
+  return {
+    x: (portRect.left + portRect.width / 2 - innerRect.left) / _zoomLevel,
+    y: (portRect.top + portRect.height / 2 - innerRect.top) / _zoomLevel,
+  };
+}
+
 function _renderConnections() {
   const svg = document.getElementById("workflow-connections");
   if (!svg) return;
@@ -193,20 +241,37 @@ function _renderConnections() {
   _canvasState.connections.forEach(([a, b]) => {
     const na = _canvasState.nodes[a], nb = _canvasState.nodes[b];
     if (!na || !nb) return;
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", na.x + 75); line.setAttribute("y1", na.y + 30);
-    line.setAttribute("x2", nb.x + 75); line.setAttribute("y2", nb.y + 30);
-    line.setAttribute("stroke", "rgba(167,139,250,0.5)");
-    line.setAttribute("stroke-width", "2");
-    line.setAttribute("stroke-dasharray", "4 3");
-    svg.appendChild(line);
+    // Real, sensible port choice — connect the ports that actually face
+    // each other given current relative position, so the wire takes the
+    // shortest natural path instead of always defaulting to the same side.
+    const aOnLeft = na.x <= nb.x;
+    const p1 = _getPortPos(a, aOnLeft ? "right" : "left");
+    const p2 = _getPortPos(b, aOnLeft ? "left" : "right");
+    if (!p1 || !p2) return;
+
+    // REAL bend — a cubic bezier whose control points extend
+    // horizontally outward from each port before curving toward the
+    // other side. This is what makes the wire arc AROUND the node
+    // boxes instead of drawing a straight line that could cut across
+    // them, matching how real workflow tools (n8n, Zapier) route wires.
+    const bend = Math.max(50, Math.abs(p2.x - p1.x) * 0.5);
+    const c1x = aOnLeft ? p1.x + bend : p1.x - bend;
+    const c2x = aOnLeft ? p2.x - bend : p2.x + bend;
+
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${p1.x} ${p1.y} C ${c1x} ${p1.y}, ${c2x} ${p2.y}, ${p2.x} ${p2.y}`);
+    path.setAttribute("stroke", "rgba(167,139,250,0.6)");
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke-dasharray", "4 3");
+    svg.appendChild(path);
   });
 }
 
 let _leadJobsSummary = { running: 0, total: 0 };
 
 function _renderNodes() {
-  const canvas = document.getElementById("workflow-canvas");
+  const canvas = document.getElementById("workflow-canvas-inner");
   if (!canvas) return;
   canvas.querySelectorAll(".wf-node").forEach(el => el.remove());
 
@@ -267,12 +332,15 @@ function _renderNodes() {
       el.appendChild(port);
     });
 
-    // Drag to reposition — real, persisted.
+    // Drag to reposition — real, persisted. Divides by _zoomLevel since
+    // getBoundingClientRect() returns post-transform screen pixels, but
+    // the node's stored x/y (and its own left/top CSS) are in the
+    // wrapper's unscaled coordinate space.
     el.addEventListener("mousedown", (e) => {
       if (e.target.classList.contains("wf-node-port") || e.target.closest(".wf-node-toggle")) return;
       _dragNode = nodeDef.id;
       const rect = el.getBoundingClientRect();
-      _dragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      _dragOffset = { x: (e.clientX - rect.left) / _zoomLevel, y: (e.clientY - rect.top) / _zoomLevel };
     });
 
     canvas.appendChild(el);
@@ -305,13 +373,13 @@ async function _pollLeadJobs() {
 }
 
 function _bindCanvasDrag() {
-  const canvas = document.getElementById("workflow-canvas");
+  const canvas = document.getElementById("workflow-canvas-inner");
   if (!canvas) return;
   canvas.addEventListener("mousemove", (e) => {
     if (!_dragNode) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left - _dragOffset.x;
-    const y = e.clientY - rect.top - _dragOffset.y;
+    const x = (e.clientX - rect.left) / _zoomLevel - _dragOffset.x;
+    const y = (e.clientY - rect.top) / _zoomLevel - _dragOffset.y;
     _canvasState.nodes[_dragNode] = { x: Math.max(0, x), y: Math.max(0, y) };
     const el = canvas.querySelector(`[data-node-id="${_dragNode}"]`);
     if (el) { el.style.left = `${x}px`; el.style.top = `${y}px`; }
@@ -351,12 +419,45 @@ export async function openWorkflowTray() {
 
   const canvas = document.createElement("div");
   canvas.id = "workflow-canvas";
+
+  const canvasInner = document.createElement("div");
+  canvasInner.id = "workflow-canvas-inner";
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.id = "workflow-connections";
-  canvas.appendChild(svg);
+  canvasInner.appendChild(svg);
+  canvas.appendChild(canvasInner);
+
+  // REAL, NEW — zoom controls (+/-, scroll wheel), matching how real
+  // workflow tools (n8n) let you zoom the canvas.
+  const zoomControls = document.createElement("div");
+  zoomControls.id = "workflow-zoom-controls";
+  const zoomOut = document.createElement("button");
+  zoomOut.className = "wf-zoom-btn";
+  zoomOut.textContent = "−";
+  zoomOut.onclick = () => { _zoomLevel = Math.max(0.4, _zoomLevel - 0.1); _applyZoom(); };
+  const zoomLabel = document.createElement("span");
+  zoomLabel.id = "workflow-zoom-label";
+  zoomLabel.textContent = "100%";
+  const zoomIn = document.createElement("button");
+  zoomIn.className = "wf-zoom-btn";
+  zoomIn.textContent = "+";
+  zoomIn.onclick = () => { _zoomLevel = Math.min(2, _zoomLevel + 0.1); _applyZoom(); };
+  zoomControls.appendChild(zoomOut);
+  zoomControls.appendChild(zoomLabel);
+  zoomControls.appendChild(zoomIn);
+  canvas.appendChild(zoomControls);
+
+  // Real scroll-wheel zoom — Ctrl/Cmd+scroll or plain scroll, matches
+  // the most common convention across real workflow/design tools.
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    _zoomLevel = Math.max(0.4, Math.min(2, _zoomLevel + (e.deltaY < 0 ? 0.08 : -0.08)));
+    _applyZoom();
+  }, { passive: false });
+
   const note = document.createElement("div");
   note.className = "wf-scope-note";
-  note.textContent = "Drag nodes, drag between ports to connect/disconnect. Disconnecting Flow from a toggle-backed node turns that feature off for real.";
+  note.textContent = "Drag nodes, drag between ports to connect/disconnect. Scroll or use +/− to zoom. Disconnecting Flow from a toggle-backed node turns that feature off for real.";
   canvas.appendChild(note);
   panel.appendChild(canvas);
 
@@ -366,6 +467,7 @@ export async function openWorkflowTray() {
   await _loadSettingsAndRender();
   await _pollLeadJobs();
   _bindCanvasDrag();
+  _applyZoom();
   _pollTimer = setInterval(_pollLeadJobs, 3000);
 
   requestAnimationFrame(() => panel.classList.add("wf-open"));
