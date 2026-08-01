@@ -3110,18 +3110,20 @@ async function _apifyFindBusinesses(niche, location, maxResults = 15) {
   if (!token) throw new Error('APIFY_API_TOKEN not set in Vercel env vars — sign up free at apify.com and find your token under Settings → Integrations.');
 
   const searchString = location ? `${niche} in ${location}` : niche;
-  // REAL FIX: this fetch previously had NO timeout at all. Vercel
-  // Hobby's hard ~10s function execution cap (a known, documented
-  // constraint for this project) means an Apify run that takes longer
-  // than that gets the WHOLE function killed mid-request — no catch
-  // block gets a chance to run, and the client receives Vercel's raw
-  // HTML error page instead of JSON. Capping this fetch at 8s means the
-  // JS-level catch below can actually fire and return a real, honest
-  // "search took too long" error as JSON instead.
+  // REAL, CORRECTED — the old 8s cap here was based on outdated
+  // information: this project's own history assumed a hard ~10s
+  // Vercel Hobby ceiling, but Vercel's actual current docs confirm
+  // Hobby functions can run up to 60s with an explicit maxDuration
+  // config (now set in vercel.json for this file). The 8s cap was
+  // firing on genuine, real Apify searches that legitimately take
+  // longer than that to complete — not a bug in Apify or the request,
+  // just not enough time given. Raised to 35s: real headroom for a
+  // real search, while leaving margin under the 60s ceiling for the
+  // email-scraping work and KV writes that happen in the same request.
   const res = await fetch(`https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?token=${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(35000),
     body: JSON.stringify({
       searchStringsArray: [searchString],
       maxCrawledPlacesPerSearch: maxResults,
