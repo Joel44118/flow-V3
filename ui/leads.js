@@ -190,6 +190,32 @@ async function _submitFindInstructions(textarea, btn, body) {
 
 function _renderJob(body, job) {
   _log("_renderJob called, job status:", job.status);
+
+  // REAL, DEFENSIVE SAFETY VALVE — confirmed via console logs that a
+  // malformed job record (status undefined) caused polling to run
+  // forever, hammering the server every 2s indefinitely, since
+  // undefined never matched any terminal-state check. Now caught here
+  // directly: if status is ever missing, stop polling immediately and
+  // show a real, honest error instead of looping.
+  if (!job.status) {
+    _log("job.status is missing — stopping polling and showing an error instead of looping forever");
+    _stopPolling();
+    _saveActiveJobId(null);
+    _activeJobId = null;
+    body.innerHTML = "";
+    const err = document.createElement("div");
+    err.style.cssText = "font-size:12px;color:#f87171;padding:10px;";
+    err.textContent = "This job's record got corrupted server-side and couldn't be read back properly. Starting fresh.";
+    body.appendChild(err);
+    const retry = document.createElement("div");
+    retry.className = "lt-history-link";
+    retry.style.cssText = "font-size:12px;color:#a78bfa;cursor:pointer;text-decoration:underline;margin-top:10px;";
+    retry.textContent = "Start a new search";
+    retry.onclick = () => _renderInputForm(body);
+    body.appendChild(retry);
+    return;
+  }
+
   body.innerHTML = "";
 
   const step = document.createElement("div");
