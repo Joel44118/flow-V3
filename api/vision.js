@@ -41,7 +41,15 @@ async function tryOpenRouter(image, prompt, origin) {
       "X-Title":       "Flow AI V3 Vision",
     },
     body: JSON.stringify({
-      model: "openai/gpt-4o-mini",
+      // REAL BUG FIX — this was "openai/gpt-4o-mini", a PAID OpenRouter
+      // model that requires purchased credits. That's the exact, real
+      // cause of Joel's "Insufficient credits — this account never
+      // purchased credits" error, not a broken key or account issue.
+      // Switched to a confirmed, genuinely free vision-capable model
+      // (verified current as of writing — OpenRouter's free lineup
+      // rotates, so if this one is ever pulled, check openrouter.ai's
+      // free-models list for another `:free`-suffixed vision model).
+      model: "google/gemma-4-31b-it:free",
       max_tokens: 300,
       messages: [
         { role: "system", content: VISION_SYSTEM_PROMPT },
