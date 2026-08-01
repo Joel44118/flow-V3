@@ -177,7 +177,10 @@ function _injectStyles() {
    visible, per Joel's explicit request that generated media should
    never be hidden behind a hover. Uses :has(), supported in the
    Chromium version Electron ships. */
-.chat-drawer-content .mwrap { opacity: 0.12; transition: opacity 0.18s ease; }
+/* REAL FIX — Joel was explicit: NOT faded, genuinely not visible at all
+   until that specific card is hovered/tapped. 0.12 was still a faint,
+   visible ghost — this is opacity:0, true invisibility. */
+.chat-drawer-content .mwrap { opacity: 0; transition: opacity 0.18s ease; }
 .chat-drawer-content .mwrap:hover,
 .chat-drawer-content .mwrap.card-tapped { opacity: 1; }
 .chat-drawer-content .mwrap:has(img),
