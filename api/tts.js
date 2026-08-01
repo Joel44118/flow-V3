@@ -12,11 +12,12 @@
 // billing, no rate limit that matters for a single-person assistant).
 // Genuinely just an npm package call — no separate app, no Docker.
 //
-// Voice choice: en-US-GuyNeural — a natural, moderate-paced male voice.
-// rate is left at the package's default (+0%) deliberately, per Joel's
-// explicit "not fast, not slow, strictly moderate" request — the
-// package's own neutral default IS that moderate pace, not a slowed-down
-// or sped-up setting.
+// Voice choice: en-AU-WilliamNeural — Joel picked this from the Edge
+// TTS voice samples (edge-tts.com), Australian male. Replaced the
+// earlier en-US-GuyNeural per his explicit choice. rate is left at the
+// package's default (+0%) deliberately, per Joel's earlier "not fast,
+// not slow, strictly moderate" request — that still applies regardless
+// of which voice is selected.
 //
 // ── DEEPGRAM (speech-to-text, listening accuracy) ──────────────────────────
 // Add DEEPGRAM_API_KEY in Vercel env vars. Free tier: 200 min/month.
@@ -37,7 +38,7 @@ import { EdgeTTS } from "@andresaya/edge-tts";
 // short-lived serverless invocation is the first real thing to check,
 // not the API key or request shape.
 
-const EDGE_VOICE = "en-US-GuyNeural"; // real, natural, moderate-paced male voice — not the fast/Jarvis-style delivery Joel explicitly didn't want
+const EDGE_VOICE = "en-AU-WilliamNeural"; // real voice Joel picked from edge-tts.com — Australian male
 
 async function handleSpeak(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
