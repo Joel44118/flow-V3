@@ -107,8 +107,8 @@ function _injectStyles() {
 .chat-drawer.open .chat-drawer-handle-row {
   top: calc(100% - ${HANDLE_HEIGHT}px);
 }
-#chat-drawer-left .chat-drawer-handle-row  { justify-content: flex-start; padding-left: 12px; }
-#chat-drawer-right .chat-drawer-handle-row { justify-content: flex-end;   padding-right: 12px; }
+#chat-drawer-left .chat-drawer-handle-row  { justify-content: flex-start; padding-left: 20px; }
+#chat-drawer-right .chat-drawer-handle-row { justify-content: flex-end;   padding-right: 20px; }
 
 .chat-drawer-handle {
   height: ${HANDLE_HEIGHT}px; padding: 0 12px; cursor: pointer;
