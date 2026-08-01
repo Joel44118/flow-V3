@@ -107,8 +107,8 @@ function _injectStyles() {
 .chat-drawer.open .chat-drawer-handle-row {
   top: calc(100% - ${HANDLE_HEIGHT}px);
 }
-#chat-drawer-left .chat-drawer-handle-row  { justify-content: flex-start; padding-left: 0; }
-#chat-drawer-right .chat-drawer-handle-row { justify-content: flex-end;   padding-right: 0; }
+#chat-drawer-left .chat-drawer-handle-row  { justify-content: flex-start; padding-left: 12px; }
+#chat-drawer-right .chat-drawer-handle-row { justify-content: flex-end;   padding-right: 12px; }
 
 .chat-drawer-handle {
   height: ${HANDLE_HEIGHT}px; padding: 0 12px; cursor: pointer;
@@ -149,11 +149,16 @@ function _injectStyles() {
    visibility approximation. Zero paint, zero possibility of a "faint"
    tray showing through. z-index kept lower than the handle row so it
    can never bury it again even in states this revision didn't
-   anticipate. */
+   anticipate.
+   REAL, Joel-requested — the container itself now has NO background
+   and NO border of its own; it's a pure invisible layout box. Only the
+   individual message cards inside it (which already dim to opacity:0
+   until hovered, per the per-card rule below) are ever visible —
+   there's no "panel" chrome floating around them anymore. */
 .chat-drawer-content {
   position: absolute; left: 0; right: 0; top: ${HANDLE_HEIGHT}px; bottom: 0;
   overflow-y: auto; padding: 10px 14px 14px;
-  background: rgba(15,10,30,0.94);
+  background: transparent;
   display: none;
   opacity: 0;
   pointer-events: none;
@@ -167,8 +172,6 @@ function _injectStyles() {
   opacity: 1;
   transition: opacity 0.25s ease;
 }
-#chat-drawer-left .chat-drawer-content  { border-right: 1px solid rgba(167,139,250,0.18); }
-#chat-drawer-right .chat-drawer-content { border-left: 1px solid rgba(167,139,250,0.18); }
 .chat-drawer-content::-webkit-scrollbar { display: none; }
 .chat-drawer-content { scrollbar-width: none; }
 
