@@ -390,11 +390,33 @@ setClientActionHandler(async (action, args) => {
       if (window.__flowElectron?.settings) {
         await window.__flowElectron.settings.set("handsFreeVoiceEnabled", enable);
       }
+      const { setFullVoiceModeUIState } = await import("./ui/full-voice-mode.js");
+      setFullVoiceModeUIState(enable);
       Chat.add(enable
         ? "🎙️ Full Voice Mode is on — I'm listening continuously now, no hotkey needed. Heads up: without a wake word, I'll react to anything spoken while this is on."
         : "Full Voice Mode is off.", "bot");
     } catch (e) {
       Chat.addError(`Couldn't switch Full Voice Mode: ${e.message}`);
+    }
+    return;
+  }
+  if (action === "run_recorded_skill") {
+    const skillName = args?.skillName;
+    if (!window.__flowElectron?.osControl) {
+      Chat.addError("OS control isn't available — this only works in the Electron desktop app.");
+      return;
+    }
+    try {
+      const result = await window.__flowElectron.osControl.runNamedSkill(skillName);
+      if (result.reason === 'not_found') {
+        Chat.add(`I don't have a recorded skill named "${skillName}" yet — skill recording isn't built yet, so there's nothing to run.`, "bot");
+      } else if (result.aborted) {
+        Chat.add(`Skill run stopped: ${result.reason === 'cancelled_by_user' ? "you cancelled it" : result.reason === 'emergency_stop' ? "emergency stop" : result.error || result.reason}`, "bot");
+      } else {
+        Chat.add(`Done — ran "${skillName}".`, "bot");
+      }
+    } catch (e) {
+      Chat.addError(`Skill run failed: ${e.message}`);
     }
     return;
   }
@@ -811,13 +833,23 @@ window.__flowElectron?.voiceHotkey?.onTrigger(() => { _toggleRecording(); });
 // explicit opt-in toggle rather than always-on.
 initHandsFreeVAD({
   onTranscript: (text) => { flowSend(text); },
-  onStateChange: (state) => { Orb.setState(state); },
+  onStateChange: (state) => {
+    Orb.setState(state);
+    const statusMap = { listening: "Listening...", thinking: "Transcribing...", interrupted: "Cut off — go ahead.", idle: "Listening — no hotkey needed. Speak whenever." };
+    import("./ui/full-voice-mode.js").then(({ setFullVoiceModeUIState }) => {
+      setFullVoiceModeUIState(true, statusMap[state] || null);
+    }).catch(() => {});
+  },
 });
 if (window.__flowElectron?.settings) {
-  window.__flowElectron.settings.get().then((s) => {
-    if (s?.handsFreeVoiceEnabled) setHandsFreeVoiceEnabled(true).catch((e) => {
-      Chat.addError?.(`Hands-free voice couldn't start: ${e.message}`);
-    });
+  window.__flowElectron.settings.get().then(async (s) => {
+    if (s?.handsFreeVoiceEnabled) {
+      await setHandsFreeVoiceEnabled(true).catch((e) => {
+        Chat.addError?.(`Hands-free voice couldn't start: ${e.message}`);
+      });
+      const { setFullVoiceModeUIState } = await import("./ui/full-voice-mode.js");
+      setFullVoiceModeUIState(true);
+    }
   }).catch(() => {});
 }
 
