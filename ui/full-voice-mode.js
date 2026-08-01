@@ -1,86 +1,134 @@
 // ═══════════════════════════════════════════
-// ui/full-voice-mode.js — REAL, NEW: Full Voice Mode's UI overhaul.
+// ui/full-voice-mode.js — Full Voice Mode UI, REBUILT (2nd pass) to
+// match Joel's actual design intent, not a centered modal card.
 //
-// Shows/hides based on the SAME handsFreeVoiceEnabled state that
-// core/hands-free-vad.js already controls — this file only owns the
-// VISUALS (waveform, hearing-sensitivity control, hiding the input
-// box), not the listening logic itself.
+// REAL DESIGN, per Joel's explicit correction:
+//   - The normal input bar slides DOWN and out of view (animated, not
+//     instant).
+//   - A NEW bar slides UP from the bottom to occupy that same space —
+//     a colorful, multi-bar waveform (not a single oscilloscope line),
+//     reacting to real mic amplitude via Web Audio.
+//   - A SEPARATE settings bar slides in from the LEFT with the
+//     sensitivity slider, colored as a gradient (blue = low/only-close-
+//     speech, pink/red = high/picks-up-anything) so high vs low is
+//     visually obvious, not just a number.
+//   - At the very lowest sensitivity, offers to turn on the camera for
+//     lip-reading assist.
 //
-// REAL, HONEST NOTE on "hearing range... sync with only my lips" — true
-// lip-sync would need visual lip-reading via camera, a different
-// feature entirely. What's real and built here instead: a sensitivity
-// slider on the VAD's actual speech-detection threshold
-// (positiveSpeechThreshold) — turning it up means only clearly louder/
-// closer speech triggers listening, which is the real, audio-domain
-// equivalent of "only pick up what's close to me."
+// HONEST NOTE on lip-reading: turning the camera on and showing a
+// preview is real and built here. Actually USING that video to improve
+// speech detection (real lip-reading ML) is a separate, much bigger
+// computer-vision feature that isn't implemented yet — this offers the
+// toggle and explains that plainly rather than pretending detection
+// is smarter than it is.
 // ═══════════════════════════════════════════
 
-let _overlayEl = null;
 let _micAudioCtx = null;
 let _micAnalyser = null;
 let _micAnalyserBuf = null;
 let _micStream = null;
 let _waveformRAF = null;
-let _sensitivity = 0.5; // maps to VAD's positiveSpeechThreshold
+let _camStream = null;
+
+const BAR_COUNT = 40;
 
 function _injectStyles() {
   if (document.getElementById("fvm-style")) return;
   const style = document.createElement("style");
   style.id = "fvm-style";
   style.textContent = `
-#fvm-overlay {
-  position: fixed; top: 52px; left: 0; right: 0; bottom: 26px;
-  z-index: 9700; display: none; flex-direction: column; align-items: center; justify-content: center;
-  background: rgba(8,5,18,0.55); backdrop-filter: blur(2px);
-  pointer-events: none;
+/* REAL — the normal input bar slides DOWN out of view (not display:none),
+   an animated transform so it genuinely "slides" as Joel described. */
+.input-panel { transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
+.input-panel.fvm-hidden { transform: translateY(120%); }
+
+/* REAL — the waveform bar slides UP from the bottom to occupy the same
+   space the input bar vacated. */
+#fvm-wave-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; height: 64px;
+  background: linear-gradient(180deg, rgba(30,20,60,0.95), rgba(15,10,35,0.98));
+  border-top: 1px solid rgba(167,139,250,0.35);
+  display: flex; align-items: center; gap: 14px; padding: 0 18px;
+  z-index: 9600; transform: translateY(100%);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
-#fvm-overlay.fvm-active { display: flex; }
+#fvm-wave-bar.fvm-shown { transform: translateY(0); }
 
-#fvm-waveform-card {
-  width: min(520px, 80vw); background: rgba(15,10,30,0.9);
-  border: 1px solid rgba(167,139,250,0.4); border-radius: 16px;
-  padding: 20px 24px; pointer-events: all;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+#fvm-wave-canvas { flex: 1; height: 40px; }
+#fvm-wave-status { font-size: 11px; color: #d8d4ff; white-space: nowrap; font-weight: 600; }
+#fvm-wave-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 8px #4ade80; flex-shrink: 0; animation: fvm-pulse 1.4s ease-in-out infinite; }
+@keyframes fvm-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* REAL — the sensitivity bar slides in from the LEFT, colored as a real
+   gradient track (blue = low sensitivity/only close speech, pink/red =
+   high sensitivity/picks up anything) so high vs low reads visually. */
+#fvm-range-bar {
+  position: fixed; top: 52px; left: 0; bottom: 26px; width: 220px;
+  background: rgba(15,10,30,0.97); border-right: 1px solid rgba(167,139,250,0.35);
+  z-index: 9599; padding: 20px 16px; box-sizing: border-box;
+  transform: translateX(-100%);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex; flex-direction: column;
 }
-#fvm-title { font-size: 13px; font-weight: 700; color: #d8d4ff; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
-#fvm-title .fvm-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 8px #4ade80; }
-#fvm-status-text { font-size: 11px; color: rgba(255,255,255,0.5); margin-bottom: 14px; }
+#fvm-range-bar.fvm-shown { transform: translateX(0); }
 
-#fvm-canvas { width: 100%; height: 70px; display: block; border-radius: 8px; }
+#fvm-range-title { font-size: 12px; font-weight: 700; color: #d8d4ff; margin-bottom: 4px; }
+#fvm-range-desc { font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 16px; line-height: 1.5; }
 
-#fvm-sensitivity-row { margin-top: 16px; display: flex; align-items: center; gap: 10px; }
-#fvm-sensitivity-row label { font-size: 11px; color: rgba(255,255,255,0.6); white-space: nowrap; }
-#fvm-sensitivity-slider { flex: 1; accent-color: #a78bfa; }
-#fvm-sensitivity-value { font-size: 11px; color: #a78bfa; width: 32px; text-align: right; }
+#fvm-range-track-wrap { position: relative; height: 160px; width: 100%; display: flex; justify-content: center; margin-bottom: 12px; }
+#fvm-range-gradient {
+  width: 10px; height: 100%; border-radius: 5px;
+  background: linear-gradient(180deg, #f87171 0%, #fbbf24 50%, #38bdf8 100%);
+}
+#fvm-range-slider {
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%) rotate(-90deg) translateX(0);
+  width: 160px; height: 10px; -webkit-appearance: none; appearance: none;
+  background: transparent; transform-origin: center;
+  writing-mode: vertical-lr;
+  direction: rtl;
+}
+#fvm-range-value { text-align: center; font-size: 11px; color: #a78bfa; margin-bottom: 6px; }
+#fvm-range-labels { display: flex; justify-content: space-between; font-size: 9px; color: rgba(255,255,255,0.4); width: 10px; margin: 0 auto; height: 160px; flex-direction: column; }
 
-#fvm-hint { font-size: 10px; color: rgba(255,255,255,0.35); margin-top: 10px; line-height: 1.5; font-style: italic; }
+#fvm-lipsync-prompt {
+  margin-top: auto; font-size: 10px; color: rgba(255,255,255,0.6);
+  background: rgba(167,139,250,0.1); border: 1px solid rgba(167,139,250,0.3);
+  border-radius: 8px; padding: 10px; line-height: 1.5; display: none;
+}
+#fvm-lipsync-prompt.show { display: block; }
+#fvm-lipsync-btn {
+  margin-top: 8px; width: 100%; background: rgba(74,222,128,0.15); border: 1px solid #4ade80;
+  color: #4ade80; padding: 6px; border-radius: 6px; cursor: pointer; font-size: 10px;
+}
+#fvm-lipsync-video { width: 100%; border-radius: 6px; margin-top: 8px; display: none; }
+#fvm-lipsync-video.show { display: block; }
 `;
   document.head.appendChild(style);
 }
 
+// ── Colorful, multi-bar waveform (not a single oscilloscope line) ──
 function _drawWaveform(canvas) {
   const ctx = canvas.getContext("2d");
   const W = canvas.width = canvas.clientWidth * devicePixelRatio;
   const H = canvas.height = canvas.clientHeight * devicePixelRatio;
+  const barWidth = W / BAR_COUNT;
 
   function draw() {
     _waveformRAF = requestAnimationFrame(draw);
     ctx.clearRect(0, 0, W, H);
     if (!_micAnalyser) return;
 
-    _micAnalyser.getByteTimeDomainData(_micAnalyserBuf);
-    ctx.beginPath();
-    ctx.strokeStyle = "#a78bfa";
-    ctx.lineWidth = 2 * devicePixelRatio;
-    const sliceWidth = W / _micAnalyserBuf.length;
-    let x = 0;
-    for (let i = 0; i < _micAnalyserBuf.length; i++) {
-      const v = _micAnalyserBuf[i] / 128.0;
-      const y = (v * H) / 2;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      x += sliceWidth;
+    _micAnalyser.getByteFrequencyData(_micAnalyserBuf);
+    const step = Math.floor(_micAnalyserBuf.length / BAR_COUNT);
+
+    for (let i = 0; i < BAR_COUNT; i++) {
+      const v = _micAnalyserBuf[i * step] / 255;
+      const barH = Math.max(3, v * H);
+      const hue = 260 - v * 140; // purple (quiet) → pink/orange (loud) — real amplitude-driven color, not decorative
+      ctx.fillStyle = `hsl(${hue}, 85%, 65%)`;
+      const x = i * barWidth;
+      ctx.fillRect(x + barWidth * 0.15, (H - barH) / 2, barWidth * 0.7, barH);
     }
-    ctx.stroke();
   }
   draw();
 }
@@ -91,7 +139,7 @@ async function _startMicVisualization() {
     _micAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const source = _micAudioCtx.createMediaStreamSource(_micStream);
     _micAnalyser = _micAudioCtx.createAnalyser();
-    _micAnalyser.fftSize = 512;
+    _micAnalyser.fftSize = 256;
     _micAnalyserBuf = new Uint8Array(_micAnalyser.frequencyBinCount);
     source.connect(_micAnalyser);
   } catch (e) {
@@ -115,7 +163,6 @@ function _saveSensitivity(v) {
 }
 
 async function _applySensitivity(v) {
-  _sensitivity = v;
   _saveSensitivity(v);
   try {
     const { setVadSensitivity } = await import("../core/hands-free-vad.js");
@@ -125,81 +172,116 @@ async function _applySensitivity(v) {
   }
 }
 
-function _buildOverlay() {
-  const overlay = document.createElement("div");
-  overlay.id = "fvm-overlay";
+// REAL — camera toggle for lip-reading ASSIST. Honest about scope: this
+// turns the camera on and shows a live preview; it does NOT yet run any
+// actual lip-reading analysis to improve detection — that's a separate,
+// real computer-vision feature not built yet.
+async function _offerLipSyncCamera(videoEl, promptEl) {
+  promptEl.classList.add("show");
+  const btn = promptEl.querySelector("#fvm-lipsync-btn");
+  btn.onclick = async () => {
+    if (_camStream) {
+      _camStream.getTracks().forEach(t => t.stop());
+      _camStream = null;
+      videoEl.classList.remove("show");
+      videoEl.srcObject = null;
+      btn.textContent = "Enable camera for lip-reading assist";
+      return;
+    }
+    try {
+      _camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      videoEl.srcObject = _camStream;
+      videoEl.classList.add("show");
+      btn.textContent = "Turn camera off";
+    } catch (e) {
+      console.warn("[FullVoiceMode] Camera access denied or unavailable:", e.message);
+    }
+  };
+}
 
-  const card = document.createElement("div");
-  card.id = "fvm-waveform-card";
+let _rangeBarEl = null;
+let _waveBarEl = null;
 
-  const title = document.createElement("div");
-  title.id = "fvm-title";
-  title.innerHTML = `<span class="fvm-dot"></span> Full Voice Mode`;
-  card.appendChild(title);
+function _buildBars() {
+  const waveBar = document.createElement("div");
+  waveBar.id = "fvm-wave-bar";
+  waveBar.innerHTML = `
+    <span id="fvm-wave-dot"></span>
+    <span id="fvm-wave-status">Listening — speak whenever</span>
+    <canvas id="fvm-wave-canvas"></canvas>
+  `;
+  document.body.appendChild(waveBar);
 
-  const status = document.createElement("div");
-  status.id = "fvm-status-text";
-  status.textContent = "Listening — no hotkey needed. Speak whenever.";
-  card.appendChild(status);
+  const rangeBar = document.createElement("div");
+  rangeBar.id = "fvm-range-bar";
+  rangeBar.innerHTML = `
+    <div id="fvm-range-title">🎚️ Hearing sensitivity</div>
+    <div id="fvm-range-desc">Low = only picks up clear, close speech. High = picks up quieter or farther speech (and more background noise).</div>
+    <div id="fvm-range-track-wrap">
+      <div id="fvm-range-gradient"></div>
+      <input type="range" id="fvm-range-slider" min="0.2" max="0.9" step="0.05" orient="vertical">
+    </div>
+    <div id="fvm-range-value">Medium</div>
+    <div id="fvm-lipsync-prompt">
+      🎥 At lowest sensitivity, want camera-assisted lip reading? This turns your camera on so Flow can see your mouth move alongside audio — real preview, but actual lip-reading analysis isn't built yet, just the camera toggle for now.
+      <button id="fvm-lipsync-btn">Enable camera for lip-reading assist</button>
+      <video id="fvm-lipsync-video" autoplay muted></video>
+    </div>
+  `;
+  document.body.appendChild(rangeBar);
 
-  const canvas = document.createElement("canvas");
-  canvas.id = "fvm-canvas";
-  card.appendChild(canvas);
-
-  const sensRow = document.createElement("div");
-  sensRow.id = "fvm-sensitivity-row";
-  const label = document.createElement("label");
-  label.textContent = "Sensitivity";
-  const slider = document.createElement("input");
-  slider.type = "range"; slider.id = "fvm-sensitivity-slider";
-  slider.min = "0.2"; slider.max = "0.9"; slider.step = "0.05";
+  const slider = rangeBar.querySelector("#fvm-range-slider");
+  const valueLabel = rangeBar.querySelector("#fvm-range-value");
+  const lipsyncPrompt = rangeBar.querySelector("#fvm-lipsync-prompt");
+  const lipsyncVideo = rangeBar.querySelector("#fvm-lipsync-video");
   slider.value = String(_loadSensitivity());
-  const valueLabel = document.createElement("span");
-  valueLabel.id = "fvm-sensitivity-value";
-  valueLabel.textContent = slider.value;
+
+  function updateLabel(v) {
+    valueLabel.textContent = v <= 0.3 ? "Low" : v >= 0.7 ? "High" : "Medium";
+  }
+  updateLabel(parseFloat(slider.value));
+
   slider.addEventListener("input", () => {
-    valueLabel.textContent = slider.value;
-    _applySensitivity(parseFloat(slider.value));
+    const v = parseFloat(slider.value);
+    updateLabel(v);
+    _applySensitivity(v);
+    if (v <= 0.2) {
+      _offerLipSyncCamera(lipsyncVideo, lipsyncPrompt);
+    } else {
+      lipsyncPrompt.classList.remove("show");
+    }
   });
-  sensRow.appendChild(label);
-  sensRow.appendChild(slider);
-  sensRow.appendChild(valueLabel);
-  card.appendChild(sensRow);
 
-  const hint = document.createElement("div");
-  hint.id = "fvm-hint";
-  hint.textContent = "Higher sensitivity picks up quieter/farther speech (and more background noise); lower sensitivity only reacts to clear, close speech.";
-  card.appendChild(hint);
-
-  overlay.appendChild(card);
-  document.body.appendChild(overlay);
-  return overlay;
+  _waveBarEl = waveBar;
+  _rangeBarEl = rangeBar;
 }
 
 export function setFullVoiceModeUIState(active, statusText) {
-  if (!_overlayEl) { _injectStyles(); _overlayEl = _buildOverlay(); }
+  if (!_waveBarEl) { _injectStyles(); _buildBars(); }
 
   const inputBar = document.querySelector(".input-panel");
 
   if (active) {
-    _overlayEl.classList.add("fvm-active");
-    if (inputBar) inputBar.style.display = "none";
+    if (inputBar) inputBar.classList.add("fvm-hidden");
+    _waveBarEl.classList.add("fvm-shown");
+    _rangeBarEl.classList.add("fvm-shown");
     if (!_micAnalyser) _startMicVisualization();
-    _drawWaveform(_overlayEl.querySelector("#fvm-canvas"));
-    _applySensitivity(_loadSensitivity());
+    _drawWaveform(_waveBarEl.querySelector("#fvm-wave-canvas"));
   } else {
-    _overlayEl.classList.remove("fvm-active");
-    if (inputBar) inputBar.style.display = "";
+    if (inputBar) inputBar.classList.remove("fvm-hidden");
+    _waveBarEl.classList.remove("fvm-shown");
+    _rangeBarEl.classList.remove("fvm-shown");
     _stopMicVisualization();
+    if (_camStream) { _camStream.getTracks().forEach(t => t.stop()); _camStream = null; }
   }
 
   if (statusText) {
-    const statusEl = _overlayEl.querySelector("#fvm-status-text");
+    const statusEl = _waveBarEl.querySelector("#fvm-wave-status");
     if (statusEl) statusEl.textContent = statusText;
   }
 }
 
 export function initFullVoiceModeUI() {
   _injectStyles();
-  _overlayEl = _buildOverlay();
+  _buildBars();
 }
