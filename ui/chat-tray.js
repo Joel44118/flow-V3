@@ -107,11 +107,11 @@ function _injectStyles() {
 .chat-drawer.open .chat-drawer-handle-row {
   top: calc(100% - ${HANDLE_HEIGHT}px);
 }
-#chat-drawer-left .chat-drawer-handle-row  { justify-content: flex-start; padding-left: 20px; }
-#chat-drawer-right .chat-drawer-handle-row { justify-content: flex-end;   padding-right: 20px; }
+#chat-drawer-left .chat-drawer-handle-row  { justify-content: flex-start; padding-left: 60px; }
+#chat-drawer-right .chat-drawer-handle-row { justify-content: flex-end;   padding-right: 60px; }
 
 .chat-drawer-handle {
-  height: ${HANDLE_HEIGHT}px; padding: 0 40px; cursor: pointer;
+  height: ${HANDLE_HEIGHT}px; padding: 0 12px; cursor: pointer;
   background: rgba(20,14,40,0.95); border: 1px solid rgba(255,255,255,0.16);
   border-radius: 0;
   display: flex; align-items: center; justify-content: center;
