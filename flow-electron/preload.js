@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     stopRecording: () => ipcRenderer.invoke('flow_stop_skill_recording'),
     saveSkill: (skill) => ipcRenderer.invoke('flow_save_skill', skill),
     getLastRecording: () => ipcRenderer.invoke('flow_get_last_recording'),
+    performOSAction: (action, appName) => ipcRenderer.invoke('flow_perform_os_action', { action, appName }),
     onStep: (callback) => ipcRenderer.on('os-control-step', (_event, data) => callback(data)),
     onAborted: (callback) => ipcRenderer.on('os-control-aborted', (_event, data) => callback(data)),
   },
