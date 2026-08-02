@@ -13,6 +13,7 @@ import { initSlash, getSlashState, clearSlash } from "./ui/slash.js";
 import { activateAgent, deactivateAgent, getActiveAgent, onAgentChange, AGENTS } from "./core/agent.js";
 import { startRecording, stopRecordingAndTranscribe, cancelRecording } from "./core/whisper.js";
 import { initHandsFreeVAD, setHandsFreeVoiceEnabled } from "./core/hands-free-vad.js";
+import { startStreamingASR, stopStreamingASR, setFlowSpeakingState as setStreamingFlowSpeaking } from "./core/streaming-asr.js";
 import { loadFromCloud, startAutoSync } from "./core/cloud.js";
 import { goalsSummary, startGoalDeadlineWatcher, saveGoals } from "./core/goals.js";
 import {
@@ -376,8 +377,30 @@ setClientActionHandler(async (action, args) => {
       const { enabled } = await bridge.status();
       const next = !enabled;
       bridge.toggle(next);
+      const { recording: wasRecording } = await bridge.learnStatus();
       bridge.learnToggle(next);
       Chat.add(next ? "👁 Turning Sentinel on." : "Turning Sentinel off.", "bot");
+
+      // REAL, NEW — this is the actual fix for "no pattern found":
+      // turning Sentinel off while Watch & Learn was recording now
+      // automatically generalizes the REAL recorded clicks/keystrokes
+      // (not a vision guess) into a named, replayable skill, via the
+      // same safety-gated path (confirmation + emergency stop) as
+      // everything else in os-control.js.
+      if (!next && wasRecording && window.__flowElectron?.osControl) {
+        try {
+          const { events } = await window.__flowElectron.osControl.getLastRecording();
+          if (events?.length) {
+            Chat.add("📼 Got it — turning that into a replayable skill...", "bot");
+            const { generalizeRecording } = await import("./ui/skill-generalizer.js");
+            const skill = await generalizeRecording({ events }, "last_action");
+            await window.__flowElectron.osControl.saveSkill(skill);
+            Chat.add(`✅ Saved as "last_action" — say "do what I just did" and I'll replay it (you'll get a real confirmation preview first).`, "bot");
+          }
+        } catch (e) {
+          Chat.addError(`Couldn't turn that recording into a skill: ${e.message}`);
+        }
+      }
     } catch (e) {
       Chat.addError(`Couldn't toggle Sentinel: ${e.message}`);
     }
@@ -392,6 +415,28 @@ setClientActionHandler(async (action, args) => {
       }
       const { setFullVoiceModeUIState } = await import("./ui/full-voice-mode.js");
       setFullVoiceModeUIState(enable);
+
+      // REAL, NEW, OPT-IN — genuine streaming interrupt (core/streaming-
+      // asr.js) only starts if Joel has explicitly enabled it AND
+      // configured a Deepgram key. Not automatic: Deepgram isn't
+      // permanently free (see that file's own honest header), so this
+      // never silently starts spending credits without Joel's explicit
+      // opt-in via Settings.
+      const settings = window.__flowElectron?.settings ? await window.__flowElectron.settings.get() : {};
+      if (enable && settings?.realtimeInterruptEnabled && settings?.deepgramApiKey) {
+        try {
+          await startStreamingASR({
+            apiKey: settings.deepgramApiKey,
+            onFinalTranscript: (text) => { flowSend(text); },
+            onInterruptSignal: () => { Speech.cancel(); Chat.add("(cut off — go ahead)", "bot"); },
+          });
+        } catch (e) {
+          Chat.addError(`Real-time interrupt mode couldn't start: ${e.message}`);
+        }
+      } else if (!enable) {
+        stopStreamingASR();
+      }
+
       Chat.add(enable
         ? "🎙️ Full Voice Mode is on — I'm listening continuously now, no hotkey needed. Heads up: without a wake word, I'll react to anything spoken while this is on."
         : "Full Voice Mode is off.", "bot");
