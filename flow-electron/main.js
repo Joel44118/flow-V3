@@ -594,6 +594,46 @@ ipcMain.handle('flow_save_skill', async (event, skill) => {
   const { saveSkill } = require('./skill-store.js');
   return saveSkill(skill);
 });
+
+// REAL, NEW — direct, low-risk OS actions. Minimize/restore just use
+// Electron's own window API (no robotjs, no automation risk at all).
+// open_app spawns a real OS-level "open this program" command —
+// sanitized (alphanumeric + spaces/hyphens only) to prevent shell
+// injection via a name the model might pass through, and executes
+// immediately without the heavier confirmation overlay since launching
+// a single named app is low-risk and trivially reversible (just close
+// it), unlike a multi-step click/type replay.
+ipcMain.handle('flow_perform_os_action', async (_event, { action, appName }) => {
+  const { exec } = require('child_process');
+
+  if (action === 'minimize_window') {
+    mainWin?.minimize();
+    return { success: true };
+  }
+  if (action === 'restore_window') {
+    mainWin?.restore();
+    mainWin?.show();
+    return { success: true };
+  }
+  if (action === 'open_app') {
+    const clean = String(appName || '').replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+    if (!clean) return { success: false, error: 'No valid app name given.' };
+    return new Promise((resolve) => {
+      // Real, Windows-specific (matches this project's nsis/win-only
+      // build target) — `start ""` is the real, standard way to launch
+      // a named program by its registered name/shortcut on Windows.
+      exec(`start "" "${clean}"`, (err) => {
+        if (err) {
+          console.warn(`[OSAction] Couldn't open "${clean}":`, err.message);
+          resolve({ success: false, error: `Couldn't find or open "${clean}" — check the exact name/that it's installed.` });
+        } else {
+          resolve({ success: true });
+        }
+      });
+    });
+  }
+  return { success: false, error: `Unknown action: ${action}` };
+});
 ipcMain.handle('flow_set_setting', (_e, key, value) => heartbeat.setSetting(key, value));
 
 ipcMain.on('win_minimize', () => mainWin?.minimize());
