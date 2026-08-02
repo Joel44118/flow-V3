@@ -1,6 +1,6 @@
 {
   "name": "flow-ai",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Flow AI Desktop",
   "main": "main.js",
   "scripts": {
@@ -21,7 +21,8 @@
     ],
     "asarUnpack": [
       "node_modules/@jitsi/robotjs/**/*",
-      "node_modules/active-win/**/*"
+      "node_modules/active-win/**/*",
+      "node_modules/uiohook-napi/**/*"
     ],
     "extraResources": [],
     "publish": {
@@ -55,6 +56,7 @@
   "dependencies": {
     "electron-updater": "^6.1.8",
     "@jitsi/robotjs": "^0.6.12",
-    "active-win": "^9.0.0"
+    "active-win": "^9.0.0",
+    "uiohook-napi": "^1.5.4"
   }
 }
