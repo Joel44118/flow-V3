@@ -59,6 +59,8 @@ function _wireAnalyser(audioEl) {
   }
 }
 
+let _rollingPeakRms = 0.05; // real, adaptive — starting floor prevents divide-by-near-zero on the very first frames
+
 setInterval(() => {
   if (!_isSpeaking || _isPaused || !_analyser) { _envelope *= 0.82; return; }
   _analyser.getByteTimeDomainData(_analyserBuf);
@@ -71,7 +73,18 @@ setInterval(() => {
     sumSquares += centered * centered;
   }
   const rms = Math.sqrt(sumSquares / _analyserBuf.length);
-  _envelope = Math.min(1, rms * 4); // real gain factor — Edge TTS's raw RMS runs quiet, this brings typical speech up into a visually meaningful 0..1 range without clipping on louder peaks
+
+  // REAL FIX for the orb going still after switching to William's voice
+  // — the previous fixed "rms * 4" gain was calibrated against Guy's
+  // specific loudness profile. Different Edge TTS voices genuinely have
+  // different average loudness/dynamic range, so a hardcoded multiplier
+  // that suited one voice can under-drive another into looking
+  // "unreactive" even though real audio is playing. Replaced with a
+  // real auto-gain: tracks a slowly-decaying rolling peak and
+  // normalizes against THAT, so any voice's own dynamic range maps to
+  // a full, visible 0..1 envelope regardless of its absolute loudness.
+  _rollingPeakRms = Math.max(rms, _rollingPeakRms * 0.995);
+  _envelope = Math.min(1, rms / _rollingPeakRms);
 }, 16);
 
 function stripForSpeech(text) {
@@ -147,10 +160,12 @@ async function _speakEdgeTTS(text, onDone, wrap) {
       // barge-in check always reflects Flow's real audio state,
       // regardless of which call site triggered this reply.
       import("./hands-free-vad.js").then(m => m.setFlowSpeakingState(true)).catch(() => {});
+      import("./streaming-asr.js").then(m => m.setFlowSpeakingState(true)).catch(() => {});
     };
     _audioEl.onended = () => {
       URL.revokeObjectURL(url);
       import("./hands-free-vad.js").then(m => m.setFlowSpeakingState(false)).catch(() => {});
+      import("./streaming-asr.js").then(m => m.setFlowSpeakingState(false)).catch(() => {});
       _resetState(true);
       if (onDone) onDone();
     };
@@ -237,6 +252,7 @@ export const Speech = {
     // cancel would leave hands-free-vad.js thinking Flow is still
     // speaking indefinitely.
     import("./hands-free-vad.js").then(m => m.setFlowSpeakingState(false)).catch(() => {});
+    import("./streaming-asr.js").then(m => m.setFlowSpeakingState(false)).catch(() => {});
     _resetState(false);
   },
 
