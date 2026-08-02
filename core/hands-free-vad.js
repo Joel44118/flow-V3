@@ -148,6 +148,19 @@ export async function setHandsFreeVoiceEnabled(enabled) {
         // applied here directly, vad-web's own real threshold knob.
         positiveSpeechThreshold: _sensitivity,
         onSpeechStart: () => {
+          // REAL, NEW — if lip-sync camera tracking is active (opted
+          // into via ui/full-voice-mode.js's lowest-sensitivity
+          // prompt), cross-check against the real mouth-activity
+          // signal. A closed, still mouth while audio VAD fires is a
+          // real, honest sign the trigger is probably background
+          // noise, not Joel actually talking — logged, not silently
+          // dropped, since this is a soft signal, not a hard gate.
+          import("./lip-sync-vad.js").then(({ isMouthActive, getMouthOpenScore }) => {
+            if (getMouthOpenScore() > 0 && !isMouthActive()) {
+              console.log("[HandsFreeVAD] Audio triggered but mouth isn't visibly active — likely background noise (proceeding anyway, this is a soft signal).");
+            }
+          }).catch(() => {}); // lip-sync-vad not active — normal case when camera isn't on
+
           // REAL barge-in — if Flow is mid-reply when you start talking
           // again, cut his audio immediately so you're never stuck
           // waiting him out.
