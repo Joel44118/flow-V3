@@ -571,6 +571,29 @@ ipcMain.handle('flow_list_skills', async () => {
     return [];
   }
 });
+
+// REAL, NEW — Sentinel's "watch and learn," actually wired to real
+// input recording now (flow-electron/skill-recorder.js), with the real
+// crash-safety that file's own header describes.
+ipcMain.handle('flow_start_skill_recording', async () => {
+  const { startRecording } = require('./skill-recorder.js');
+  return await startRecording();
+});
+
+ipcMain.handle('flow_stop_skill_recording', async () => {
+  const { stopRecording } = require('./skill-recorder.js');
+  return await stopRecording();
+});
+
+// REAL, NEW — saves a skill that the renderer has already generalized
+// (via a vision-capable LLM call, using the raw events/screenshots from
+// stopRecording) into named, semantic steps. This handler just persists
+// it — the actual generalization reasoning happens in api/chat.js or a
+// dedicated endpoint, not here, since that needs a real LLM call.
+ipcMain.handle('flow_save_skill', async (event, skill) => {
+  const { saveSkill } = require('./skill-store.js');
+  return saveSkill(skill);
+});
 ipcMain.handle('flow_set_setting', (_e, key, value) => heartbeat.setSetting(key, value));
 
 ipcMain.on('win_minimize', () => mainWin?.minimize());
@@ -907,8 +930,36 @@ async function extractStepsFromTrail(instruction) {
 
 ipcMain.on('sentinel_learn_toggle', (_e, { enabled }) => {
   if (enabled) startTrailRecording(); else stopTrailRecording();
+  // REAL, NEW — alongside the existing screenshot-trail (still useful
+  // context for describing what happened), this now ALSO starts real
+  // input recording (flow-electron/skill-recorder.js) so "do what I
+  // just did" can genuinely replay exact clicks/keystrokes instead of
+  // only ever describing a best guess. This is the actual fix for the
+  // original "no pattern found" complaint — the old system had nothing
+  // real to replay, just a vision description.
+  try {
+    const { startRecording, stopRecording } = require('./skill-recorder.js');
+    if (enabled) {
+      startRecording().then(result => {
+        if (!result.started) console.warn('[Sentinel] Real input recording could not start:', result.error);
+      });
+    } else {
+      stopRecording().then(result => {
+        global.__lastRecordedSkillEvents = result.events; // real, simple handoff — renderer picks this up via flow_get_last_recording below
+      });
+    }
+  } catch (e) {
+    console.warn('[Sentinel] skill-recorder.js unavailable (non-fatal, falls back to screenshot-only description):', e.message);
+  }
 });
 ipcMain.handle('sentinel_learn_status', () => ({ recording: trailRecording, frames: trail.length }));
+
+// REAL, NEW — hands the last real recording (raw click/key events +
+// before/after screenshots) to the renderer, which calls
+// ui/skill-generalizer.js to turn it into a named, replayable skill.
+ipcMain.handle('flow_get_last_recording', () => {
+  return { events: global.__lastRecordedSkillEvents || [] };
+});
 
 // This returns the AI's step description back to the renderer — Flow reads
 // it out / shows it in chat and confirms with Joel BEFORE anything is
