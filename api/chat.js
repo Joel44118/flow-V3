@@ -486,6 +486,21 @@ const FLOW_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'perform_os_action',
+      description: "Perform a direct, simple OS-level action right now — minimize/restore Flow's own window, or open a named application on Joel's PC (e.g. 'open Chrome', 'open Notepad', 'minimize your window'). This is DIFFERENT from run_recorded_skill: these are simple, low-risk, instantly-reversible actions (minimizing a window, launching a program) that execute immediately without the confirmation overlay — that heavier gate is reserved for multi-step click/type replays, not opening a single app or minimizing a window.",
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['minimize_window', 'restore_window', 'open_app'], description: 'Which action to perform' },
+          appName: { type: 'string', description: 'Only for open_app — the name of the application to open, as Joel referred to it (e.g. "chrome", "notepad", "spotify")' },
+        },
+        required: ['action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'run_recorded_skill',
       description: "Run a named, previously-recorded OS-control skill by name (e.g. Joel says 'do the invoice thing' or names a specific skill) — this actually controls Joel's mouse/keyboard to replay recorded steps, real OS automation, not a simulation. ALWAYS shows Joel a visible confirmation with a cancellable countdown before executing, regardless of how this is called — that gate cannot be skipped. If Joel says something generic like 'do what I just did' or 'repeat that' right after a Sentinel Watch & Learn recording, use skillName 'last_action' — that's the real, automatic name given to whatever was most recently recorded. Only call this when Joel is clearly asking to run/replay a specific recorded action sequence, not for general screen questions.",
       parameters: {
@@ -666,6 +681,9 @@ async function executeFlowTool(toolName, args) {
   }
   if (toolName === 'run_recorded_skill') {
     return { handled: false, clientAction: 'run_recorded_skill', clientArgs: { skillName: args?.skillName }, result: null };
+  }
+  if (toolName === 'perform_os_action') {
+    return { handled: false, clientAction: 'perform_os_action', clientArgs: { action: args?.action, appName: args?.appName }, result: null };
   }
   if (toolName === 'open_notepad') {
     return { handled: false, clientAction: 'open_notepad', result: null };
