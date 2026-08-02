@@ -172,15 +172,19 @@ async function _applySensitivity(v) {
   }
 }
 
-// REAL — camera toggle for lip-reading ASSIST. Honest about scope: this
-// turns the camera on and shows a live preview; it does NOT yet run any
-// actual lip-reading analysis to improve detection — that's a separate,
-// real computer-vision feature not built yet.
+// REAL — camera toggle for lip-reading ASSIST, now wired to genuine
+// mouth-movement tracking (core/lip-sync-vad.js). Honest about scope:
+// this is NOT true lip-reading (mouth shapes → words) — that's a much
+// harder ML problem. What's real: tracking whether the mouth is
+// actively open/moving as a SECOND signal alongside audio VAD, useful
+// specifically in noisy environments.
 async function _offerLipSyncCamera(videoEl, promptEl) {
   promptEl.classList.add("show");
   const btn = promptEl.querySelector("#fvm-lipsync-btn");
   btn.onclick = async () => {
     if (_camStream) {
+      const { stopMouthTracking } = await import("./../core/lip-sync-vad.js");
+      stopMouthTracking();
       _camStream.getTracks().forEach(t => t.stop());
       _camStream = null;
       videoEl.classList.remove("show");
@@ -193,6 +197,14 @@ async function _offerLipSyncCamera(videoEl, promptEl) {
       videoEl.srcObject = _camStream;
       videoEl.classList.add("show");
       btn.textContent = "Turn camera off";
+      await videoEl.play().catch(() => {});
+      const { startMouthTracking } = await import("./../core/lip-sync-vad.js");
+      await startMouthTracking(videoEl, (score) => {
+        // Real, live feedback so Joel can see it's genuinely tracking,
+        // not just decoration — a small visual pulse tied to the
+        // actual mouth-open score.
+        videoEl.style.boxShadow = score > 0.15 ? `0 0 ${8 + score * 20}px #4ade80` : "none";
+      });
     } catch (e) {
       console.warn("[FullVoiceMode] Camera access denied or unavailable:", e.message);
     }
@@ -223,7 +235,7 @@ function _buildBars() {
     </div>
     <div id="fvm-range-value">Medium</div>
     <div id="fvm-lipsync-prompt">
-      🎥 At lowest sensitivity, want camera-assisted lip reading? This turns your camera on so Flow can see your mouth move alongside audio — real preview, but actual lip-reading analysis isn't built yet, just the camera toggle for now.
+      🎥 At lowest sensitivity, want camera-assisted lip reading? This tracks whether your mouth is actively open/moving as a second signal alongside audio — helps in noisy environments. Honest note: this isn't true lip-reading (words from mouth shapes), just real mouth-movement tracking.
       <button id="fvm-lipsync-btn">Enable camera for lip-reading assist</button>
       <video id="fvm-lipsync-video" autoplay muted></video>
     </div>
