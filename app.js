@@ -445,6 +445,27 @@ setClientActionHandler(async (action, args) => {
     }
     return;
   }
+  if (action === "perform_os_action") {
+    if (!window.__flowElectron?.osControl) {
+      Chat.addError("OS control isn't available — this only works in the Electron desktop app.");
+      return;
+    }
+    try {
+      const result = await window.__flowElectron.osControl.performOSAction(args?.action, args?.appName);
+      if (!result.success) {
+        Chat.addError(result.error || "Couldn't perform that action.");
+      } else if (args?.action === "minimize_window") {
+        Chat.add("Minimized.", "bot");
+      } else if (args?.action === "restore_window") {
+        Chat.add("Back up.", "bot");
+      } else if (args?.action === "open_app") {
+        Chat.add(`Opening ${args.appName}.`, "bot");
+      }
+    } catch (e) {
+      Chat.addError(`OS action failed: ${e.message}`);
+    }
+    return;
+  }
   if (action === "run_recorded_skill") {
     const skillName = args?.skillName;
     if (!window.__flowElectron?.osControl) {
