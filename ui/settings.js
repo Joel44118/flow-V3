@@ -163,6 +163,35 @@ async function _buildModalContent(body) {
       }
     },
   }));
+
+  // REAL, NEW — genuine streaming interrupt (core/streaming-asr.js).
+  // OFF by default and requires a real Deepgram key Joel enters
+  // himself — never silently starts spending Deepgram's one-time free
+  // credits without an explicit, deliberate opt-in.
+  const dgRow = document.createElement("div");
+  dgRow.style.cssText = "margin: 10px 0 4px 0; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;";
+  dgRow.innerHTML = `
+    <div style="font-size:11px;color:#d8d4ff;font-weight:600;margin-bottom:4px;">⚡ Real-time interrupt (genuine mid-sentence cut-off)</div>
+    <div style="font-size:10px;color:rgba(255,255,255,0.45);margin-bottom:8px;line-height:1.5;">
+      Uses Deepgram's streaming API for real interruption while you're still talking — not the same as Full Voice Mode's own barge-in (which only works between your turns). Honest cost note: Deepgram isn't permanently free — $200 in one-time credits, no card needed, likely lasts a long time for personal use but isn't a renewing tier like Groq.
+    </div>
+    <input id="dg-key-input" type="password" placeholder="Deepgram API key (console.deepgram.com)" style="width:100%;padding:6px 8px;font-size:11px;background:rgba(255,255,255,0.06);border:1px solid rgba(167,139,250,0.3);border-radius:6px;color:#e5e7eb;margin-bottom:8px;box-sizing:border-box;">
+  `;
+  body.appendChild(dgRow);
+
+  const dgKeyInput = dgRow.querySelector("#dg-key-input");
+  dgKeyInput.value = effectiveSettings.deepgramApiKey || "";
+  dgKeyInput.addEventListener("change", async () => {
+    await _setSetting("deepgramApiKey", dgKeyInput.value.trim());
+  });
+
+  dgRow.appendChild(_buildToggleRow({
+    key: "realtimeInterruptEnabled",
+    label: "Enable real-time interrupt",
+    desc: "Only takes effect the next time Full Voice Mode is turned on.",
+    checked: !!effectiveSettings.realtimeInterruptEnabled,
+    onChange: async (val) => { await _setSetting("realtimeInterruptEnabled", val); },
+  }));
 }
 
 export async function openSettings() {
