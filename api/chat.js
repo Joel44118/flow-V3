@@ -487,7 +487,7 @@ const FLOW_TOOLS = [
     type: 'function',
     function: {
       name: 'run_recorded_skill',
-      description: "Run a named, previously-recorded OS-control skill by name (e.g. Joel says 'do the invoice thing' or names a specific skill) — this actually controls Joel's mouse/keyboard to replay recorded steps, real OS automation, not a simulation. ALWAYS shows Joel a visible confirmation with a cancellable countdown before executing, regardless of how this is called — that gate cannot be skipped. HONEST CURRENT STATE: skill recording isn't built yet, so this will likely find nothing and should report that plainly rather than pretending it ran something. Only call this when Joel is clearly asking to run/replay a specific recorded action sequence, not for general screen questions.",
+      description: "Run a named, previously-recorded OS-control skill by name (e.g. Joel says 'do the invoice thing' or names a specific skill) — this actually controls Joel's mouse/keyboard to replay recorded steps, real OS automation, not a simulation. ALWAYS shows Joel a visible confirmation with a cancellable countdown before executing, regardless of how this is called — that gate cannot be skipped. If Joel says something generic like 'do what I just did' or 'repeat that' right after a Sentinel Watch & Learn recording, use skillName 'last_action' — that's the real, automatic name given to whatever was most recently recorded. Only call this when Joel is clearly asking to run/replay a specific recorded action sequence, not for general screen questions.",
       parameters: {
         type: 'object',
         properties: {
@@ -1205,22 +1205,25 @@ export default async function handler(req, res) {
 
   const errors = [];
 
-  // Cerebras is fast but sometimes struggles with complex/large-context
-  // tasks — skip for Nemotron targets. REAL, DELIBERATE CHOICE (Joel's
-  // own, given NVIDIA's real 40rpm + credit-limited free tier): NVIDIA
-  // stays #1 ONLY for code and research (the two intents that genuinely
-  // benefit from Nemotron's large context), NOT for chat/creative/pdf —
-  // spending the limited NVIDIA budget on ordinary chat messages would
-  // burn through the real rate limit faster with no real benefit, since
-  // those intents don't need the large-context model anyway.
-  if (CB_KEY && intent !== 'code' && intent !== 'research') {
-    try   { const r = await tryCerebras(trimmed, intent, CB_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(`Cerebras: ${e.message}`); }
+  // REAL, REORDERED per Joel's explicit instruction: Cerebras adds a
+  // payment requirement August 17, 2026 (confirmed, not speculative) —
+  // depending on it as the #1 provider risks the whole chat pipeline
+  // breaking the day that hits. Demoted Cerebras from first-priority to
+  // a lower fallback (still tried — it may still work under whatever
+  // free tier remains, no reason to rip it out entirely — just no
+  // longer depended on). Groq promoted to first for ordinary chat/
+  // creative/pdf intents: still genuinely free (published, generous
+  // daily limits, no card), and already proven reliable elsewhere in
+  // this project (Whisper transcription, embeddings-adjacent work).
+  if (GR_KEY && intent !== 'code' && intent !== 'research') {
+    try   { const r = await tryGroq(trimmed, intent, GR_KEY); return res.status(200).json({ ...r, intent }); }
+    catch (e) { errors.push(`Groq: ${e.message}`); }
   }
 
   // NVIDIA direct API — Nemotron 3 Ultra (large-context), genuinely #1
-  // for code + research now (both skip Cerebras above), matching the
-  // large-context need those two intents actually have.
+  // for code + research now, matching the large-context need those two
+  // intents actually have. Unchanged from before — this priority never
+  // depended on Cerebras.
   if (NV_KEY) {
     try   { const r = await tryNvidia(trimmed, intent, NV_KEY); return res.status(200).json({ ...r, intent }); }
     catch (e) { errors.push(`NVIDIA: ${e.message}`); }
@@ -1231,15 +1234,22 @@ export default async function handler(req, res) {
     catch (e) { errors.push(`OpenRouter: ${e.message}`); }
   }
 
-  // Cerebras fallback for code/research if NVIDIA and OpenRouter both failed
-  if (CB_KEY && (intent === 'code' || intent === 'research')) {
+  // Cerebras — demoted to a real fallback (see above), tried here for
+  // ALL intents (not just code/research) if everything faster/still-
+  // reliably-free above has already failed. Kept, not deleted, since it
+  // may still partially work post-Aug-17 depending on what "free users"
+  // ends up meaning — just no longer anything this app depends on.
+  if (CB_KEY) {
     try   { const r = await tryCerebras(trimmed, intent, CB_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(`Cerebras(${intent} fallback): ${e.message}`); }
+    catch (e) { errors.push(`Cerebras: ${e.message}`); }
   }
 
-  if (GR_KEY) {
+  // Groq fallback for code/research (which skip Groq's first-priority
+  // slot above, same real reasoning as the old Cerebras-skip logic —
+  // NVIDIA's large context genuinely matters more for those two intents).
+  if (GR_KEY && (intent === 'code' || intent === 'research')) {
     try   { const r = await tryGroq(trimmed, intent, GR_KEY); return res.status(200).json({ ...r, intent }); }
-    catch (e) { errors.push(`Groq: ${e.message}`); }
+    catch (e) { errors.push(`Groq(${intent} fallback): ${e.message}`); }
   }
   if (HF_KEY) {
     try   { const r = await tryHuggingFace(trimmed, intent, HF_KEY); return res.status(200).json({ ...r, intent }); }
