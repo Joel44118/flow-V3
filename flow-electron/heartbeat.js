@@ -498,6 +498,11 @@ function _loadSettings() {
     // vad.js) has a real trade-off (no wake-word gating) Joel should opt
     // into deliberately rather than it silently turning on for existing users.
     if (typeof loaded.handsFreeVoiceEnabled !== 'boolean') loaded.handsFreeVoiceEnabled = false;
+    // REAL, new defaults — realtimeInterruptEnabled off (Deepgram isn't
+    // permanently free, requires explicit opt-in), deepgramApiKey empty
+    // until Joel enters one.
+    if (typeof loaded.realtimeInterruptEnabled !== 'boolean') loaded.realtimeInterruptEnabled = false;
+    if (typeof loaded.deepgramApiKey !== 'string') loaded.deepgramApiKey = '';
     return loaded;
   } catch (e) {
     console.warn('[Heartbeat] Settings load failed (non-fatal, defaulting to enabled):', e.message);
