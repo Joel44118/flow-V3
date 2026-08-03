@@ -72,7 +72,7 @@ export async function smartSearch(rawText, sendToAI, chatAdd) {
   const prompt = mode === "news"
     ? `Joel asked for the latest news/updates on "${query}". Here are the most recent results:\n\n${context}\n\nGive Joel a sharp briefing — what's actually happening with ${query} right now? Lead with the most important development. Be specific, current, and tell him if there's anything he should act on.`
     : mode === "deep"
-    ? `Joel asked to research "${query}". Here are the search results:\n\n${context}\n\nGive Joel a clear, useful breakdown. Cover: what it is, why it matters, key facts, and any practical implications for him as a developer/entrepreneur in Nigeria.`
+    ? `Joel asked to research "${query}". Here are the search results:\n\n${context}\n\nGive Joel a clear, useful breakdown. Cover: what it is, why it matters, key facts, and any practical implications for him as a bot/web development freelancer serving clients globally, not limited to any one country.`
     : `Joel searched for "${query}". Here are the results:\n\n${context}\n\nGive Joel the key answer directly. Be concise and practical.`;
 
   sendToAI(prompt);
@@ -105,9 +105,14 @@ export async function inspectUrl(url, sendToAI, chatAdd) {
 export { formatResults as formatUrlResult };
 
 // ── Business research (backward compat) ──────────────────────────────────
+// REAL FIX, Joel-requested: this was hardcoded to "Nigeria tech
+// business" — Joel is a solo bot/web dev freelancer whose real client
+// base is global, not limited to Nigeria. Broadened to the actual
+// scope of his business (web dev, bot integration, workflow
+// automation) with no country restriction.
 export async function businessResearch(sendToAI) {
   await smartSearch(
-    "latest news Nigeria tech business development AI trends",
+    "latest trends in web development, bot integration, and workflow automation for freelancers globally",
     sendToAI,
     null
   );
