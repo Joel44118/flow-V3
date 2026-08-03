@@ -137,3 +137,15 @@ contextBridge.exposeInMainWorld('__flowElectron', {
   // these to the real DevTools console (opened via Ctrl+Shift+I).
   onMainLog: (cb) => ipcRenderer.on('main-process-log', (_e, entry) => cb(entry)),
 });
+// ═══════════════════════════════════════════
+// ADD THIS BLOCK to flow-electron/preload.js, inside the existing
+// contextBridge.exposeInMainWorld(...) object (add as a new "localLLM"
+// key alongside "sentinel", "osControl", etc). Pure addition.
+// ═══════════════════════════════════════════
+
+localLLM: {
+  status:     ()        => ipcRenderer.invoke('local_llm_status'),
+  download:   ()        => ipcRenderer.invoke('local_llm_download'),
+  setEnabled: (enabled) => ipcRenderer.invoke('local_llm_set_enabled', enabled),
+  onProgress: (cb)      => ipcRenderer.on('local-llm-progress', (_e, pct) => cb(pct)),
+},
