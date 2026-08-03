@@ -48,7 +48,7 @@ import { initAuth, resetPin, enrollFace, resetFace, hasFaceEnrolled } from "./ui
 import { initNotifications } from "./ui/notifications.js";
 import { initLeveling, getLevelState } from "./core/leveling.js";
 import { buildRepoMap, formatRepoMap } from "./core/github.js";
-import { runtimeStateBlock } from "./core/runtime.js";
+import { runtimeStateBlock, setRuntimeState } from "./core/runtime.js";
 import { pickLevelUpToolProposal, generateLevelUpToolProposal } from "./core/leveltools.js";
 import { listTools } from "./core/selftools.js";
 import { initSentinel, parseReplayCommand } from "./ui/sentinel.js";
@@ -157,13 +157,24 @@ async function handleSlashCmd(cmd, prompt) {
         window.__lastScrapedPages = scrapeD.pages; // held in memory for an immediate follow-up save
       } catch (e) { Chat.addError(e.message); }
       break;
-    case "/find-leads":
-      if (!p) { Chat.add("What should I search for? e.g. web design agencies in Lagos", "bot"); return; }
-      Chat.add(`🔍 Searching for "${p}"...`, "bot");
+    case "/find-leads": {
+      // REAL FIX, Joel-reported bug: sending "/find-leads" alone (no
+      // text after it) previously just asked "what should I search
+      // for?" and stopped dead — every OTHER skill that can run with
+      // no extra text (e.g. /intel) actually does something useful on
+      // its own. Real fix: fall back to Joel's last-used lead-search
+      // query (persisted in localStorage) if there is one, or a
+      // sensible, genuinely useful GLOBAL default otherwise — never a
+      // dead-end prompt, and never hardcoded to Nigeria/Lagos.
+      let query = p;
+      if (!query) { try { query = localStorage.getItem("flow-last-lead-query") || ""; } catch (_) {} }
+      if (!query) query = "bot and web development agencies";
+      if (p) { try { localStorage.setItem("flow-last-lead-query", p); } catch (_) {} }
+      Chat.add(`🔍 Searching for "${query}"${p ? "" : " (no niche given — using your last search, or a useful default)"}...`, "bot");
       try {
         const leadR = await fetch("/api/rag?action=find-leads", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: p }),
+          body: JSON.stringify({ query }),
         });
         const leadD = await leadR.json();
         if (!leadD.ok) { Chat.addError(leadD.error); break; }
@@ -172,6 +183,7 @@ async function handleSlashCmd(cmd, prompt) {
         Chat.add(`Found ${leadD.count} result(s) with public contact info:\n\n${list}`, "bot");
       } catch (e) { Chat.addError(e.message); }
       break;
+    }
     case "/image-design":
       if (!p) { Chat.add("Describe your design. e.g. 'Joelflowstack' Twitter promo, dark theme", "bot"); return; }
       await generateImage(p, "promotion banner design");
@@ -376,7 +388,17 @@ setClientActionHandler(async (action, args) => {
     try {
       const { enabled } = await bridge.status();
       const next = !enabled;
-      bridge.toggle(next);
+      await bridge.toggle(next);
+      // REAL BUG FIX, Joel-reported: Flow was telling Joel Sentinel was
+      // off when it was genuinely on (and vice versa). Root cause:
+      // core/runtime.js's _state.sentinelOn was NEVER written to by
+      // ANY code path — get_my_live_state's runtimeStateBlock() always
+      // reported the hardcoded initial value (false), regardless of
+      // what Sentinel's real state actually was. This is the actual,
+      // missing write — mirrors the pattern already used correctly for
+      // camera/screen-share/gesture in ui/vision.js and ui/gesture.js.
+      setRuntimeState("sentinelOn", next);
+      sentinelBtn?.classList.toggle("active", next); // keep the manual button visually in sync too, regardless of which path toggled it
       const { recording: wasRecording } = await bridge.learnStatus();
       bridge.learnToggle(next);
       Chat.add(next ? "👁 Turning Sentinel on." : "Turning Sentinel off.", "bot");
@@ -442,6 +464,36 @@ setClientActionHandler(async (action, args) => {
         : "Full Voice Mode is off.", "bot");
     } catch (e) {
       Chat.addError(`Couldn't switch Full Voice Mode: ${e.message}`);
+    }
+    return;
+  }
+  if (action === "sentinel_control") {
+    // REAL, Joel-requested — direct, real-time scroll/click/type/move
+    // control, explicitly gated to only work while Sentinel is on.
+    // Uses the same, already-working robot.js path as the recorded-
+    // skill replay (sentinel_replay_execute) — no new native-module
+    // risk, just a new, more direct way to call it for in-the-moment
+    // control instead of only replaying a pre-recorded sequence.
+    const bridge = window.__flowElectron?.sentinel;
+    if (!bridge) { Chat.addError("OS control isn't available — this only works in the Electron desktop app."); return; }
+    // REAL BUG FIX-adjacent: check the REAL current status here, not
+    // the (now-fixed, but still just a cache) runtime.js flag — this
+    // is the one place a stale flag would actually cause a wrong
+    // refusal or a wrong allow, so it asks Electron's main process
+    // directly for the ground truth right before acting.
+    let sentinelStatus;
+    try { sentinelStatus = await bridge.status(); } catch (e) { Chat.addError(`Couldn't check Sentinel status: ${e.message}`); return; }
+    if (!sentinelStatus?.enabled) {
+      Chat.add("Sentinel needs to be on for me to control your screen directly — turn it on (top bar toggle, or just ask me to) and try again.", "bot");
+      return;
+    }
+    try {
+      const result = await bridge.replayExecute(args?.action, args?.x, args?.y, args?.text, args?.direction);
+      if (!result?.ok) { Chat.addError(result?.error || "Couldn't perform that action."); return; }
+      const _labels = { click: "Clicked.", move: "Moved.", scroll: `Scrolled ${args?.direction || ""}.`, type: "Typed." };
+      Chat.add(_labels[args?.action] || "Done.", "bot");
+    } catch (e) {
+      Chat.addError(`Couldn't perform that action: ${e.message}`);
     }
     return;
   }
@@ -988,6 +1040,14 @@ if (sentinelBtn && window.__flowElectron?.sentinel) {
   // button needs to check, not guess.
   window.__flowElectron.sentinel.status().then((status) => {
     sentinelBtn.classList.toggle("active", !!status?.enabled);
+    // REAL BUG FIX, same root cause as toggle_sentinel above — the
+    // runtime state tracker was never seeded with the real value on
+    // load either, so even a fresh app launch with Sentinel already on
+    // (persisted from a previous session) would have Flow claiming it
+    // was off until the NEXT toggle happened to fire a write. Seed it
+    // here immediately so get_my_live_state is correct from the very
+    // first message, not just after the first toggle.
+    setRuntimeState("sentinelOn", !!status?.enabled);
     if (status && !status.available) {
       // REAL UX FIX: this used to just grey out and disable the button
       // with nothing beyond a hover tooltip explaining why — confirmed
@@ -1017,6 +1077,21 @@ if (sentinelBtn && window.__flowElectron?.sentinel) {
     const isActive = sentinelBtn.classList.contains("active");
     window.__flowElectron.sentinel.toggle(!isActive);
     sentinelBtn.classList.toggle("active", !isActive);
+    setRuntimeState("sentinelOn", !isActive); // REAL BUG FIX — same missing write as the tool-dispatched path above
+  });
+
+  // REAL, NEW — Sentinel can also be toggled from the tray menu
+  // (flow-electron/main.js's 'Enable/Disable Sentinel' item), a path
+  // that never touched the button OR the runtime state tracker at all.
+  // main.js already broadcasts 'sentinel-toggled' over IPC on every
+  // real state change regardless of source (confirmed in main.js —
+  // toggleSentinel() sends this to mainWin unconditionally); this just
+  // actually listens for it, so both the button AND get_my_live_state
+  // stay correct no matter which of the three ways Sentinel gets
+  // toggled (tool call, button, tray menu).
+  window.__flowElectron.sentinel.onToggled?.((enabled) => {
+    sentinelBtn.classList.toggle("active", !!enabled);
+    setRuntimeState("sentinelOn", !!enabled);
   });
 } else if (sentinelBtn) {
   // Plain web app — Sentinel is Electron-only (needs desktopCapturer +
