@@ -2,12 +2,12 @@
 // api/vision.js — Vercel serverless function
 //
 // Receives a base64 image frame + prompt, returns a text description.
-// PROVIDER CHAIN: OpenRouter (gpt-4o-mini) first, Hugging Face Router
-// (free vision model) as fallback if OpenRouter fails or hits its limit.
-// This mirrors the same fallback-chain pattern already used in api/chat.js
-// (Cerebras → OpenRouter → Groq → HuggingFace) so vision behaves
-// consistently with the rest of Flow rather than being a single point of
-// failure on one paid account's rate limit.
+// PROVIDER CHAIN: OpenRouter (free vision model) → Groq (qwen3.6-27b,
+// genuinely free tier, tool-calling capable) → Hugging Face (last
+// resort — confirmed currently 403'ing on the free tier as of Joel's
+// real testing, kept in the chain in case that resolves). Groq added
+// as a real middle fallback since it's already Joel's most reliable
+// provider elsewhere in this project.
 //
 // Key stays server-side — never in browser.
 // ═══════════════════════════════════════════
@@ -73,6 +73,49 @@ async function tryOpenRouter(image, prompt, origin) {
   return data.choices[0].message.content.trim();
 }
 
+async function tryGroq(image, prompt) {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) return null;
+
+  // REAL, NEW — third vision fallback. Joel's actual console logs
+  // confirmed HuggingFace's vision endpoint is presently 403'ing
+  // ("Your project has been denied access") — a known, widespread
+  // free-tier issue, not something fixable from this end. Groq is
+  // already Joel's most reliable provider elsewhere in this project
+  // (Whisper transcription, chat fallback), and now serves a real,
+  // multimodal, tool-calling-capable model (qwen/qwen3.6-27b,
+  // replacing the deprecated llama-4-scout vision preview) on its
+  // genuinely free tier — a real, working middle option between
+  // OpenRouter and the currently-broken HuggingFace fallback.
+  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${key}`,
+      "Content-Type":  "application/json",
+    },
+    body: JSON.stringify({
+      model: "qwen/qwen3.6-27b",
+      max_tokens: 300,
+      messages: [
+        { role: "system", content: VISION_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: `data:image/jpeg;base64,${image}` } },
+            { type: "text", text: prompt || "What do you see in this image?" },
+          ],
+        },
+      ],
+    }),
+  });
+
+  const data = await r.json();
+  if (!r.ok || !data.choices?.length) {
+    throw new Error(data.error?.message || `Groq vision HTTP ${r.status}`);
+  }
+  return data.choices[0].message.content.trim();
+}
+
 async function tryHuggingFace(image, prompt) {
   const key = process.env.HF_TOKEN;
   if (!key) return null;
@@ -127,8 +170,16 @@ export default async function handler(req, res) {
     const desc = await withTimeout(tryOpenRouter(image, prompt, req.headers.origin), 6000, "OpenRouter");
     if (desc) return res.status(200).json({ description: desc, provider: "openrouter" });
   } catch (e) {
-    console.warn("[Flow Vision] OpenRouter failed, trying Hugging Face:", e.message);
+    console.warn("[Flow Vision] OpenRouter failed, trying Groq:", e.message);
     errors.push(`openrouter: ${e.message}`);
+  }
+
+  try {
+    const desc = await withTimeout(tryGroq(image, prompt), 6000, "Groq");
+    if (desc) return res.status(200).json({ description: desc, provider: "groq" });
+  } catch (e) {
+    console.warn("[Flow Vision] Groq failed, trying Hugging Face:", e.message);
+    errors.push(`groq: ${e.message}`);
   }
 
   try {
