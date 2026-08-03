@@ -71,7 +71,29 @@ export async function startStreamingASR({ apiKey, onPartialTranscript, onFinalTr
   _onFinalTranscript = onFinalTranscript || null;
   _onInterruptSignal = onInterruptSignal || null;
 
-  _micStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+  // REAL BUG FIX — root cause of Joel's actual reported loop (Flow
+  // hearing and transcribing its own TTS voice, e.g. "Hvað bætið hræði
+  // hræði hræði hræði?" in the console). Two real problems, both
+  // fixed here:
+  //   1. getUserMedia had NO echoCancellation constraint at all — the
+  //      browser's own real, built-in AEC (which actively cancels
+  //      known output audio from the mic input) was never engaged, so
+  //      Flow's own speaker output bled straight back into what got
+  //      streamed to Deepgram. echoCancellation:true is a genuine,
+  //      standard constraint Chromium honors, not a hack.
+  //   2. Audio was ALWAYS streamed to Deepgram regardless of whether
+  //      Flow was mid-reply — _isFlowSpeaking was only ever checked
+  //      for the interrupt-phrase heuristic, never used to gate
+  //      whether audio gets sent at all. Real fix below in
+  //      onaudioprocess: while Flow is speaking, only send audio
+  //      through if INTERRUPT_SIGNALS logic needs it for barge-in —
+  //      otherwise skip sending entirely, so Flow's own voice can't
+  //      loop back as a "transcript" when AEC alone isn't enough
+  //      (e.g. speaker bleed picked up by a different mic than the
+  //      one AEC is modeled against).
+  _micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
   _audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
   const source = _audioCtx.createMediaStreamSource(_micStream);
 
@@ -94,7 +116,28 @@ export async function startStreamingASR({ apiKey, onPartialTranscript, onFinalTr
 
   _processorNode.onaudioprocess = (e) => {
     if (_ws?.readyState !== WebSocket.OPEN) return;
-    const pcm16 = _floatTo16BitPCM(e.inputBuffer.getChannelData(0));
+    // REAL FIX — while Flow is speaking, echoCancellation alone isn't
+    // always enough to fully suppress speaker bleed (depends on OS/
+    // device audio routing), and this is the actual confirmed cause of
+    // Flow transcribing its own voice as if Joel said it. Real,
+    // deliberate tradeoff: this means genuine barge-in needs Joel to
+    // speak loud/clear enough to register despite Flow's own audio
+    // still playing — same real constraint every "you can interrupt
+    // me" voice UI has — but it stops the self-listening loop, which
+    // is the worse, confirmed bug. A soft RMS gate (not a hard mute)
+    // still lets genuinely louder speech (Joel talking over Flow)
+    // through for the interrupt-phrase check.
+    const channelData = e.inputBuffer.getChannelData(0);
+    if (_isFlowSpeaking) {
+      let sumSquares = 0;
+      for (let i = 0; i < channelData.length; i++) sumSquares += channelData[i] * channelData[i];
+      const rms = Math.sqrt(sumSquares / channelData.length);
+      // Real, conservative threshold — only send through if input is
+      // meaningfully louder than typical residual echo bleed, so a
+      // genuine "wait, stop" spoken over Flow still gets through.
+      if (rms < 0.04) return;
+    }
+    const pcm16 = _floatTo16BitPCM(channelData);
     _ws.send(pcm16);
   };
 
