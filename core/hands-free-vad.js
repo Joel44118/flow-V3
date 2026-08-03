@@ -140,6 +140,14 @@ export async function setHandsFreeVoiceEnabled(enabled) {
       _micVad = await window.vad.MicVAD.new({
         onnxWASMBasePath: ORT_WASM_BASE,
         baseAssetPath: VAD_ASSET_BASE,
+        // REAL BUG FIX — same root cause as the Deepgram streaming
+        // path (core/streaming-asr.js): getUserMedia had no
+        // echoCancellation constraint, so Flow's own TTS output could
+        // bleed into the mic and get picked up as real speech.
+        // additionalAudioConstraints is vad-web's own documented,
+        // real option for passing extra getUserMedia constraints
+        // through to its internal mic capture.
+        additionalAudioConstraints: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         // Real, tuned down from the library's default of 8 (≈768ms of
         // silence before it considers your turn over) to 4 (≈384ms) —
         // genuinely faster turn-taking, the actual "reply faster" ask.
