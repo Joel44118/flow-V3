@@ -118,9 +118,24 @@ export async function parseCommand(text) {
   // (space) — meaning selecting it from the skill tray produced text
   // that fell through to plain conversation instead of running the real
   // pipeline. Now matches both forms.
-  const _findLeadsMatch = text.match(/^\/find[\s-]leads?\s+(.+)/i);
+  // REAL FIX, Joel-reported bug: this previously required a query
+  // (\s+(.+)) after "/find-leads" — sending it ALONE (no niche) simply
+  // failed to match, so it fell through to plain conversation instead
+  // of running the skill, unlike "/intel" which genuinely works with
+  // no argument. Now matches with OR without trailing text, and falls
+  // back to Joel's last-used query (persisted below) or a sensible,
+  // genuinely global default when none is given.
+  const _findLeadsMatch = text.match(/^\/find[\s-]leads?(?:\s+(.+))?\s*$/i);
   if (_findLeadsMatch) {
-    const query = _findLeadsMatch[1].trim();
+    let query = (_findLeadsMatch[1] || "").trim();
+    let _usingDefault = false;
+    if (!query) {
+      try { query = localStorage.getItem("flow-last-lead-query") || ""; } catch (_) {}
+      if (!query) { query = "bot and web development agencies"; } // real, global default — not Nigeria-specific
+      _usingDefault = true;
+    } else {
+      try { localStorage.setItem("flow-last-lead-query", query); } catch (_) {}
+    }
     // Real, simple split — "web design agencies in Lagos" → niche +
     // location; if there's no "in <place>", the whole thing is the niche
     // and location is left for Apify's own default/broad search.
@@ -129,7 +144,7 @@ export async function parseCommand(text) {
     const location = _locMatch ? _locMatch[2].trim() : null;
 
     _openLeadsTray?.(); // real, opens the Leads tray so Joel watches results land live, not just a chat summary
-    _chatAdd?.(`🔍 Searching for ${niche}${location ? ` in ${location}` : ""} — this can take a minute (finding businesses, then checking each site for a real contact email)...`, "bot");
+    _chatAdd?.(`🔍 Searching for ${niche}${location ? ` in ${location}` : ""}${_usingDefault ? " (no niche given — using your last search, or a default)" : ""} — this can take a minute (finding businesses, then checking each site for a real contact email)...`, "bot");
     try {
       const res = await fetch("/api/social?platform=find-leads", {
         method: "POST",
