@@ -43,7 +43,26 @@ function _injectStyles() {
   style.id = "fvm-style";
   style.textContent = `
 .input-panel { transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
-.input-panel.fvm-hidden { transform: translateX(-50%) translateY(120%); }
+/* REAL BUG FIX, Joel-reported: "the input bar don't always insert/
+   slide down completely while switching between both modes... the top
+   portion still shows beneath the footer." Root cause: .input-panel's
+   real z-index is 20 (styles.css), but #fvm-wave-bar was set to 9500
+   — a huge jump, not a matched swap. During the CSS transition
+   window (350ms), if the toggle fires again quickly (fast mode
+   switching), the transform can be interrupted mid-transition while
+   the element is still technically visible (translateY isn't 100%
+   yet) and still stacked at its old z-index relative to nearby fixed
+   elements like the footer — producing exactly the "top portion still
+   showing" symptom. Real fix: add a hard visibility cutoff via
+   opacity+pointer-events so a genuinely fully-hidden state doesn't
+   rely on the transform distance alone, and this transition can't be
+   caught "half-hidden" in a way that visually competes with the
+   footer regardless of timing. */
+.input-panel.fvm-hidden {
+  transform: translateX(-50%) translateY(120%);
+  opacity: 0; pointer-events: none;
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+}
 
 /* REAL FIX — copies .input-panel's own real geometry exactly (same
    file, same numbers: bottom:20px, left:50%, translateX(-50%), 46%
@@ -92,7 +111,21 @@ function _injectStyles() {
   padding: 20px 18px; box-sizing: border-box;
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex; flex-direction: column; align-items: center;
+  /* REAL BUG FIX, Joel-reported: at lowest sensitivity, the lip-sync
+     camera prompt + video (which can be 200px+ tall once the video
+     element shows) got appended as a normal flex child with no
+     scroll/clip boundary on the card — since max-height was set but
+     without overflow handling, content past 80vh just rendered
+     outside the card's visible rounded-corner boundary instead of
+     being contained or scrollable. Real fix: overflow-y auto so any
+     content taller than the card scrolls WITHIN it instead of
+     spilling out, and a scrollbar hidden via width for a cleaner look
+     (function preserved, no visual regression). */
+  overflow-y: auto; overflow-x: hidden;
+  scrollbar-width: thin; scrollbar-color: rgba(167,139,250,0.4) transparent;
 }
+#fvm-range-bar::-webkit-scrollbar { width: 5px; }
+#fvm-range-bar::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.4); border-radius: 3px; }
 #fvm-range-bar.fvm-shown { transform: translateY(-50%) translateX(0); }
 
 #fvm-range-title { font-size: 12px; font-weight: 700; color: #d8d4ff; margin-bottom: 4px; text-align: center; }
@@ -125,7 +158,7 @@ function _injectStyles() {
   margin-top: 8px; width: 100%; background: rgba(74,222,128,0.15); border: 1px solid #4ade80;
   color: #4ade80; padding: 6px; border-radius: 6px; cursor: pointer; font-size: 10px;
 }
-#fvm-lipsync-video { width: 100%; border-radius: 6px; margin-top: 8px; display: none; }
+#fvm-lipsync-video { width: 100%; max-height: 120px; object-fit: cover; border-radius: 6px; margin-top: 8px; display: none; }
 #fvm-lipsync-video.show { display: block; }
 `;
   document.head.appendChild(style);
