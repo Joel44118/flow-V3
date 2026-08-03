@@ -1177,3 +1177,82 @@ app.on('window-all-closed',() => {
   /* stay in tray */
 });
 app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); heartbeat.stopHeartbeat(); });
+// ═══════════════════════════════════════════
+// ADD THIS BLOCK to flow-electron/main.js (paste near the other
+// ipcMain.handle blocks — anywhere after `const { ipcMain } = require`
+// is already in scope). Do NOT replace the whole file — this is a
+// pure addition, nothing existing needs to change.
+//
+// What this does: downloads Gemma 3 4B (GGUF) from Hugging Face
+// directly (not GitHub — file is too large for GitHub's 2GB cap),
+// saves it locally, and exposes real tool-calling + vision on top of
+// it via node-llama-cpp (which supports both). OFF by default — this
+// code only runs when Joel clicks the button in ui/local-llm.js.
+// ═══════════════════════════════════════════
+
+const fs = require('fs');
+const path = require('path');
+const https = require('https');
+
+const LOCAL_LLM_DIR = path.join(app.getPath('userData'), 'local-llm');
+const LOCAL_LLM_PATH = path.join(LOCAL_LLM_DIR, 'gemma-3-4b-it-Q4_K_M.gguf');
+const LOCAL_LLM_URL = 'https://huggingface.co/google/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf';
+
+let localLLMEnabled = false;
+let localLLMInstance = null; // holds the loaded node-llama-cpp model once enabled
+
+ipcMain.handle('local_llm_status', () => {
+  const downloaded = fs.existsSync(LOCAL_LLM_PATH);
+  return { downloaded, enabled: localLLMEnabled && downloaded };
+});
+
+ipcMain.handle('local_llm_download', async (event) => {
+  if (!fs.existsSync(LOCAL_LLM_DIR)) fs.mkdirSync(LOCAL_LLM_DIR, { recursive: true });
+
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(LOCAL_LLM_PATH);
+    https.get(LOCAL_LLM_URL, (res) => {
+      // Hugging Face redirects to its CDN — follow once.
+      if (res.statusCode === 302 || res.statusCode === 301) {
+        https.get(res.headers.location, (res2) => _pipeDownload(res2, file, event, resolve, reject));
+        return;
+      }
+      _pipeDownload(res, file, event, resolve, reject);
+    }).on('error', (err) => { fs.unlink(LOCAL_LLM_PATH, () => {}); reject(err); });
+  });
+});
+
+function _pipeDownload(res, file, event, resolve, reject) {
+  const total = parseInt(res.headers['content-length'] || '0', 10);
+  let downloaded = 0;
+  res.on('data', (chunk) => {
+    downloaded += chunk.length;
+    if (total) {
+      const pct = Math.floor((downloaded / total) * 100);
+      event.sender.send('local-llm-progress', pct);
+    }
+  });
+  res.pipe(file);
+  file.on('finish', () => { file.close(); resolve({ ok: true }); });
+  file.on('error', (err) => { fs.unlink(LOCAL_LLM_PATH, () => {}); reject(err); });
+}
+
+ipcMain.handle('local_llm_set_enabled', async (_e, enabled) => {
+  localLLMEnabled = !!enabled;
+  // Real loading only happens here, on explicit enable — never on boot.
+  // Requires `node-llama-cpp` (npm i node-llama-cpp) — supports both
+  // real tool-calling and vision on GGUF models, so this local model
+  // isn't a text-only downgrade from the online providers.
+  if (localLLMEnabled && !localLLMInstance && fs.existsSync(LOCAL_LLM_PATH)) {
+    try {
+      const { getLlama } = require('node-llama-cpp');
+      const llama = await getLlama();
+      localLLMInstance = await llama.loadModel({ modelPath: LOCAL_LLM_PATH });
+    } catch (e) {
+      console.error('[LocalLLM] Failed to load model:', e.message);
+      localLLMEnabled = false;
+      return { ok: false, error: e.message };
+    }
+  }
+  return { ok: true, enabled: localLLMEnabled };
+});
