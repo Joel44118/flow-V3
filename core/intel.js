@@ -107,15 +107,15 @@ export function buildIntelPrompt(data, focus) {
 
 Joel asked specifically about: "${focus}"
 
-Your response should have TWO parts. In BOTH parts, your first real job is FILTERING — actively drop anything from the raw material above that has no genuine relevance to Joel's business (a solo web dev / bot integration / workflow automation freelancer, Joelflowstack, based in Ibadan, Nigeria). Don't mention or summarize irrelevant items just because they were in the brief — leaving something out silently is correct when it doesn't matter to Joel.
+Your response should have TWO parts. In BOTH parts, your first real job is FILTERING — actively drop anything from the raw material above that has no genuine relevance to Joel's business (a solo web dev / bot integration / workflow automation freelancer, Joelflowstack, who serves clients globally — not limited to Nigeria or any single market). Don't mention or summarize irrelevant items just because they were in the brief — leaving something out silently is correct when it doesn't matter to Joel.
 
 PART 1 — "${focus.toUpperCase()}" SPECIFIC BRIEF:
 From the targeted news results above, give Joel a sharp, dated summary of what is actually happening with "${focus}" right now — but only the developments that could realistically affect his business or work. Include dates where available. Be specific — names, numbers, events. If none of the targeted results are actually relevant, say so plainly instead of padding.
 
 PART 2 — FILTERED WORLD BRIEF:
 From the rest of the intel above, after dropping anything irrelevant:
-• WHAT MATTERS RIGHT NOW — only the 2-3 developments with real relevance to Joel's business or the Nigerian tech/market context, not generic global news
-• JOELFLOWSTACK OPPORTUNITIES — concrete, specific angles Joel can exploit as a bot/web dev in Nigeria — no generic "AI is growing" filler
+• WHAT MATTERS RIGHT NOW — only the 2-3 developments with real relevance to Joel's business, globally — not generic world news with no angle for him
+• JOELFLOWSTACK OPPORTUNITIES — concrete, specific angles Joel can exploit as a bot/web dev serving clients anywhere in the world — no generic "AI is growing" filler, and no assumption his market is limited to any one country
 • SIGNALS TO WATCH — only things worth Joel's actual attention in the next 24-48 hours
 
 Keep both parts sharp and short. It's fine — better, even — for this to be brief if most of the raw material genuinely wasn't relevant.`;
@@ -124,16 +124,16 @@ Keep both parts sharp and short. It's fine — better, even — for this to be b
   // General brief prompt
   return `${briefText}
 
-Your first real job is FILTERING, not summarizing everything. From the raw material above, actively drop anything with no genuine relevance to Joel's business (a solo web dev / bot integration / workflow automation freelancer, Joelflowstack, based in Ibadan, Nigeria) or to Nigeria specifically. Don't mention an item just because it was in the brief — if most of today's raw material is irrelevant, it's correct and expected for this response to be short.
+Your first real job is FILTERING, not summarizing everything. From the raw material above, actively drop anything with no genuine relevance to Joel's business (a solo web dev / bot integration / workflow automation freelancer, Joelflowstack, who serves clients globally — his market isn't limited to Nigeria or any single country, though he's based in Ibadan). Don't mention an item just because it was in the brief — if most of today's raw material is irrelevant, it's correct and expected for this response to be short.
 
 Give Joel a sharp, direct, FILTERED analysis:
 
-1. WHAT MATTERS RIGHT NOW — only the developments (up to 3-4) that are genuinely significant to his business or Nigerian context — skip anything that's just generic world news with no real angle for him
-2. OPPORTUNITIES FOR JOELFLOWSTACK — specific, concrete angles Joel can actually exploit:
-   - Real tech trends he can build on or pitch to clients (not vague "AI is booming" statements)
-   - Market conditions genuinely affecting his business (especially USD/NGN rate, only if it moved meaningfully)
-   - Events creating real demand for bot/web development services
-   - Nigeria-specific signals actually worth acting on
+1. WHAT MATTERS RIGHT NOW — only the developments (up to 3-4) that are genuinely significant to his business, globally — skip anything that's just generic world news with no real angle for him
+2. OPPORTUNITIES FOR JOELFLOWSTACK — specific, concrete angles Joel can actually exploit, on a global scale:
+   - Real tech trends he can build on or pitch to clients anywhere (not vague "AI is booming" statements)
+   - Market conditions genuinely affecting freelance dev/automation work worldwide, not just one currency or region
+   - Events creating real demand for bot/web development services in any market
+   - Any location-specific signal (Nigeria included) is worth mentioning only if it's genuinely actionable — never assume Nigeria is the only relevant market
 3. SIGNALS TO WATCH — only what's genuinely worth monitoring in the next 24-48 hours
 
 Be specific and actionable. Skip generic advice entirely. If there's genuinely nothing noteworthy today, say so directly rather than manufacturing importance.`;
