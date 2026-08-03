@@ -11,6 +11,25 @@ import { CONFIG }        from "./config.js";
 import { parseCommand, getTime, getDate } from "./commands.js";
 import { goalsSummary } from "./goals.js";
 import { selfKnowledgeBlock } from "./identity.js";
+
+// REAL BUG FIX — root cause of Joel's reported "unable to fetch tool,
+// try asking again" appearing even when the action genuinely
+// succeeded. Action tools (unlike info tools like get_my_live_state)
+// return no string from _onClientAction — they DO the thing and print
+// their own real confirmation via Chat.add synchronously (e.g. "👁
+// Turning Sentinel on."). When the model's own accompanying text
+// (data.reply) was ALSO empty for that same turn (which happens for a
+// pure tool-call response with no text), the old code fell through to
+// a generic "something went wrong" fallback and appended it right
+// after the real success message — a genuine contradiction, not an
+// actual second failure. This list lets both fallback checks below
+// skip that contradictory message specifically for action tools that
+// already handled their own user-facing confirmation.
+const ACTION_TOOLS_WITH_OWN_CONFIRMATION = new Set([
+  "toggle_sentinel", "toggle_full_voice_mode", "run_recorded_skill",
+  "perform_os_action", "sentinel_control", "open_notepad",
+  "generate_image", "post_to_bluesky", "open_content_lab",
+]);
 import { Speech }        from "./speech.js";
 import { RAG }           from "./rag.js";
 import { getSkillContext } from "./skills.js";
@@ -526,7 +545,16 @@ export async function sendMessage(overrideText, opts = {}) {
     // NO response at all, not even an error. Never let an empty
     // displayText reach chat/speech silently — if everything genuinely
     // failed, say so honestly instead of showing nothing.
-    if (!displayText || !displayText.trim()) {
+    if ((!displayText || !displayText.trim())) {
+      // REAL BUG FIX — if this turn dispatched a real action tool that
+      // already gave Joel its own confirmation (e.g. "Turning Sentinel
+      // on."), the action genuinely succeeded even though the model's
+      // own text was empty — don't append a contradictory failure
+      // message on top of a real success. Only show the generic
+      // failure text when there was truly no action AND no reply.
+      if (data.clientAction && ACTION_TOOLS_WITH_OWN_CONFIRMATION.has(data.clientAction)) {
+        return; // real success already shown by the action's own handler — nothing more to display
+      }
       displayText = "Something went wrong getting a real answer to that — the tool call didn't come back with usable data. Try asking again?";
       console.warn("[Flow] displayText was empty after all processing — this is the silent no-response bug, now surfaced instead of hidden.");
     }
@@ -639,8 +667,13 @@ export async function sendToAI(text) {
     let displayText = proposal ? proposal.cleanedReply : data.reply;
 
     // Same real fix as sendMessage above — never let an empty reply
-    // reach chat/speech silently.
+    // reach chat/speech silently, EXCEPT when a real action tool
+    // already gave its own genuine success confirmation this turn.
     if (!displayText || !displayText.trim()) {
+      if (data.clientAction && ACTION_TOOLS_WITH_OWN_CONFIRMATION.has(data.clientAction)) {
+        _chat.hideTyping();
+        return; // real success already shown — don't contradict it
+      }
       displayText = "Something went wrong getting a real answer to that — try asking again?";
       console.warn("[Flow] sendToAI: displayText was empty after all processing.");
     }
