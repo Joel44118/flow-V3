@@ -464,6 +464,37 @@ const FLOW_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'sentinel_control',
+      // REAL, Joel-requested: direct, real-time mouse/keyboard control
+      // for use WHILE Sentinel (ambient screen awareness) is on — this
+      // is genuinely different from run_recorded_skill (which replays
+      // a pre-recorded multi-step sequence) and perform_os_action
+      // (which only covers minimize/restore/open-app). This is Flow
+      // acting on what Sentinel is CURRENTLY seeing — click a specific
+      // point, scroll a page, type text, or move the mouse — in direct
+      // response to Joel's live instruction. Explicitly gated to only
+      // work while Sentinel is on (checked client-side): Sentinel
+      // being on is what gives Flow the visual context to know WHERE
+      // to click/scroll in the first place, and is the real, sensible
+      // boundary Joel asked for rather than allowing OS control with
+      // no visual grounding at all.
+      description: "Directly control the mouse/keyboard right now — click at a specific point, scroll up/down, type text, or move the mouse — using what Sentinel currently sees on screen for context. ONLY works while Sentinel (ambient screen awareness) is turned on; if it's off, tell Joel to turn Sentinel on first rather than calling this. Use get_my_live_state first if you're not sure whether Sentinel is currently on. This is for direct, in-the-moment actions Joel asks for while Sentinel is active (e.g. 'scroll down', 'click that button', 'type my email there') — for replaying a previously recorded multi-step sequence, use run_recorded_skill instead.",
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['click', 'move', 'scroll', 'type'], description: 'Which action to perform' },
+          x: { type: 'number', description: 'X screen coordinate — required for click/move, based on what Sentinel currently sees' },
+          y: { type: 'number', description: 'Y screen coordinate — required for click/move, based on what Sentinel currently sees' },
+          direction: { type: 'string', enum: ['up', 'down'], description: 'Required for scroll — which direction to scroll' },
+          text: { type: 'string', description: 'Required for type — the exact text to type' },
+        },
+        required: ['action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'toggle_sentinel',
       description: "Turn Flow's Sentinel (ambient screen-awareness in the Electron desktop app) on or off. Call THIS tool directly when Joel gives a direct instruction like 'turn sentinel off' — do NOT call get_my_live_state first to check the current status; toggle_sentinel handles that internally and reports the real result. Checking status first before a direct command only adds a pointless extra step and a rambling reply.",
       parameters: { type: 'object', properties: {}, required: [] },
@@ -672,6 +703,14 @@ async function executeFlowTool(toolName, args) {
     } catch (e) {
       return { handled: true, result: `Real error sending email: ${e.message}` };
     }
+  }
+  if (toolName === 'sentinel_control') {
+    return {
+      handled: false,
+      clientAction: 'sentinel_control',
+      clientArgs: { action: args?.action, x: args?.x, y: args?.y, direction: args?.direction, text: args?.text },
+      result: null,
+    };
   }
   if (toolName === 'toggle_sentinel') {
     return { handled: false, clientAction: 'toggle_sentinel', result: null };
