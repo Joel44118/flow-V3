@@ -468,6 +468,30 @@ setClientActionHandler(async (action, args) => {
     }
     return;
   }
+  if (action === "describe_sentinel_view") {
+    // REAL, NEW — this is what makes Flow able to actually answer
+    // "what can you see" instead of deflecting to screen-share.
+    const bridge = window.__flowElectron?.sentinel;
+    if (!bridge) { Chat.addError("Sentinel screen description isn't available — this only works in the Electron desktop app."); return; }
+    let sentinelStatus;
+    try { sentinelStatus = await bridge.status(); } catch (e) { Chat.addError(`Couldn't check Sentinel status: ${e.message}`); return; }
+    if (!sentinelStatus?.enabled) {
+      Chat.add("Sentinel needs to be on for me to see your screen — turn it on and ask me again.", "bot");
+      return;
+    }
+    Chat.add("Let me look...", "bot");
+    try {
+      const result = await bridge.describeView();
+      if (!result?.ok) { Chat.addError(result?.error || "Couldn't get a description of your screen."); return; }
+      // Feed the real description back through the model so it can
+      // answer in its own natural voice, grounded in what was actually
+      // seen — rather than just dumping a raw vision-API string.
+      await sendToAI(`(Sentinel just captured your screen. Here's what's on it: ${result.description}. Answer Joel's original question about what you can see, using this.)`);
+    } catch (e) {
+      Chat.addError(`Couldn't describe your screen: ${e.message}`);
+    }
+    return;
+  }
   if (action === "sentinel_control") {
     // REAL, Joel-requested — direct, real-time scroll/click/type/move
     // control, explicitly gated to only work while Sentinel is on.
