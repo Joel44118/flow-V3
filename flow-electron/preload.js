@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     status:   ()        => ipcRenderer.invoke('sentinel_status'),
     askNow:   ()         => ipcRenderer.invoke('sentinel_ask_now'),
     rawScreenshot: ()    => ipcRenderer.invoke('sentinel_raw_screenshot'),
+    describeView:  ()    => ipcRenderer.invoke('sentinel_describe_view'),
     onObservation: (cb) => ipcRenderer.on('sentinel-observation', (_e, desc) => cb(desc)),
     onToggled:     (cb) => ipcRenderer.on('sentinel-toggled', (_e, enabled) => cb(enabled)),
 
