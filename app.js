@@ -38,6 +38,7 @@ import { initLeadsTray, openLeadsTray } from "./ui/leads.js";
 import { initWorkflowTray, openWorkflowTray } from "./ui/workflow.js";
 import { initChatTray, openChatTray } from "./ui/chat-tray.js";
 import { initSettings } from "./ui/settings.js";
+import { initLocalLLMUI } from "./ui/local-llm.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -708,6 +709,7 @@ initLeadsTray();
 initWorkflowTray();
 initChatTray();
 initSettings();
+initLocalLLMUI(); // REAL FIX — this was never actually wired in before; ui/local-llm.js existed as a file but nothing called it
 setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray, openWorkflowTray);
 
 // REAL, Joel-requested — polls for new research insights (content/sales/
