@@ -136,16 +136,18 @@ contextBridge.exposeInMainWorld('__flowElectron', {
   // with no terminal window. app.js registers a listener that prints
   // these to the real DevTools console (opened via Ctrl+Shift+I).
   onMainLog: (cb) => ipcRenderer.on('main-process-log', (_e, entry) => cb(entry)),
-});
-// ═══════════════════════════════════════════
-// ADD THIS BLOCK to flow-electron/preload.js, inside the existing
-// contextBridge.exposeInMainWorld(...) object (add as a new "localLLM"
-// key alongside "sentinel", "osControl", etc). Pure addition.
-// ═══════════════════════════════════════════
 
-localLLM: {
-  status:     ()        => ipcRenderer.invoke('local_llm_status'),
-  download:   ()        => ipcRenderer.invoke('local_llm_download'),
-  setEnabled: (enabled) => ipcRenderer.invoke('local_llm_set_enabled', enabled),
-  onProgress: (cb)      => ipcRenderer.on('local-llm-progress', (_e, pct) => cb(pct)),
-},
+  // ── Local LLM (Gemma 3 4B download/toggle) ────────────────────────────
+  // REAL BUG FIX: this was previously pasted OUTSIDE the
+  // exposeInMainWorld(...) object as an orphaned block — a real syntax
+  // error that crashed this entire file on load, which is why
+  // window.__flowElectron never existed at all (breaking settings,
+  // Sentinel, and this local-llm UI all at once). Now correctly inside
+  // the object, before its closing brace.
+  localLLM: {
+    status:     ()        => ipcRenderer.invoke('local_llm_status'),
+    download:   ()        => ipcRenderer.invoke('local_llm_download'),
+    setEnabled: (enabled) => ipcRenderer.invoke('local_llm_set_enabled', enabled),
+    onProgress: (cb)      => ipcRenderer.on('local-llm-progress', (_e, pct) => cb(pct)),
+  },
+});
