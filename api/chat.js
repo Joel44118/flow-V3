@@ -464,6 +464,20 @@ const FLOW_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'describe_sentinel_view',
+      // REAL, NEW — fixes Joel's reported bug: he asked "what can you
+      // see on my screen" with Sentinel on, and Flow answered that it
+      // needed screen-share instead, even though Sentinel already
+      // captures real screenshots. There was no tool for this exact
+      // question before — sentinel_control only returns coordinates
+      // for acting, get_my_live_state only reports on/off booleans.
+      description: "Describe what's currently visible on Joel's screen right now, using Sentinel's live screenshot capture. Call this when Joel asks what you can see, what's on his screen, or similar — ONLY works while Sentinel is on. Do not tell him to use screen-share for this; Sentinel already has direct screen access when it's on.",
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'sentinel_control',
       // REAL, Joel-requested: direct, real-time mouse/keyboard control
       // for use WHILE Sentinel (ambient screen awareness) is on — this
@@ -703,6 +717,9 @@ async function executeFlowTool(toolName, args) {
     } catch (e) {
       return { handled: true, result: `Real error sending email: ${e.message}` };
     }
+  }
+  if (toolName === 'describe_sentinel_view') {
+    return { handled: false, clientAction: 'describe_sentinel_view', result: null };
   }
   if (toolName === 'sentinel_control') {
     return {
