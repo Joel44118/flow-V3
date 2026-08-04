@@ -378,9 +378,27 @@ function _bindCanvasDrag() {
   canvas.addEventListener("mousemove", (e) => {
     if (!_dragNode) return;
     const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / _zoomLevel - _dragOffset.x;
-    const y = (e.clientY - rect.top) / _zoomLevel - _dragOffset.y;
-    _canvasState.nodes[_dragNode] = { x: Math.max(0, x), y: Math.max(0, y) };
+    const rawX = (e.clientX - rect.left) / _zoomLevel - _dragOffset.x;
+    const rawY = (e.clientY - rect.top) / _zoomLevel - _dragOffset.y;
+    // REAL BUG FIX, Joel-reported: nodes could be dragged past the
+    // canvas's real edges, especially when zoomed out (dividing by
+    // _zoomLevel expands the effective draggable range in canvas-
+    // space). Two real bugs here: (1) only a lower-bound clamp
+    // existed (Math.max(0, x)) with no upper bound at all, so nodes
+    // could go arbitrarily far right/down; (2) even that lower clamp
+    // was computed but never actually used — the node's rendered
+    // position used the raw, unclamped x/y instead of the clamped
+    // values stored in canvasState. Real fix: clamp against the
+    // canvas's own actual, current size (divided by zoom, since node
+    // coordinates live in pre-scale canvas-space) minus the node's
+    // real dimensions, and use the SAME clamped values for both the
+    // stored state and the rendered style.
+    const nodeW = 150, nodeH = 100; // matches .wf-node's real width + typical rendered height
+    const maxX = Math.max(0, (canvas.clientWidth  / _zoomLevel) - nodeW);
+    const maxY = Math.max(0, (canvas.clientHeight / _zoomLevel) - nodeH);
+    const x = Math.min(Math.max(0, rawX), maxX);
+    const y = Math.min(Math.max(0, rawY), maxY);
+    _canvasState.nodes[_dragNode] = { x, y };
     const el = canvas.querySelector(`[data-node-id="${_dragNode}"]`);
     if (el) { el.style.left = `${x}px`; el.style.top = `${y}px`; }
     _renderConnections();
