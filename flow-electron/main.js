@@ -63,11 +63,24 @@ try {
 } catch(e) { console.warn('[Flow] robotjs not found:', e.message); }
 
 // ── active-win — lightweight active window title polling for Sentinel ─────
+// REAL BUG FIX — root cause of the permanent "Sentinel can't turn on
+// right now" error: active-win v9+ is a pure-ESM package (its own
+// docs: "This is an ESM package which requires you to use ESM").
+// require('active-win') from this CommonJS file ALWAYS throws
+// ERR_REQUIRE_ESM, unconditionally — this was never a packaging/
+// asarUnpack issue (it was already correctly unpacked) and was never
+// going to resolve on a rebuild, which is why it kept failing on every
+// fresh install. Real fix: load it with a dynamic import() instead,
+// which CommonJS can use to load ESM modules, and call its named
+// export activeWindow() instead of a default-export function.
 let activeWin = null;
-try {
-  activeWin = require('active-win');
-  console.log('[Flow] active-win ✓ Sentinel context tracking available');
-} catch(e) { console.warn('[Flow] active-win not found — Sentinel disabled:', e.message); }
+(async () => {
+  try {
+    const mod = await import('active-win');
+    activeWin = mod.activeWindow;
+    console.log('[Flow] active-win ✓ Sentinel context tracking available');
+  } catch(e) { console.warn('[Flow] active-win failed to load — Sentinel disabled:', e.message); }
+})();
 
 // ── Auto-updater ──────────────────────────────────────────────────────────
 let autoUpdater = null;
@@ -1177,21 +1190,9 @@ app.on('window-all-closed',() => {
   /* stay in tray */
 });
 app.on('before-quit',      () => { app.isQuitting = true; if (sentinelInterval) clearInterval(sentinelInterval); if (trailInterval) clearInterval(trailInterval); heartbeat.stopHeartbeat(); });
-// ═══════════════════════════════════════════
-// ADD THIS BLOCK to flow-electron/main.js (paste near the other
-// ipcMain.handle blocks — anywhere after `const { ipcMain } = require`
-// is already in scope). Do NOT replace the whole file — this is a
-// pure addition, nothing existing needs to change.
-//
-// What this does: downloads Gemma 3 4B (GGUF) from Hugging Face
-// directly (not GitHub — file is too large for GitHub's 2GB cap),
-// saves it locally, and exposes real tool-calling + vision on top of
-// it via node-llama-cpp (which supports both). OFF by default — this
-// code only runs when Joel clicks the button in ui/local-llm.js.
-// ═══════════════════════════════════════════
-
-const fs = require('fs');
-const path = require('path');
+// ── Local LLM (Gemma 3 4B, downloaded from Hugging Face) ──────────────────
+// Off by default — only runs when Joel clicks the button in
+// ui/local-llm.js. `path` already required at top of this file.
 const https = require('https');
 
 const LOCAL_LLM_DIR = path.join(app.getPath('userData'), 'local-llm');
