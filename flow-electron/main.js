@@ -1203,15 +1203,15 @@ let localLLMEnabled = false;
 let localLLMInstance = null; // holds the loaded node-llama-cpp model once enabled
 
 ipcMain.handle('local_llm_status', () => {
-  const downloaded = fs.existsSync(LOCAL_LLM_PATH);
+  const downloaded = fsSync.existsSync(LOCAL_LLM_PATH);
   return { downloaded, enabled: localLLMEnabled && downloaded };
 });
 
 ipcMain.handle('local_llm_download', async (event) => {
-  if (!fs.existsSync(LOCAL_LLM_DIR)) fs.mkdirSync(LOCAL_LLM_DIR, { recursive: true });
+  if (!fsSync.existsSync(LOCAL_LLM_DIR)) fsSync.mkdirSync(LOCAL_LLM_DIR, { recursive: true });
 
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(LOCAL_LLM_PATH);
+    const file = fsSync.createWriteStream(LOCAL_LLM_PATH);
     https.get(LOCAL_LLM_URL, (res) => {
       // Hugging Face redirects to its CDN — follow once.
       if (res.statusCode === 302 || res.statusCode === 301) {
@@ -1219,7 +1219,7 @@ ipcMain.handle('local_llm_download', async (event) => {
         return;
       }
       _pipeDownload(res, file, event, resolve, reject);
-    }).on('error', (err) => { fs.unlink(LOCAL_LLM_PATH, () => {}); reject(err); });
+    }).on('error', (err) => { fsSync.unlink(LOCAL_LLM_PATH, () => {}); reject(err); });
   });
 });
 
@@ -1235,7 +1235,7 @@ function _pipeDownload(res, file, event, resolve, reject) {
   });
   res.pipe(file);
   file.on('finish', () => { file.close(); resolve({ ok: true }); });
-  file.on('error', (err) => { fs.unlink(LOCAL_LLM_PATH, () => {}); reject(err); });
+  file.on('error', (err) => { fsSync.unlink(LOCAL_LLM_PATH, () => {}); reject(err); });
 }
 
 ipcMain.handle('local_llm_set_enabled', async (_e, enabled) => {
@@ -1244,7 +1244,7 @@ ipcMain.handle('local_llm_set_enabled', async (_e, enabled) => {
   // Requires `node-llama-cpp` (npm i node-llama-cpp) — supports both
   // real tool-calling and vision on GGUF models, so this local model
   // isn't a text-only downgrade from the online providers.
-  if (localLLMEnabled && !localLLMInstance && fs.existsSync(LOCAL_LLM_PATH)) {
+  if (localLLMEnabled && !localLLMInstance && fsSync.existsSync(LOCAL_LLM_PATH)) {
     try {
       const { getLlama } = require('node-llama-cpp');
       const llama = await getLlama();
