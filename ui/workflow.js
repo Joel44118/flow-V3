@@ -43,6 +43,7 @@ const NODES = [
   { id: "flow",     label: "Flow",     icon: "🧠", desc: "Hands-free voice",       settingKey: "handsFreeVoiceEnabled" },
   { id: "leadgen",  label: "Lead Gen", icon: "💼", desc: "Live job status (read-only)", settingKey: null },
   { id: "research", label: "Research", icon: "🔎", desc: "Background research",     settingKey: "backgroundResearchEnabled" },
+  { id: "music",    label: "Music Career", icon: "🎵", desc: "Weekly track generation", settingKey: "musicCareerEnabled" },
 ];
 
 function _injectStyles() {
@@ -164,8 +165,9 @@ function _loadCanvasState() {
       flow:     { x: 190, y: 140 },
       leadgen:  { x: 30,  y: 40 },
       research: { x: 350, y: 40 },
+      music:    { x: 190, y: 260 },
     },
-    connections: [["flow", "leadgen"], ["flow", "research"]],
+    connections: [["flow", "leadgen"], ["flow", "research"], ["flow", "music"]],
   };
 }
 
