@@ -26,6 +26,7 @@
 // reaches the browser.
 
 import { EdgeTTS } from "@andresaya/edge-tts";
+import { Client } from "@gradio/client"; // ACE-Step music generation — merged here to stay within Vercel's 12-function limit (see routing note below)
 
 // REAL, HONEST NOTE FOR WHOEVER DEBUGS THIS NEXT: unlike ElevenLabs
 // (a plain HTTPS fetch() call), @andresaya/edge-tts opens a real
@@ -115,6 +116,7 @@ export default async function handler(req, res) {
 
   if (action === "token") return handleDeepgramToken(req, res);
   if (action === "groqthink") return handleGroqThinkConfig(req, res);
+  if (action === "music-generate") return handleMusicGenerate(req, res);
   return handleSpeak(req, res);
 }
 
@@ -136,4 +138,44 @@ function handleGroqThinkConfig(req, res) {
       headers: { Authorization: `Bearer ${key}` },
     },
   });
+}
+
+// ── MUSIC GENERATION (ACE-Step v1.5) ───────────────────────────────────────
+// Merged in here, action=music-generate, to stay within Vercel's 12-function
+// Hobby plan limit rather than adding a 13th api/ file. Fully isolated from
+// the TTS/Deepgram routes above — its own function, own try/catch, own
+// failure mode. A failure here cannot affect handleSpeak, handleDeepgramToken,
+// or handleGroqThinkConfig, and vice versa.
+//
+// Real, free: ACE-Step is Apache 2.0, and every Hugging Face Gradio Space
+// (this one included) is automatically a callable API for free — uses the
+// HF_TOKEN Joel already has set. Honest note: the fixed voiceTag passed in
+// is what keeps every track sonically consistent (same declared style
+// string every time) — not Flow "choosing" a voice.
+const MUSIC_SPACE_ID = "ACE-Step/Ace-Step-v1.5";
+
+async function handleMusicGenerate(req, res) {
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+
+  const { prompt, lyrics, voiceTag, durationSeconds } = req.body || {};
+  if (!prompt) return res.status(400).json({ error: "prompt is required" });
+
+  const token = process.env.HF_TOKEN;
+  if (!token) return res.status(500).json({ error: "HF_TOKEN not set in Vercel env vars" });
+
+  try {
+    const app = await Client.connect(MUSIC_SPACE_ID, { hf_token: token });
+    const fullPrompt = `${prompt}, ${voiceTag || "warm male tenor, clear diction, moderate reverb"}`;
+
+    const result = await app.predict("/predict", [
+      fullPrompt,
+      lyrics || "",
+      durationSeconds || 60,
+    ]);
+
+    return res.status(200).json({ ok: true, audioUrl: result.data?.[0]?.url || result.data?.[0] });
+  } catch (e) {
+    console.error("[Music] ACE-Step generation failed:", e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
 }
