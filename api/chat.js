@@ -464,6 +464,22 @@ const FLOW_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'select_chrome_profile',
+      // REAL, NEW, Joel-requested — part of the Audiomack account
+      // setup flow. Reads Joel's ACTUAL Chrome profile names (from
+      // Chrome's own Local State file) so he can just say the real
+      // name he recognizes, not guess a folder name. Call this when
+      // setting up Audiomack and Joel hasn't specified a profile yet.
+      description: "Lists Joel's real Chrome profile names so he can pick which one to use for Audiomack setup, then launches Chrome with the chosen profile. Call list mode first with no profileName to show options; call again with his chosen profileName to actually launch it.",
+      parameters: {
+        type: 'object',
+        properties: { profileName: { type: 'string', description: 'The real profile name Joel chose, from the list. Omit to just list options.' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'post_track_to_audiomack',
       // REAL, Joel-requested: Audiomack has NO public upload API (its
       // real public API is catalog/read-only). This does NOT fake
@@ -753,6 +769,9 @@ async function executeFlowTool(toolName, args) {
     } catch (e) {
       return { handled: true, result: `Real error sending email: ${e.message}` };
     }
+  }
+  if (toolName === 'select_chrome_profile') {
+    return { handled: false, clientAction: 'select_chrome_profile', clientArgs: { profileName: args?.profileName }, result: null };
   }
   if (toolName === 'post_track_to_audiomack') {
     return { handled: false, clientAction: 'post_track_to_audiomack', clientArgs: { filePath: args?.filePath }, result: null };
