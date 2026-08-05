@@ -480,7 +480,21 @@ async function _maybeRunWeeklyMusic() {
       // retry every 15 minutes; it gets a fresh attempt next week.
     } else {
       console.log('[Heartbeat] Weekly track generated:', data.audioUrl);
-      if (_onNotification) _onNotification(`🎵 New weekly track ready: ${data.audioUrl}`);
+      // REAL FIX — music-career.js uses localStorage, which only
+      // exists in the renderer, not here in Electron's main process.
+      // So the actual logNewTrack() call has to happen renderer-side.
+      // Reusing the SAME existing 'heartbeat-message' channel (not a
+      // new one) with a structured payload lets app.js detect this is
+      // a track event and log it for real, rather than just showing
+      // text with nothing persisted.
+      if (_onNotification) {
+        _onNotification(`🎵 New weekly track ready: ${data.audioUrl}`, {
+          type: 'music-track',
+          audioUrl: data.audioUrl,
+          prompt: MUSIC_PROMPT,
+          voiceTag: MUSIC_VOICE_TAG,
+        });
+      }
     }
   } catch (e) {
     console.warn('[Heartbeat] Weekly music generation request failed (non-fatal):', e.message);
