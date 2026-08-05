@@ -1172,8 +1172,8 @@ app.whenReady().then(() => {
   // real IPC pattern already used for wake-word logs — so a message Flow
   // decides to send unprompted shows up in-chat, not just as a native
   // notification/Telegram push when Joel is actively looking at Flow.
-  heartbeat.setNotificationSink((text) => {
-    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('heartbeat-message', { text, ts: Date.now() });
+  heartbeat.setNotificationSink((text, data) => {
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('heartbeat-message', { text, ts: Date.now(), data: data || null });
   });
   heartbeat.startHeartbeat();
 });
