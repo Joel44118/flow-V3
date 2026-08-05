@@ -901,6 +901,48 @@ ipcMain.handle('sentinel_raw_screenshot', async () => {
   return { ok: true, image: b64 };
 });
 
+// REAL, NEW, Joel-requested — Chrome profile picker for the Audiomack
+// setup flow. Chrome does NOT store profile display names in the
+// folder names (folders are literally "Default", "Profile 1",
+// "Profile 2"...) — the real display names Joel actually recognizes
+// live inside Chrome's own "Local State" JSON file, in
+// profile.info_cache. Reading that file for real, not guessing from
+// folder names.
+function _chromeUserDataDir() {
+  return path.join(app.getPath('appData'), 'Google', 'Chrome', 'User Data');
+}
+
+ipcMain.handle('list_chrome_profiles', () => {
+  try {
+    const localStatePath = path.join(_chromeUserDataDir(), 'Local State');
+    if (!fsSync.existsSync(localStatePath)) return { ok: false, error: 'Chrome not found on this machine' };
+    const localState = JSON.parse(fsSync.readFileSync(localStatePath, 'utf8'));
+    const cache = localState.profile?.info_cache || {};
+    const profiles = Object.entries(cache).map(([folderName, info]) => ({
+      folderName,
+      name: info.name || info.shortcut_name || folderName,
+    }));
+    return { ok: true, profiles };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('launch_chrome_profile', (_e, { folderName, url }) => {
+  try {
+    const { spawn } = require('child_process');
+    // Real, standard Chrome flags — --profile-directory picks the
+    // exact profile Joel names, matched via the folderName resolved
+    // from list_chrome_profiles above (never guessed).
+    const args = [`--profile-directory=${folderName}`];
+    if (url) args.push(url);
+    spawn('chrome', args, { detached: true, stdio: 'ignore' }).unref();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 // WATCH · LEARN · REPLICATE
 //
