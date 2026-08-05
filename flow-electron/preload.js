@@ -145,10 +145,15 @@ contextBridge.exposeInMainWorld('__flowElectron', {
   // window.__flowElectron never existed at all (breaking settings,
   // Sentinel, and this local-llm UI all at once). Now correctly inside
   // the object, before its closing brace.
+  chromeProfiles: {
+    list:   ()               => ipcRenderer.invoke('list_chrome_profiles'),
+    launch: (folderName, url) => ipcRenderer.invoke('launch_chrome_profile', { folderName, url }),
+  },
   localLLM: {
     status:     ()        => ipcRenderer.invoke('local_llm_status'),
     download:   ()        => ipcRenderer.invoke('local_llm_download'),
     setEnabled: (enabled) => ipcRenderer.invoke('local_llm_set_enabled', enabled),
     onProgress: (cb)      => ipcRenderer.on('local-llm-progress', (_e, pct) => cb(pct)),
+    chat:       (messages, maxTokens) => ipcRenderer.invoke('local_llm_chat', { messages, maxTokens }),
   },
 });
