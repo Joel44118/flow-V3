@@ -415,6 +415,80 @@ async function _maybeRunSocialMonitor() {
 }
 
 // ═══════════════════════════════════════════
+// REAL, NEW — weekly music-career trigger, same honest mechanism as
+// the daily social-monitor pass above (checked every tick, persisted
+// last-run WEEK not just a boolean, no native "run once a week"
+// primitive). Fires once per real WAT week. Calls the merged
+// /api/tts?action=music-generate route (ACE-Step), then logs the
+// result via core/music-career.js's tracking so ratings/notes stay
+// real and structured. Honest scope, same as the rest of this file:
+// Flow isn't choosing a style — the prompt/voiceTag are fixed,
+// declared values, not a preference being exercised.
+// ═══════════════════════════════════════════
+const MUSIC_PROMPT = "upbeat afrobeat-pop fusion, motivational lyrics about building something new";
+const MUSIC_VOICE_TAG = "warm male tenor, clear diction, moderate reverb"; // MUST match core/music-career.js's VOICE_TAG exactly — this is what keeps every track sonically consistent
+
+function _musicStatePath() { return path.join(app.getPath('userData'), 'flow-music-state.json'); }
+
+function _loadMusicState() {
+  try {
+    const p = _musicStatePath();
+    if (!fs.existsSync(p)) return { lastRunWeek: null };
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (e) {
+    console.warn('[Heartbeat] Music state load failed (non-fatal):', e.message);
+    return { lastRunWeek: null };
+  }
+}
+
+function _saveMusicState(state) {
+  try {
+    fs.writeFileSync(_musicStatePath(), JSON.stringify(state, null, 2));
+  } catch (e) {
+    console.warn('[Heartbeat] Music state save failed (non-fatal):', e.message);
+  }
+}
+
+// Real ISO week number (year-week string, e.g. "2026-W32") computed
+// from the same fixed WAT offset used above — so "once a week" means
+// a real calendar week, not just "168 hours since last time".
+function _currentWeekWAT() {
+  const watMs = Date.now() + 60 * 60 * 1000;
+  const d = new Date(watMs);
+  const firstJan = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNum = Math.ceil((((d - firstJan) / 86400000) + firstJan.getUTCDay() + 1) / 7);
+  return `${d.getUTCFullYear()}-W${weekNum}`;
+}
+
+async function _maybeRunWeeklyMusic() {
+  const thisWeek = _currentWeekWAT();
+  const state = _loadMusicState();
+  if (state.lastRunWeek === thisWeek) return; // already ran this week, real guard
+
+  console.log('[Heartbeat] Running weekly music-career generation...');
+  try {
+    const res = await fetch(`${VERCEL_URL}/api/tts?action=music-generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: MUSIC_PROMPT, voiceTag: MUSIC_VOICE_TAG, durationSeconds: 60 }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      console.warn('[Heartbeat] Weekly music generation reported failure (non-fatal):', data.error);
+      // Deliberately still mark this week as run — same reasoning as
+      // social-monitor above: a real, temporary failure shouldn't
+      // retry every 15 minutes; it gets a fresh attempt next week.
+    } else {
+      console.log('[Heartbeat] Weekly track generated:', data.audioUrl);
+      if (_onNotification) _onNotification(`🎵 New weekly track ready: ${data.audioUrl}`);
+    }
+  } catch (e) {
+    console.warn('[Heartbeat] Weekly music generation request failed (non-fatal):', e.message);
+  }
+  _saveMusicState({ lastRunWeek: thisWeek });
+}
+
+// ═══════════════════════════════════════════
 // REAL, Joel-requested — sales-conversation research pass. A genuinely
 // separate, less-frequent cadence (every 3 days, real elapsed time, not
 // tied to the daily social-monitor pass) where Flow researches how to
@@ -612,6 +686,7 @@ async function _tick(isFirstTick = false) {
     // self-initiated-message logic skipped; if it's already past 5PM WAT
     // when Joel opens the app, the pass should still run.
     await _maybeRunSocialMonitor();
+    await _maybeRunWeeklyMusic();
     await _maybeRunSalesResearch();
     await _maybeAdvanceLeadJobs();
 
