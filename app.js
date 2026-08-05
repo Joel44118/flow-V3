@@ -468,6 +468,16 @@ setClientActionHandler(async (action, args) => {
     }
     return;
   }
+  if (action === "music_career_status") {
+    // REAL, NEW — pulls actual tracked data, no invented preference.
+    const { getStyleProfile, getReasonsForLowRatings, getAllTracks } = await import("./core/music-career.js");
+    const profile = getStyleProfile();
+    const lowRated = getReasonsForLowRatings();
+    const tracks = getAllTracks();
+    const summary = `Style profile: ${profile.summary}\nTotal tracks: ${tracks.length}.\nLow-rated tracks and Joel's own notes: ${JSON.stringify(lowRated)}`;
+    await sendToAI(`(Real music-career data just pulled: ${summary}. Answer Joel's question using this real data — don't invent an opinion about the music.)`);
+    return;
+  }
   if (action === "describe_sentinel_view") {
     // REAL, NEW — this is what makes Flow able to actually answer
     // "what can you see" instead of deflecting to screen-share.
