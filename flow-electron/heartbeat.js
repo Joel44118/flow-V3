@@ -466,11 +466,33 @@ async function _maybeRunWeeklyMusic() {
   if (state.lastRunWeek === thisWeek) return; // already ran this week, real guard
 
   console.log('[Heartbeat] Running weekly music-career generation...');
+
+  // REAL, NEW, Joel-requested — genuine research before writing,
+  // rather than a fully static, unchanging prompt every single week.
+  // Uses the same real /api/search endpoint core/websearch.js calls
+  // from the renderer — fetch is a native Node 18+ global, so this
+  // works directly here in the main process with no IPC round-trip
+  // needed. Non-fatal if it fails — falls back to the static prompt.
+  let researchNote = '';
+  try {
+    const searchRes = await fetch(`${VERCEL_URL}/api/search?q=${encodeURIComponent('current trends in afrobeat pop music production 2026')}&mode=news`);
+    const searchData = await searchRes.json();
+    const topResult = searchData.results?.[0];
+    if (topResult?.snippet) {
+      researchNote = ` Real, current context to draw from: ${topResult.snippet.slice(0, 200)}`;
+      console.log('[Heartbeat] Weekly music research found real context to use.');
+    }
+  } catch (e) {
+    console.warn('[Heartbeat] Weekly music research failed (non-fatal, using static prompt):', e.message);
+  }
+
+  const finalPrompt = MUSIC_PROMPT + researchNote;
+
   try {
     const res = await fetch(`${VERCEL_URL}/api/tts?action=music-generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: MUSIC_PROMPT, voiceTag: MUSIC_VOICE_TAG, durationSeconds: 60 }),
+      body: JSON.stringify({ prompt: finalPrompt, voiceTag: MUSIC_VOICE_TAG, durationSeconds: 60 }),
     });
     const data = await res.json();
     if (!data.ok) {
@@ -500,7 +522,7 @@ async function _maybeRunWeeklyMusic() {
           type: 'music-track',
           audioUrl: data.audioUrl,
           filePath,
-          prompt: MUSIC_PROMPT,
+          prompt: finalPrompt,
           voiceTag: MUSIC_VOICE_TAG,
         });
       }
