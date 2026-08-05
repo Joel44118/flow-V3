@@ -475,22 +475,31 @@ async function _maybeRunWeeklyMusic() {
     const data = await res.json();
     if (!data.ok) {
       console.warn('[Heartbeat] Weekly music generation reported failure (non-fatal):', data.error);
-      // Deliberately still mark this week as run — same reasoning as
-      // social-monitor above: a real, temporary failure shouldn't
-      // retry every 15 minutes; it gets a fresh attempt next week.
     } else {
-      console.log('[Heartbeat] Weekly track generated:', data.audioUrl);
-      // REAL FIX — music-career.js uses localStorage, which only
-      // exists in the renderer, not here in Electron's main process.
-      // So the actual logNewTrack() call has to happen renderer-side.
-      // Reusing the SAME existing 'heartbeat-message' channel (not a
-      // new one) with a structured payload lets app.js detect this is
-      // a track event and log it for real, rather than just showing
-      // text with nothing persisted.
+      // REAL, Joel-requested: download the actual file to a visible
+      // folder he can see and open himself — not just a URL, and not
+      // buried in Electron's hidden userData/AppData path. Uses the
+      // real OS Music folder so it shows up like any normal download.
+      const musicDir = path.join(app.getPath('music'), 'Flow Tracks');
+      if (!fs.existsSync(musicDir)) fs.mkdirSync(musicDir, { recursive: true });
+      const fileName = `flow-track-${thisWeek}.mp3`;
+      const filePath = path.join(musicDir, fileName);
+
+      const audioRes = await fetch(data.audioUrl);
+      const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+      fs.writeFileSync(filePath, audioBuffer);
+      console.log('[Heartbeat] Weekly track downloaded to:', filePath);
+
+      // REAL, Joel-requested: does NOT auto-post. Notifies him and
+      // waits for explicit permission in chat before Flow does
+      // anything with Audiomack (which has no public upload API — see
+      // app.js's post_track_to_audiomack handler for the real,
+      // permission-gated OS-control posting flow).
       if (_onNotification) {
-        _onNotification(`🎵 New weekly track ready: ${data.audioUrl}`, {
+        _onNotification(`🎵 This week's track is ready and saved to ${filePath}. Want me to post it to Audiomack?`, {
           type: 'music-track',
           audioUrl: data.audioUrl,
+          filePath,
           prompt: MUSIC_PROMPT,
           voiceTag: MUSIC_VOICE_TAG,
         });
