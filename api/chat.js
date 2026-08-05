@@ -464,6 +464,29 @@ const FLOW_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'post_track_to_audiomack',
+      // REAL, Joel-requested: Audiomack has NO public upload API (its
+      // real public API is catalog/read-only). This does NOT fake
+      // automation — it replays a real, pre-recorded skill (Joel
+      // records the upload flow once via Watch & Learn, named
+      // "post-to-audiomack") through the same robotjs OS-control path
+      // as run_recorded_skill, which already shows a visible
+      // confirmation overlay with a cancellable countdown — so this
+      // genuinely happens live, in front of Joel, not silently.
+      // ONLY call this after Joel has explicitly said yes in chat to
+      // posting THIS specific track — never on the heartbeat's own
+      // notification alone.
+      description: "Posts the latest generated track to Audiomack by replaying a real, pre-recorded browser skill live (with a visible confirmation countdown Joel can cancel) — since Audiomack has no upload API to call directly. ONLY call this after Joel has explicitly said yes to posting in this conversation. Requires Joel to have recorded a skill named 'post-to-audiomack' via Watch & Learn first.",
+      parameters: {
+        type: 'object',
+        properties: { filePath: { type: 'string', description: 'Local path to the track file, from the heartbeat notification' } },
+        required: ['filePath'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'music_career_status',
       // REAL, NEW — lets Flow answer "how'd last week's track do" or
       // "what should the next track sound like" using the REAL
@@ -730,6 +753,9 @@ async function executeFlowTool(toolName, args) {
     } catch (e) {
       return { handled: true, result: `Real error sending email: ${e.message}` };
     }
+  }
+  if (toolName === 'post_track_to_audiomack') {
+    return { handled: false, clientAction: 'post_track_to_audiomack', clientArgs: { filePath: args?.filePath }, result: null };
   }
   if (toolName === 'music_career_status') {
     return { handled: false, clientAction: 'music_career_status', result: null };
