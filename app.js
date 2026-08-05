@@ -39,6 +39,7 @@ import { initWorkflowTray, openWorkflowTray } from "./ui/workflow.js";
 import { initChatTray, openChatTray } from "./ui/chat-tray.js";
 import { initSettings } from "./ui/settings.js";
 import { initLocalLLMUI } from "./ui/local-llm.js";
+import { initDockReveal } from "./ui/dock-reveal.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -553,6 +554,30 @@ setClientActionHandler(async (action, args) => {
     }
     return;
   }
+  if (action === "post_track_to_audiomack") {
+    // REAL, Joel-requested — same real, confirmation-gated OS-control
+    // path as run_recorded_skill above, hardcoded to the skill name
+    // Joel records once via Watch & Learn. Audiomack has no upload
+    // API, so this genuinely drives the browser live, with the same
+    // visible cancellable countdown already built into skill replay.
+    if (!window.__flowElectron?.osControl) {
+      Chat.addError("OS control isn't available — this only works in the Electron desktop app.");
+      return;
+    }
+    try {
+      const result = await window.__flowElectron.osControl.runNamedSkill("post-to-audiomack");
+      if (result.reason === 'not_found') {
+        Chat.add("I don't have a recorded \"post-to-audiomack\" skill yet — record the upload flow once with Watch & Learn (open Audiomack, do the upload manually while recording, name it \"post-to-audiomack\"), then I can replay it every week.", "bot");
+      } else if (result.aborted) {
+        Chat.add(`Posting stopped: ${result.reason === 'cancelled_by_user' ? "you cancelled it" : result.reason === 'emergency_stop' ? "emergency stop" : result.error || result.reason}`, "bot");
+      } else {
+        Chat.add("Posted to Audiomack.", "bot");
+      }
+    } catch (e) {
+      Chat.addError(`Audiomack post failed: ${e.message}`);
+    }
+    return;
+  }
   if (action === "run_recorded_skill") {
     const skillName = args?.skillName;
     if (!window.__flowElectron?.osControl) {
@@ -744,6 +769,15 @@ initWorkflowTray();
 initChatTray();
 initSettings();
 initLocalLLMUI(); // REAL FIX — this was never actually wired in before; ui/local-llm.js existed as a file but nothing called it
+// REAL FIX — same mistake as local-llm.js above: dock-reveal.js was
+// created but never actually imported/called, so nothing happened by
+// default no matter what. Real selectors found by tracing each
+// module's own tab creation code: #leads-tray-tab, #workflow-tray-tab,
+// #content-lab-tray-tab. Delayed slightly so these elements exist in
+// the DOM first (each module builds its own tab lazily).
+setTimeout(() => {
+  initDockReveal(["#leads-tray-tab", "#workflow-tray-tab", "#content-lab-tray-tab"]);
+}, 500);
 setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray, openWorkflowTray);
 
 // REAL, Joel-requested — polls for new research insights (content/sales/
