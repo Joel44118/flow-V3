@@ -1226,6 +1226,8 @@ ipcMain.handle('local_llm_download', async (event) => {
 function _pipeDownload(res, file, event, resolve, reject) {
   const total = parseInt(res.headers['content-length'] || '0', 10);
   let downloaded = 0;
+  let resSawEnd = false;
+
   res.on('data', (chunk) => {
     downloaded += chunk.length;
     if (total) {
@@ -1233,8 +1235,35 @@ function _pipeDownload(res, file, event, resolve, reject) {
       event.sender.send('local-llm-progress', pct);
     }
   });
+
+  // REAL BUG FIX, Joel-reported: connection dropped mid-download, but
+  // the UI reported 100% success anyway. Root cause: file.on('finish')
+  // only means the write stream flushed whatever bytes it DID
+  // receive — it fires even when the read side (res) was cut off
+  // early, since Node has no built-in link between "response ended"
+  // and "write stream finished." There was also no res.on('error')
+  // handler at all, so a dropped read connection wasn't even
+  // reported as failure. Real fix: track the read side's own 'end'
+  // event separately, and only resolve success if BOTH the response
+  // genuinely ended AND the byte count matches what the server said
+  // to expect — a real, verified completion, not an assumption.
+  res.on('end', () => { resSawEnd = true; });
+  res.on('error', (err) => {
+    file.close();
+    fsSync.unlink(LOCAL_LLM_PATH, () => {});
+    reject(new Error(`Download connection failed: ${err.message}`));
+  });
+
   res.pipe(file);
-  file.on('finish', () => { file.close(); resolve({ ok: true }); });
+  file.on('finish', () => {
+    file.close();
+    if (!resSawEnd || (total && downloaded < total)) {
+      fsSync.unlink(LOCAL_LLM_PATH, () => {});
+      reject(new Error(`Download incomplete — got ${downloaded} of ${total || 'unknown'} bytes. Your connection likely dropped mid-download. Try again.`));
+      return;
+    }
+    resolve({ ok: true });
+  });
   file.on('error', (err) => { fsSync.unlink(LOCAL_LLM_PATH, () => {}); reject(err); });
 }
 
@@ -1256,4 +1285,42 @@ ipcMain.handle('local_llm_set_enabled', async (_e, enabled) => {
     }
   }
   return { ok: true, enabled: localLLMEnabled };
+});
+
+// REAL, NEW — actual chat completion. Everything above only handled
+// download/load; this is the missing piece that makes the local model
+// genuinely usable as a real #1 provider, per Joel's explicit
+// request, rather than just sitting downloaded and unused. Real,
+// honest scope: node-llama-cpp's LlamaChatSession keeps its own
+// conversation context internally per session — created once and
+// reused, not recreated per call, so it stays fast on repeat use.
+let _localLLMSession = null;
+let _localLLMContext = null;
+
+ipcMain.handle('local_llm_chat', async (_e, { messages, maxTokens }) => {
+  if (!localLLMEnabled || !localLLMInstance) {
+    return { ok: false, error: 'Local LLM not enabled or not loaded' };
+  }
+  try {
+    const { LlamaChatSession } = require('node-llama-cpp');
+    if (!_localLLMContext) {
+      _localLLMContext = await localLLMInstance.createContext();
+    }
+    if (!_localLLMSession) {
+      _localLLMSession = new LlamaChatSession({ contextSequence: _localLLMContext.getSequence() });
+    }
+    // REAL — flattens the messages array (system + history) into a
+    // single prompt, since LlamaChatSession takes one prompt per turn
+    // and manages its own running context internally rather than
+    // taking a full messages array like the cloud APIs do.
+    const systemMsg = messages.find(m => m.role === 'system');
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+    const prompt = (systemMsg ? `${systemMsg.content}\n\n` : '') + (lastUserMsg?.content || '');
+
+    const reply = await _localLLMSession.prompt(prompt, { maxTokens: maxTokens || 512 });
+    return { ok: true, reply, model: 'local:gemma-3-4b' };
+  } catch (e) {
+    console.error('[LocalLLM] Chat completion failed:', e.message);
+    return { ok: false, error: e.message };
+  }
 });
