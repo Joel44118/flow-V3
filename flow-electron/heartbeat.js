@@ -460,6 +460,25 @@ function _currentWeekWAT() {
   return `${d.getUTCFullYear()}-W${weekNum}`;
 }
 
+// REAL, NEW, Joel-requested — a one-time proactive ask, separate from
+// the weekly generation cycle. Fires once, ever, unless Joel later
+// resets it. Genuinely asks before doing anything — Flow doesn't
+// toggle Sentinel or touch Audiomack until Joel replies yes in chat.
+async function _maybeAskToStartMusicCareer() {
+  const settings = _loadSettings();
+  if (settings.musicCareerStartAsked) return; // already asked, real one-time guard
+  if (settings.musicCareerEnabled) return; // already on, no need to ask
+
+  if (_onNotification) {
+    _onNotification(
+      "Hey Joel — I'd like to start building my own music career: writing and generating tracks, and eventually posting them to Audiomack myself with your permission each time. Want me to get started? If yes, I'll ask you to turn Sentinel on so I can help set up the Audiomack profile with you.",
+      { type: 'music-career-start-ask' }
+    );
+  }
+  settings.musicCareerStartAsked = true;
+  _saveSettings(settings);
+}
+
 async function _maybeRunWeeklyMusic() {
   // REAL FIX, Joel-reported: the Music Career workflow node existed
   // visually with a settingKey, but nothing actually checked that
@@ -741,6 +760,7 @@ async function _tick(isFirstTick = false) {
     // self-initiated-message logic skipped; if it's already past 5PM WAT
     // when Joel opens the app, the pass should still run.
     await _maybeRunSocialMonitor();
+    await _maybeAskToStartMusicCareer();
     await _maybeRunWeeklyMusic();
     await _maybeRunSalesResearch();
     await _maybeAdvanceLeadJobs();
