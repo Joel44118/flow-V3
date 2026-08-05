@@ -461,6 +461,16 @@ function _currentWeekWAT() {
 }
 
 async function _maybeRunWeeklyMusic() {
+  // REAL FIX, Joel-reported: the Music Career workflow node existed
+  // visually with a settingKey, but nothing actually checked that
+  // setting before running — the heartbeat fired on its own weekly
+  // clock regardless of the toggle. Now genuinely gated: if Joel
+  // hasn't toggled it on in the workflow canvas, this returns
+  // immediately and nothing runs, same real pattern as
+  // handsFreeVoiceEnabled already used elsewhere in this file.
+  const settings = _loadSettings();
+  if (!settings.musicCareerEnabled) return;
+
   const thisWeek = _currentWeekWAT();
   const state = _loadMusicState();
   if (state.lastRunWeek === thisWeek) return; // already ran this week, real guard
