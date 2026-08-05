@@ -50,6 +50,7 @@ let _scriptsLoaded = false;
 let _onTranscript = null;
 let _onStateChange = null;
 let _isFlowSpeaking = false; // real, tracks whether Flow's own TTS is currently playing, for barge-in
+let _pendingBargeIn = false; // REAL, NEW — tracks a debounced-but-not-yet-committed barge-in, so brief noise blips don't cut off Flow's reply
 
 function _loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -156,29 +157,46 @@ export async function setHandsFreeVoiceEnabled(enabled) {
         // applied here directly, vad-web's own real threshold knob.
         positiveSpeechThreshold: _sensitivity,
         onSpeechStart: () => {
-          // REAL, NEW — if lip-sync camera tracking is active (opted
-          // into via ui/full-voice-mode.js's lowest-sensitivity
-          // prompt), cross-check against the real mouth-activity
-          // signal. A closed, still mouth while audio VAD fires is a
-          // real, honest sign the trigger is probably background
-          // noise, not Joel actually talking — logged, not silently
-          // dropped, since this is a soft signal, not a hard gate.
+          // REAL, NEW — Joel-reported bug: any brief sound (a cough, a
+          // door, background noise) instantly cut off Flow's reply,
+          // because the SAME sensitivity threshold governed both
+          // "start listening normally" and "cancel Flow's own speech
+          // right now" — no distinction between the two, and no
+          // requirement that the sound actually be sustained speech
+          // before committing to an interrupt. Real fix: when Flow is
+          // speaking, don't cancel immediately — wait a short,
+          // deliberate window (280ms) to see if this is real, ongoing
+          // speech (onSpeechEnd hasn't already fired) before cutting
+          // him off. A blip that ends almost immediately never
+          // triggers the cancel at all. This is the actual mechanism
+          // real conversational voice products use to avoid false-
+          // positive barge-in — a genuine confirmation window, not
+          // just a higher fixed threshold (which would also make
+          // normal listening less accurate).
           import("./lip-sync-vad.js").then(({ isMouthActive, getMouthOpenScore }) => {
             if (getMouthOpenScore() > 0 && !isMouthActive()) {
               console.log("[HandsFreeVAD] Audio triggered but mouth isn't visibly active — likely background noise (proceeding anyway, this is a soft signal).");
             }
-          }).catch(() => {}); // lip-sync-vad not active — normal case when camera isn't on
+          }).catch(() => {});
 
-          // REAL barge-in — if Flow is mid-reply when you start talking
-          // again, cut his audio immediately so you're never stuck
-          // waiting him out.
           if (_isFlowSpeaking) {
-            _onStateChange?.("interrupted");
-            import("./speech.js").then(({ Speech }) => Speech.cancel()).catch(() => {});
+            _pendingBargeIn = true;
+            setTimeout(() => {
+              // Only actually interrupt if the speech signal is STILL
+              // active after the debounce window — onSpeechEnd (below)
+              // clears _pendingBargeIn immediately if it was just a
+              // brief blip, so this setTimeout becomes a no-op for
+              // anything that wasn't real, sustained speech.
+              if (_pendingBargeIn && _isFlowSpeaking) {
+                _onStateChange?.("interrupted");
+                import("./speech.js").then(({ Speech }) => Speech.cancel()).catch(() => {});
+              }
+            }, 280);
           }
           _onStateChange?.("listening");
         },
         onSpeechEnd: async (audioFloat32) => {
+          _pendingBargeIn = false; // REAL — a blip that already ended cannot still be a real interrupt; cancels the debounced barge-in above
           _onStateChange?.("thinking");
           try {
             const wavBlob = _float32ToWavBlob(audioFloat32);
