@@ -464,6 +464,19 @@ const FLOW_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'music_career_status',
+      // REAL, NEW — lets Flow answer "how'd last week's track do" or
+      // "what should the next track sound like" using the REAL
+      // tracked data from core/music-career.js (ratings, notes, style
+      // averages) — not an invented opinion. This is automation with
+      // memory, not Flow having feelings about its own music.
+      description: "Get real, tracked data about Flow's music career: past tracks, Joel's ratings/notes, and which style tags actually correlate with higher ratings. Use this when Joel asks how a track did, why one underperformed, or what direction to take next — answer FROM this real data, not from invented preference.",
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'describe_sentinel_view',
       // REAL, NEW — fixes Joel's reported bug: he asked "what can you
       // see on my screen" with Sentinel on, and Flow answered that it
@@ -717,6 +730,9 @@ async function executeFlowTool(toolName, args) {
     } catch (e) {
       return { handled: true, result: `Real error sending email: ${e.message}` };
     }
+  }
+  if (toolName === 'music_career_status') {
+    return { handled: false, clientAction: 'music_career_status', result: null };
   }
   if (toolName === 'describe_sentinel_view') {
     return { handled: false, clientAction: 'describe_sentinel_view', result: null };
