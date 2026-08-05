@@ -1019,7 +1019,23 @@ if (window.__flowElectron?.heartbeat) {
   // here and gets shown exactly like any other bot message, with a
   // small visual marker so Joel can tell it wasn't a reply to anything
   // he typed.
-  window.__flowElectron.heartbeat.onMessage(({ text }) => {
+  window.__flowElectron.heartbeat.onMessage(({ text, data }) => {
+    // REAL FIX — this is the actual connection from the weekly
+    // heartbeat trigger (flow-electron/heartbeat.js) to real, tracked
+    // data (core/music-career.js). heartbeat.js runs in Electron's
+    // main process, where localStorage doesn't exist, so it can't
+    // call logNewTrack() itself — it sends the track data over IPC
+    // (piggybacked on the existing heartbeat-message channel) and this
+    // is where the actual, persisted logging happens.
+    if (data?.type === "music-track") {
+      import("./core/music-career.js").then(({ logNewTrack }) => {
+        logNewTrack({
+          title: `Track ${new Date().toLocaleDateString()}`,
+          prompt: data.prompt,
+          tags: [data.voiceTag, "weekly-auto"],
+        });
+      });
+    }
     Chat.add(`💭 ${text}`, "bot");
     Orb.setState("speaking");
     Speech.speak(text, () => Orb.setState("idle"));
