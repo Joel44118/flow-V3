@@ -79,8 +79,27 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "GET") {
-    const { key } = req.query;
-    if (!key) return res.status(400).json({ error: "key required" });
+    // REAL, NEW — bulk read. Joel's real Vercel console logs showed
+    // boot firing 8 SEPARATE serverless invocations just to load
+    // memory (flow_pending_notifs, flow_level_state, flow_pin_hash,
+    // __sb_config, flow_memory, flow_profile, flow_facts, flow_notes)
+    // — a genuine, real contributor to hitting Hobby-plan usage
+    // limits (the 503-wall Joel hit). This single endpoint now
+    // supports ?keys=a,b,c to fetch all of them in ONE invocation,
+    // same as the bulk-write path already had. The single-key path
+    // below is left completely intact for anywhere that still calls
+    // it — nothing is removed, only added.
+    const { key, keys } = req.query;
+    if (keys) {
+      const keyList = keys.split(",").map(k => k.trim()).filter(Boolean);
+      try {
+        const values = await Promise.all(keyList.map(k => kvGet(k)));
+        const result = {};
+        keyList.forEach((k, i) => { result[k] = values[i]; });
+        return res.status(200).json({ values: result, kv: true });
+      } catch (e) { return res.status(500).json({ error: e.message }); }
+    }
+    if (!key) return res.status(400).json({ error: "key or keys required" });
     try {
       return res.status(200).json({ value: await kvGet(key), kv: true });
     } catch(e) { return res.status(500).json({ error: e.message }); }
