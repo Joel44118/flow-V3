@@ -554,6 +554,29 @@ setClientActionHandler(async (action, args) => {
     }
     return;
   }
+  if (action === "select_chrome_profile") {
+    if (!window.__flowElectron?.chromeProfiles) {
+      Chat.addError("Chrome profile selection isn't available — this only works in the Electron desktop app.");
+      return;
+    }
+    if (!args?.profileName) {
+      const result = await window.__flowElectron.chromeProfiles.list();
+      if (!result.ok) { Chat.addError(result.error); return; }
+      const names = result.profiles.map(p => p.name).join(", ");
+      Chat.add(`Here are your Chrome profiles: ${names}. Which one should I use for Audiomack?`, "bot");
+      return;
+    }
+    const listResult = await window.__flowElectron.chromeProfiles.list();
+    const match = listResult.profiles?.find(p => p.name.toLowerCase() === args.profileName.toLowerCase());
+    if (!match) {
+      Chat.add(`I couldn't find a profile named "${args.profileName}" — can you double check the name?`, "bot");
+      return;
+    }
+    const launchResult = await window.__flowElectron.chromeProfiles.launch(match.folderName, "https://audiomack.com/signup");
+    if (!launchResult.ok) { Chat.addError(launchResult.error); return; }
+    Chat.add(`Opening Chrome with your "${match.name}" profile at Audiomack's signup page.`, "bot");
+    return;
+  }
   if (action === "post_track_to_audiomack") {
     // REAL, Joel-requested — same real, confirmation-gated OS-control
     // path as run_recorded_skill above, hardcoded to the skill name
