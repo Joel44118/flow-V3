@@ -374,6 +374,143 @@ function _hashCapabilityMap(map) {
   return h.toString(36);
 }
 
+// REAL, NEW, Joel-requested — the actual agentic loop: screenshot,
+// reason about the ONE next action toward the goal, execute it,
+// screenshot again, repeat. Capped, narrated in chat every step (never
+// silent), and stoppable via a real floating button — not by trying to
+// catch a spoken "stop" mid-loop, since tonight's logs showed VAD/ASR
+// misfiring on background noise; a button is a mechanism Joel can
+// actually rely on.
+const AUTONOMOUS_MAX_STEPS = 15;
+let _autonomousCancelled = false;
+
+function _showStopButton() {
+  let btn = document.getElementById("autonomous-stop-btn");
+  if (btn) { btn.style.display = "block"; return; }
+  btn = document.createElement("button");
+  btn.id = "autonomous-stop-btn";
+  btn.textContent = "⏹ Stop Flow's task";
+  btn.style.cssText = "position:fixed;bottom:34px;right:16px;z-index:9500;background:rgba(220,38,38,0.9);color:#fff;border:none;border-radius:8px;padding:10px 16px;font-size:13px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.4);";
+  btn.addEventListener("click", () => { _autonomousCancelled = true; });
+  document.body.appendChild(btn);
+}
+function _hideStopButton() {
+  const btn = document.getElementById("autonomous-stop-btn");
+  if (btn) btn.style.display = "none";
+}
+
+async function _runAutonomousGoal(goal) {
+  if (!goal) { Chat.addError("I need an actual goal to work toward — try again with what you want done."); return; }
+  const bridge = window.__flowElectron?.sentinel;
+  if (!bridge) { Chat.addError("Autonomous control only works in the Electron desktop app."); return; }
+
+  let status;
+  try { status = await bridge.status(); } catch (e) { Chat.addError(`Couldn't check Sentinel status: ${e.message}`); return; }
+  if (!status?.enabled) {
+    Chat.add("Sentinel needs to be on for me to work toward this on my own — turn it on and ask me again.", "bot");
+    return;
+  }
+
+  _autonomousCancelled = false;
+  _showStopButton();
+  Chat.add(`🎯 Starting on: "${goal}". I'll narrate every step here — hit "Stop Flow's task" any time to cancel.`, "bot");
+
+  const history = []; // real record of what's actually been tried, fed back into every prompt so Flow doesn't repeat a failed click
+  let step = 0;
+
+  try {
+    while (step < AUTONOMOUS_MAX_STEPS) {
+      if (_autonomousCancelled) {
+        Chat.add(`⏹ Stopped at your request, ${step} step(s) in.`, "bot");
+        return;
+      }
+      step++;
+
+      const shot = await bridge.rawScreenshot();
+      if (!shot?.ok) { Chat.addError(`Couldn't see the screen (${shot?.error || "unknown error"}) — stopping here rather than guessing blind.`); return; }
+
+      const visionPrompt = [
+        `Goal: ${goal}`,
+        history.length ? `Actions taken so far: ${history.join(" | ")}` : "No actions taken yet.",
+        "",
+        "Look at this screenshot and decide the SINGLE next action to progress toward the goal.",
+        "Reply with EXACTLY ONE line, in ONE of these exact formats, nothing else:",
+        'CLICK x=<number> y=<number> reason="<short reason>"',
+        'SCROLL direction=<up|down> reason="<short reason>"',
+        'TYPE text="<exact text>" reason="<short reason>"',
+        'DONE reason="<what was accomplished>"',
+        'STUCK reason="<what is blocking progress, e.g. a CAPTCHA or login you cannot complete>"',
+      ].join("\n");
+
+      let visionRes;
+      try {
+        const r = await fetch("/api/vision", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: shot.image, prompt: visionPrompt }),
+        });
+        visionRes = await r.json();
+        if (!r.ok || !visionRes?.description) throw new Error(visionRes?.error || `status ${r.status}`);
+      } catch (e) {
+        Chat.addError(`Vision reasoning failed on step ${step}: ${e.message}. Stopping rather than guessing.`);
+        return;
+      }
+
+      const raw = visionRes.description.trim();
+      const clickMatch  = raw.match(/^CLICK\s+x=(\d+)\s+y=(\d+)\s+reason="([^"]*)"/i);
+      const scrollMatch = raw.match(/^SCROLL\s+direction=(up|down)\s+reason="([^"]*)"/i);
+      const typeMatch   = raw.match(/^TYPE\s+text="([^"]*)"\s+reason="([^"]*)"/i);
+      const doneMatch   = raw.match(/^DONE\s+reason="([^"]*)"/i);
+      const stuckMatch  = raw.match(/^STUCK\s+reason="([^"]*)"/i);
+
+      if (doneMatch) {
+        Chat.add(`✅ Done — ${doneMatch[1]}`, "bot");
+        return;
+      }
+      if (stuckMatch) {
+        // Real safety valve — Flow says so instead of hallucinating a
+        // click when it genuinely can't tell what to do next (a
+        // CAPTCHA, a login wall, anything it shouldn't push through).
+        Chat.add(`🛑 I'm stuck: ${stuckMatch[1]}. Over to you, boss.`, "bot");
+        return;
+      }
+
+      let execResult;
+      if (clickMatch) {
+        const [, x, y, reason] = clickMatch;
+        Chat.add(`Step ${step}: clicking (${x}, ${y}) — ${reason}`, "bot");
+        execResult = await bridge.replayExecute("click", Number(x), Number(y), null, null);
+        history.push(`clicked (${x},${y}) for "${reason}"`);
+      } else if (scrollMatch) {
+        const [, direction, reason] = scrollMatch;
+        Chat.add(`Step ${step}: scrolling ${direction} — ${reason}`, "bot");
+        execResult = await bridge.replayExecute("scroll", null, null, null, direction);
+        history.push(`scrolled ${direction} for "${reason}"`);
+      } else if (typeMatch) {
+        const [, text, reason] = typeMatch;
+        Chat.add(`Step ${step}: typing "${text}" — ${reason}`, "bot");
+        execResult = await bridge.replayExecute("type", null, null, text, null);
+        history.push(`typed "${text}" for "${reason}"`);
+      } else {
+        // Real safety valve — an unparseable reply means the model
+        // didn't follow the format, not that it's safe to guess an
+        // action from free text.
+        Chat.addError(`Got an unparseable response on step ${step}, stopping rather than guessing: "${raw.slice(0, 120)}"`);
+        return;
+      }
+
+      if (!execResult?.ok) {
+        Chat.addError(`Step ${step} failed to execute (${execResult?.error || "unknown"}) — stopping rather than continuing blind.`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1200)); // real, lets the page actually settle before the next screenshot
+    }
+    Chat.add(`⏸ Hit the ${AUTONOMOUS_MAX_STEPS}-step safety cap without finishing — didn't want to keep going unsupervised past that. Want me to continue?`, "bot");
+  } finally {
+    _hideStopButton();
+  }
+}
+
 // REAL, NEW — named (was an inline anonymous function) so the Skills
 // tray's Run button can dispatch through the exact same real handler
 // instead of duplicating logic.
@@ -514,6 +651,10 @@ async function handleClientAction(action, args) {
     } catch (e) {
       Chat.addError(`Couldn't describe your screen: ${e.message}`);
     }
+    return;
+  }
+  if (action === "run_autonomous_goal") {
+    await _runAutonomousGoal(args?.goal);
     return;
   }
   if (action === "sentinel_control") {
