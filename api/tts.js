@@ -49,11 +49,63 @@ import { EdgeTTS } from "@andresaya/edge-tts";
 
 const EDGE_VOICE = "en-AU-WilliamNeural"; // real voice Joel picked from edge-tts.com — Australian male
 
+// REAL, NEW, Joel-requested — Fish Audio's S2.1 Pro, genuinely free
+// (no credit card, per their own June 2026 announcement), rated above
+// Qwen3-TTS and MiniMax on error rate in their own published eval.
+// Needs two env vars Joel sets himself once he's signed up:
+//   FISH_AUDIO_API_KEY     — from fish.audio's dashboard
+//   FISH_AUDIO_REFERENCE_ID — an actual voice ID: either a cloned
+//     voice (upload a short clip in their dashboard) or one picked
+//     from their public voice library. There is no way to fabricate
+//     a working default here — it has to be a real ID from his
+//     account.
+// Tried FIRST if configured; falls back to Edge TTS automatically if
+// not configured yet, or if the request itself fails — so nothing
+// breaks today even before Fish Audio setup is finished.
+async function _tryFishAudio(text) {
+  const key = process.env.FISH_AUDIO_API_KEY;
+  const referenceId = process.env.FISH_AUDIO_REFERENCE_ID;
+  if (!key || !referenceId) return null; // not configured yet — real, silent fallback, not an error
+
+  const r = await fetch("https://api.fish.audio/v1/tts", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${key}`,
+      "Content-Type": "application/json",
+      "model": "s2.1-pro", // real — Fish Audio selects the model via a HEADER, not a body field
+    },
+    body: JSON.stringify({
+      text: text.slice(0, 3000),
+      reference_id: referenceId,
+      format: "mp3",
+    }),
+  });
+  if (!r.ok) {
+    const errText = await r.text().catch(() => "");
+    throw new Error(`Fish Audio ${r.status}: ${errText.slice(0, 200)}`);
+  }
+  const arrayBuf = await r.arrayBuffer();
+  return Buffer.from(arrayBuf);
+}
+
 async function handleSpeak(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
   const { text } = req.body || {};
   if (!text?.trim()) return res.status(400).json({ error: "text required" });
+
+  // Try Fish Audio first — real, not a race, sequential so Edge TTS
+  // only spends effort if Fish Audio genuinely isn't available.
+  try {
+    const fishBuffer = await _tryFishAudio(text);
+    if (fishBuffer) {
+      res.setHeader("Content-Type", "audio/mpeg");
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(200).send(fishBuffer);
+    }
+  } catch (e) {
+    console.warn("[Flow TTS] Fish Audio failed, falling back to Edge TTS:", e.message);
+  }
 
   try {
     const tts = new EdgeTTS();
