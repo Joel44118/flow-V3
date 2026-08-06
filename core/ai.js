@@ -465,6 +465,17 @@ export async function sendMessage(overrideText, opts = {}) {
           const data2 = await res2.json();
           if (res2.ok && data2.reply) {
             data.reply = stripFlowThink(data2.reply); // real, grounded reply replaces the original tool-call stub
+          } else if (!res2.ok) {
+            // REAL BUG FIX: this branch used to just fall through silently
+            // when the follow-up came back not-ok (e.g. the exact "All
+            // providers failed" 502 seen repeatedly tonight) — data.reply
+            // stayed whatever the original empty tool-call stub was, with
+            // no error and no reason shown. That's the direct cause of the
+            // generic "something went wrong" catch-all further down
+            // instead of the real, specific failure. Surfacing the actual
+            // reason here instead.
+            console.warn("[Flow] Tool follow-up came back not-ok:", data2.error || res2.status);
+            data.reply = `I got your data back, but couldn't turn it into a real answer — the AI providers failed on that follow-up call (${data2.error || `status ${res2.status}`}). Try asking again in a moment.`;
           }
         } catch (e) {
           console.warn("[Flow] Tool follow-up round-trip failed:", e.message);
@@ -654,7 +665,13 @@ export async function sendToAI(text) {
             body:    JSON.stringify({ messages: followUpMessages, max_tokens: CONFIG.MAX_TOKENS }),
           });
           const data2 = await res2.json();
-          if (res2.ok && data2.reply) data.reply = stripFlowThink(data2.reply);
+          if (res2.ok && data2.reply) {
+            data.reply = stripFlowThink(data2.reply);
+          } else if (!res2.ok) {
+            // Same real bug fix as sendMessage above.
+            console.warn("[Flow] Tool follow-up came back not-ok:", data2.error || res2.status);
+            data.reply = `I got your data back, but couldn't turn it into a real answer — the AI providers failed on that follow-up call (${data2.error || `status ${res2.status}`}). Try asking again in a moment.`;
+          }
         } catch (e) {
           console.warn("[Flow] Tool follow-up round-trip failed:", e.message);
         }
