@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "telegram": "^2.26.22",
-    "@andresaya/edge-tts": "^1.8.0"
+    "@andresaya/edge-tts": "^1.8.0",
+    "@gradio/client": "^1.5.0"
   }
 }
