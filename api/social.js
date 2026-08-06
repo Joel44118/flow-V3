@@ -3507,6 +3507,16 @@ async function handleLeadJobAdvance(req, res) {
 
   const job = await _loadLeadJob(jobId);
   if (!job) return res.status(200).json({ ok: false, error: 'Job not found.' });
+  // REAL FIX — same gap as handleLeadJobStatus: this endpoint is what
+  // the Leads tab's live polling actually calls (not lead-job-status),
+  // so it needed the exact same guard. Without it, a status-less
+  // legacy record fell through every status check below and still
+  // came back as ok:true, done:true — the actual root cause of the
+  // "corrupted" message showing up mid-poll, not just on reopen.
+  if (!job.status) {
+    console.warn(`[LeadJob] Job ${jobId} found but missing status during advance — likely an incompatible pre-rebuild record.`);
+    return res.status(200).json({ ok: false, error: 'This job record is from an older, incompatible version — starting fresh.' });
+  }
 
   try {
     if (job.status === 'scraping_emails') {
@@ -3640,6 +3650,17 @@ async function handleLeadJobStatus(req, res) {
   if (!jobId) return res.status(200).json({ ok: false, error: 'Missing jobId.' });
   const job = await _loadLeadJob(jobId);
   if (!job) return res.status(200).json({ ok: false, error: 'Job not found.' });
+  // REAL FIX — a job record with no `status` isn't "corrupted", it's
+  // most likely a stale localStorage jobId pointing at a record from
+  // BEFORE the resumable-job-pipeline rebuild, where this field didn't
+  // exist yet. Returning ok:false here (instead of ok:true with a
+  // broken shape) lets the client's own existing terminal-status check
+  // route straight to a fresh form, instead of ever reaching the
+  // scarier client-side "corrupted" fallback message.
+  if (!job.status) {
+    console.warn(`[LeadJob] Job ${jobId} found but missing status — likely an incompatible pre-rebuild record. Treating as not found.`);
+    return res.status(200).json({ ok: false, error: 'This job record is from an older, incompatible version — starting fresh.' });
+  }
   return res.status(200).json({ ok: true, job });
 }
 
