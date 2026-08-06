@@ -3372,12 +3372,30 @@ const LEAD_JOB_KEY = (id) => `flow_lead_job_${id}`;
 const LEAD_JOB_INDEX_KEY = () => `flow_lead_job_index`;
 
 async function _saveLeadJob(jobId, job) {
-  if (!KV_URL || !KV_KEY) return;
-  await fetch(`${KV_URL}/set/${LEAD_JOB_KEY(jobId)}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: JSON.stringify(job) }),
-  }).catch(() => {});
+  if (!KV_URL || !KV_KEY) return false;
+  // REAL BUG FIX: this used to be `.catch(() => {})` — a save failure
+  // (KV rate limit, network blip, anything) was silently swallowed,
+  // and every caller kept going as if it had succeeded, reporting
+  // ok:true to the client while nothing was actually persisted. That's
+  // a real, honest candidate for tonight's "job reads back wrong"
+  // symptom: the in-memory job the client saw was fine, but storage
+  // silently fell behind it. Now returns real success/failure so
+  // callers can actually know.
+  try {
+    const r = await fetch(`${KV_URL}/set/${LEAD_JOB_KEY(jobId)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: JSON.stringify(job) }),
+    });
+    if (!r.ok) {
+      console.error(`[LeadJob] Save failed for ${jobId}: KV returned ${r.status}`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error(`[LeadJob] Save threw for ${jobId}:`, e.message);
+    return false;
+  }
 }
 
 async function _loadLeadJob(jobId) {
@@ -3527,7 +3545,8 @@ async function handleLeadJobAdvance(req, res) {
           ? `✅ Done — found ${job.leads.length} real contact email${job.leads.length === 1 ? '' : 's'} out of ${job.businesses.length} businesses. Tell Flow what the outreach should say.`
           : `⚠️ Scraped all ${job.businesses.length} businesses but found no usable contact emails.`;
         job.updatedAt = Date.now();
-        await _saveLeadJob(jobId, job);
+        const saved1 = await _saveLeadJob(jobId, job);
+        if (!saved1) return res.status(200).json({ ok: false, error: 'Save to storage failed — try again rather than trusting this result.' });
         return res.status(200).json({ ok: true, job, done: true });
       }
 
@@ -3556,7 +3575,8 @@ async function handleLeadJobAdvance(req, res) {
       job.scrapedCount += 1;
       job.currentStep = `🔎 Scraped ${job.scrapedCount}/${job.businesses.length} — ${job.leads.length} email${job.leads.length === 1 ? '' : 's'} found so far...`;
       job.updatedAt = Date.now();
-      await _saveLeadJob(jobId, job);
+      const saved2 = await _saveLeadJob(jobId, job);
+      if (!saved2) return res.status(200).json({ ok: false, error: 'Save to storage failed — try again rather than trusting this result.' });
       return res.status(200).json({ ok: true, job, done: false });
     }
 
