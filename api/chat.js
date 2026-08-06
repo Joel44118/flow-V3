@@ -464,6 +464,27 @@ const FLOW_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'run_autonomous_goal',
+      // REAL, NEW, Joel-requested — this is the actual agentic loop:
+      // screenshot -> reasoning -> one action -> screenshot again ->
+      // repeat, until the goal is met or a real safety cap is hit.
+      // ONLY call this when Joel has explicitly stated a goal AND
+      // confirmed Sentinel is on. Never call this proactively or
+      // silently — every step narrates itself in chat, and Joel can
+      // say "stop" at any point to cancel mid-loop.
+      description: "Starts a real autonomous goal loop: Flow takes a screenshot, decides the single next click/scroll/type action toward the stated goal, executes it, takes a new screenshot, and repeats — narrating every step in chat — until the goal is done, a real safety cap is hit (15 steps), or Joel says stop. Requires Sentinel to already be on. Use for genuinely open-ended 'get this done on screen' goals, not for a single known action (use sentinel_control directly for those).",
+      parameters: {
+        type: 'object',
+        properties: {
+          goal: { type: 'string', description: "Plain description of what Joel wants accomplished, e.g. 'log into Audiomack and go to the upload page'." },
+        },
+        required: ['goal'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'select_chrome_profile',
       // REAL, NEW, Joel-requested — part of the Audiomack account
       // setup flow. Reads Joel's ACTUAL Chrome profile names (from
@@ -769,6 +790,9 @@ async function executeFlowTool(toolName, args) {
     } catch (e) {
       return { handled: true, result: `Real error sending email: ${e.message}` };
     }
+  }
+  if (toolName === 'run_autonomous_goal') {
+    return { handled: false, clientAction: 'run_autonomous_goal', clientArgs: { goal: args?.goal }, result: null };
   }
   if (toolName === 'select_chrome_profile') {
     return { handled: false, clientAction: 'select_chrome_profile', clientArgs: { profileName: args?.profileName }, result: null };
