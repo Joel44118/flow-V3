@@ -40,6 +40,7 @@ import { initChatTray, openChatTray } from "./ui/chat-tray.js";
 import { initSettings } from "./ui/settings.js";
 import { initLocalLLMUI } from "./ui/local-llm.js";
 import { initDockReveal } from "./ui/dock-reveal.js";
+import { initSkillsTray } from "./ui/skills-tray.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -373,7 +374,10 @@ function _hashCapabilityMap(map) {
   return h.toString(36);
 }
 
-setClientActionHandler(async (action, args) => {
+// REAL, NEW — named (was an inline anonymous function) so the Skills
+// tray's Run button can dispatch through the exact same real handler
+// instead of duplicating logic.
+async function handleClientAction(action, args) {
   if (action === "open_camera") {
     Chat.add("📷 Opening the camera to take a look...", "bot");
     Camera.start();
@@ -415,11 +419,20 @@ setClientActionHandler(async (action, args) => {
         try {
           const { events } = await window.__flowElectron.osControl.getLastRecording();
           if (events?.length) {
-            Chat.add("📼 Got it — turning that into a replayable skill...", "bot");
+            // REAL BUG FIX: this used to hardcode "last_action" every
+            // single time, meaning every new recording silently
+            // overwrote the previous one — there was never any real
+            // way to have more than one saved skill at once, which
+            // broke the entire point of a named skills list. Now
+            // genuinely asks for a name, with a timestamp-based
+            // fallback if Joel skips the prompt so nothing is lost.
+            const skillName = window.prompt("Name this skill (e.g. 'post-to-audiomack'):", "") || `skill_${Date.now()}`;
+            Chat.add(`📼 Got it — turning that into a replayable skill named "${skillName}"...`, "bot");
             const { generalizeRecording } = await import("./ui/skill-generalizer.js");
-            const skill = await generalizeRecording({ events }, "last_action");
+            const skill = await generalizeRecording({ events }, skillName);
             await window.__flowElectron.osControl.saveSkill(skill);
-            Chat.add(`✅ Saved as "last_action" — say "do what I just did" and I'll replay it (you'll get a real confirmation preview first).`, "bot");
+            Chat.add(`✅ Saved as "${skillName}" — say "run ${skillName}" or use it from the Skills tray, and I'll replay it (real confirmation preview first).`, "bot");
+            window.dispatchEvent(new CustomEvent("flow:skills-updated")); // real, tells the skills tray to refresh
           }
         } catch (e) {
           Chat.addError(`Couldn't turn that recording into a skill: ${e.message}`);
@@ -753,7 +766,8 @@ setClientActionHandler(async (action, args) => {
       return `Couldn't check for updates (${e.message}) — tell Joel the check failed rather than guessing either way.`;
     }
   }
-});
+}
+setClientActionHandler(handleClientAction);
 
 const visionObj = { Camera, ScreenVision, YOLO, Gesture };
 initVision(Chat, Orb, sendMessage);
@@ -797,14 +811,27 @@ initWorkflowTray();
 initChatTray();
 initSettings();
 initLocalLLMUI(); // REAL FIX — this was never actually wired in before; ui/local-llm.js existed as a file but nothing called it
+initSkillsTray(); // REAL, NEW, Joel-requested — one-click list of recorded skills, hover-reveal like the other tabs
+
+// REAL, NEW — the Skills tray's Run button dispatches this instead of
+// calling run_recorded_skill directly, so it goes through the exact
+// same client-action dispatcher (and therefore the same real
+// confirmation-preview safety step) as a spoken/typed "run X" request
+// — a UI shortcut, not a safety bypass.
+window.addEventListener("flow:run-skill", (e) => {
+  handleClientAction("run_recorded_skill", { skillName: e.detail.skillName });
+});
+
 // REAL FIX — same mistake as local-llm.js above: dock-reveal.js was
 // created but never actually imported/called, so nothing happened by
 // default no matter what. Real selectors found by tracing each
 // module's own tab creation code: #leads-tray-tab, #workflow-tray-tab,
 // #content-lab-tray-tab. Delayed slightly so these elements exist in
-// the DOM first (each module builds its own tab lazily).
+// the DOM first (each module builds its own tab lazily). Skills tray
+// added to the same list per Joel's explicit request — same hover-
+// reveal behavior as the others, not a separate always-visible button.
 setTimeout(() => {
-  initDockReveal(["#leads-tray-tab", "#workflow-tray-tab", "#content-lab-tray-tab"]);
+  initDockReveal(["#leads-tray-tab", "#workflow-tray-tab", "#content-lab-tray-tab", "#skills-tray-tab"]);
 }, 500);
 setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray, openWorkflowTray);
 
