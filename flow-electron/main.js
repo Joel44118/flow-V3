@@ -1084,7 +1084,11 @@ ipcMain.handle('sentinel_replay_execute', (_e, { action, x, y, text, direction }
         robot?.typeString(text || '');
         return { ok: true };
       case 'scroll': {
-        const lines = 4;
+        // REAL BUG FIX: 4 lines is small enough to be visually
+        // imperceptible on most displays — likely why scroll
+        // "succeeded" (ok:true) but Joel never saw anything move.
+        // Bumped to a genuinely visible default.
+        const lines = 10;
         const map = { up: [0, -lines], down: [0, lines] };
         const [dx, dy] = map[direction] || [0, lines];
         robot?.scrollMouse(dx, dy);
