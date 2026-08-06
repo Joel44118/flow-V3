@@ -608,6 +608,13 @@ ipcMain.handle('flow_save_skill', async (event, skill) => {
   return saveSkill(skill);
 });
 
+// REAL, NEW, Joel-requested — lets the skills tray UI actually delete
+// a named skill.
+ipcMain.handle('flow_delete_skill', async (event, name) => {
+  const { deleteSkill } = require('./skill-store.js');
+  return deleteSkill(name);
+});
+
 // REAL, NEW — direct, low-risk OS actions. Minimize/restore just use
 // Electron's own window API (no robotjs, no automation risk at all).
 // open_app spawns a real OS-level "open this program" command —
