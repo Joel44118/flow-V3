@@ -309,7 +309,18 @@ async function _pollAndAdvance(body) {
       body: JSON.stringify({ jobId: _activeJobId }),
     });
     const data = await res.json();
-    if (!data.ok) { _log("advance returned not-ok (non-fatal):", data.error); return; }
+    if (!data.ok) {
+      // REAL FIX — this used to just log and return, leaving polling
+      // running forever against a job that will never succeed (e.g.
+      // the incompatible-old-record case). Now it actually stops and
+      // resets, same as the corrupted-record path already did.
+      _log("advance returned not-ok, stopping and resetting:", data.error);
+      _stopPolling();
+      _saveActiveJobId(null);
+      _activeJobId = null;
+      _renderInputForm(body);
+      return;
+    }
     _renderJob(body, data.job);
     if (['complete', 'failed', 'no_leads_found', 'awaiting_reachout_instructions'].includes(data.job.status)) {
       _stopPolling();
