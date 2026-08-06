@@ -1158,7 +1158,6 @@ async function tryNvidia(messages, intent, key) {
   // helper. NVIDIA's NIM endpoint is OpenAI-compatible, same contract.
   const model     = NV_MODELS[intent] || NV_MODELS.chat;
   const maxTokens = NV_TOKENS[intent] || 600;
-  const isUltra   = model === 'nvidia/nemotron-3-ultra-550b-a55b';
   const headers = { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };
 
   try {
@@ -1166,10 +1165,18 @@ async function tryNvidia(messages, intent, key) {
       url: 'https://integrate.api.nvidia.com/v1/chat/completions',
       headers, model, maxTokens, messages, intent,
       providerLabel: 'NVIDIA', timeoutMs: 10000,
-      // Nemotron 3 Ultra defaults to a reasoning/thinking mode per
-      // NVIDIA's own docs — explicitly disabled to keep the full
-      // max_tokens budget for the visible reply, same real fix as before.
-      extraBody: isUltra ? { stream: false, chat_template_kwargs: { enable_thinking: false } } : { stream: false },
+      // REAL BUG FIX, Joel-reported: this used to only disable
+      // reasoning mode for Ultra. NVIDIA's own docs confirm Nemotron 3
+      // SUPER (the model actually used for every real reply per
+      // tonight's logs — Ultra never shows up) ALSO defaults to
+      // reasoning ON whenever enable_thinking isn't explicitly set.
+      // With a 600-token budget, the model could burn the entire
+      // response on invisible reasoning tokens before ever producing
+      // the actual tool call or reply — the real, well-evidenced cause
+      // of widespread empty responses across many different tools, not
+      // just the two I patched around the symptom earlier. Both
+      // variants now explicitly get enable_thinking: false.
+      extraBody: { stream: false, chat_template_kwargs: { enable_thinking: false } },
     });
   } catch (e) {
     console.warn(`[Flow] NVIDIA ${e.message}`);
