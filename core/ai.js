@@ -29,6 +29,14 @@ const ACTION_TOOLS_WITH_OWN_CONFIRMATION = new Set([
   "toggle_sentinel", "toggle_full_voice_mode", "run_recorded_skill",
   "perform_os_action", "sentinel_control", "open_notepad",
   "generate_image", "post_to_bluesky", "open_content_lab",
+  // REAL BUG FIX, Joel-reported: these two were added tonight and both
+  // give their own confirmation via Chat.add() (same pattern as the
+  // tools above), but were never added here — so every no-text call to
+  // either fell straight into the generic "something went wrong"
+  // message instead of correctly recognizing the action already spoke
+  // for itself. This is the direct, concrete cause of that message
+  // showing up during tonight's Chrome-profile-picking exchange.
+  "select_chrome_profile", "run_autonomous_goal",
 ]);
 import { Speech }        from "./speech.js";
 import { RAG }           from "./rag.js";
