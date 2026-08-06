@@ -908,6 +908,22 @@ ipcMain.handle('sentinel_raw_screenshot', async () => {
   return { ok: true, image: b64 };
 });
 
+// REAL — re-adding this. It was built earlier this session but lost
+// when main.js got re-fetched fresh from GitHub before Joel had
+// uploaded anything, so the file on disk never actually had it. Reuses
+// the already-working captureScreenshotBase64() + askVisionAPI()
+// helpers above rather than duplicating that logic — this is genuinely
+// just those two combined with a "what can you see" framing, for
+// Joel's "what's on my screen right now" style questions.
+ipcMain.handle('sentinel_describe_view', async () => {
+  const b64 = await captureScreenshotBase64();
+  if (!b64) return { ok: false, error: 'Screenshot failed' };
+  const result = await askVisionAPI(b64, 'Describe what is currently visible on this screen in 2-3 concise, plain sentences. Focus on anything actionable or notable — open windows, key content, anything that looks like it needs attention.');
+  if (result && typeof result === 'object' && result.error) return { ok: false, error: result.error };
+  if (!result) return { ok: false, error: 'Vision analysis returned nothing usable.' };
+  return { ok: true, description: result };
+});
+
 // REAL, NEW, Joel-requested — Chrome profile picker for the Audiomack
 // setup flow. Chrome does NOT store profile display names in the
 // folder names (folders are literally "Default", "Profile 1",
