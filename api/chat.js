@@ -911,6 +911,7 @@ async function tryCerebras(messages, intent, key) {
   const chain = CB_MODELS[intent] || CB_MODELS.chat;
   const headers = { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };
 
+  let lastError = 'no models attempted';
   for (const { model, maxTokens } of chain) {
     try {
       return await _chatWithToolSupport({
@@ -919,11 +920,16 @@ async function tryCerebras(messages, intent, key) {
         providerLabel: 'Cerebras', timeoutMs: 7000,
       });
     } catch (e) {
-      if (e.message === 'rate limit') { console.warn(`[Flow] Cerebras rate limit: ${model}`); continue; }
+      if (e.message === 'rate limit') { console.warn(`[Flow] Cerebras rate limit: ${model}`); lastError = `${model}: rate limit`; continue; }
       console.warn(`[Flow] Cerebras ${model}: ${e.message}`);
+      lastError = `${model}: ${e.message}`;
     }
   }
-  throw new Error('Cerebras: all models failed');
+  // REAL FIX: was 'Cerebras: all models failed' — swallowed the actual
+  // reason (auth, quota, timeout, etc.), already captured above in
+  // console.warn but never reaching the thrown error, so it never
+  // reached the browser. Now it does.
+  throw new Error(`Cerebras: all models failed (${lastError})`);
 }
 
 // ── 2. OPENROUTER — Nemotron 3 Ultra for coding, as NVIDIA-direct backup ──
@@ -982,6 +988,7 @@ async function tryOpenRouter(messages, intent, key) {
     'X-Title':       'Flow V3',
   };
 
+  let lastError = 'no models attempted';
   for (const model of models) {
     try {
       return await _chatWithToolSupport({
@@ -992,9 +999,10 @@ async function tryOpenRouter(messages, intent, key) {
       });
     } catch (e) {
       console.warn(`[Flow] OR ${model}: ${e.message}`);
+      lastError = `${model}: ${e.message}`;
     }
   }
-  throw new Error('OpenRouter: all models failed');
+  throw new Error(`OpenRouter: all models failed (${lastError})`);
 }
 
 // ── 3. GROQ ───────────────────────────────────────────────────────────────
@@ -1040,6 +1048,7 @@ async function tryGroq(messages, intent, key) {
   const chain = GROQ_MODELS[intent] || GROQ_MODELS.chat;
   const headers = { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };
 
+  let lastError = 'no models attempted';
   for (const { model, maxTokens } of chain) {
     try {
       return await _chatWithToolSupport({
@@ -1050,9 +1059,10 @@ async function tryGroq(messages, intent, key) {
       });
     } catch (e) {
       console.warn(`[Flow] Groq ${model}: ${e.message}`);
+      lastError = `${model}: ${e.message}`;
     }
   }
-  throw new Error('Groq: all models failed');
+  throw new Error(`Groq: all models failed (${lastError})`);
 }
 
 // ── 4. HUGGINGFACE ────────────────────────────────────────────────────────
@@ -1068,6 +1078,7 @@ async function tryHuggingFace(messages, intent, token) {
   const maxTokens = intent === 'code' ? 1200 : 400;
   const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 
+  let lastError = 'no models attempted';
   for (const model of HF_MODELS) {
     try {
       return await _chatWithToolSupport({
@@ -1077,9 +1088,10 @@ async function tryHuggingFace(messages, intent, token) {
       });
     } catch (e) {
       console.warn(`[Flow] HF ${model}: ${e.message}`);
+      lastError = `${model}: ${e.message}`;
     }
   }
-  throw new Error('HF: all models cold or failed');
+  throw new Error(`HF: all models cold or failed (${lastError})`);
 }
 
 // ── HANDLER ───────────────────────────────────────────────────────────────
