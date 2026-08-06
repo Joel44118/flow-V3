@@ -1366,7 +1366,12 @@ ipcMain.handle('local_llm_set_enabled', async (_e, enabled) => {
   // isn't a text-only downgrade from the online providers.
   if (localLLMEnabled && !localLLMInstance && fsSync.existsSync(LOCAL_LLM_PATH)) {
     try {
-      const { getLlama } = require('node-llama-cpp');
+      // REAL BUG FIX, Joel-reported crash: node-llama-cpp is pure ESM
+      // (same class of issue as active-win earlier this session) —
+      // require() of an ESM module throws exactly the error Joel saw.
+      // Dynamic import() works from CommonJS regardless of the target
+      // module's type, which require() cannot do.
+      const { getLlama } = await import('node-llama-cpp');
       const llama = await getLlama();
       localLLMInstance = await llama.loadModel({ modelPath: LOCAL_LLM_PATH });
     } catch (e) {
@@ -1393,7 +1398,7 @@ ipcMain.handle('local_llm_chat', async (_e, { messages, maxTokens }) => {
     return { ok: false, error: 'Local LLM not enabled or not loaded' };
   }
   try {
-    const { LlamaChatSession } = require('node-llama-cpp');
+    const { LlamaChatSession } = await import('node-llama-cpp'); // same ESM fix as above
     if (!_localLLMContext) {
       _localLLMContext = await localLLMInstance.createContext();
     }
