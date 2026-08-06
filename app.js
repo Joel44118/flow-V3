@@ -524,7 +524,12 @@ setClientActionHandler(async (action, args) => {
       return;
     }
     try {
+      // REAL, NEW — Joel needs to actually SEE what the model sent to
+      // tell apart "model didn't call this right" from "OS action
+      // didn't visibly do anything" — this was previously invisible.
+      console.log("[Sentinel Control] dispatching:", args?.action, args?.direction, args?.x, args?.y);
       const result = await bridge.replayExecute(args?.action, args?.x, args?.y, args?.text, args?.direction);
+      console.log("[Sentinel Control] result:", result);
       if (!result?.ok) { Chat.addError(result?.error || "Couldn't perform that action."); return; }
       const _labels = { click: "Clicked.", move: "Moved.", scroll: `Scrolled ${args?.direction || ""}.`, type: "Typed." };
       Chat.add(_labels[args?.action] || "Done.", "bot");
