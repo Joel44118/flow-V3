@@ -310,15 +310,21 @@ async function _pollAndAdvance(body) {
     });
     const data = await res.json();
     if (!data.ok) {
-      // REAL FIX — this used to just log and return, leaving polling
-      // running forever against a job that will never succeed (e.g.
-      // the incompatible-old-record case). Now it actually stops and
-      // resets, same as the corrupted-record path already did.
-      _log("advance returned not-ok, stopping and resetting:", data.error);
-      _stopPolling();
-      _saveActiveJobId(null);
-      _activeJobId = null;
-      _renderInputForm(body);
+      // REAL FIX: not every ok:false means the job is unrecoverable.
+      // A transient save failure (KV blip, rate limit) should just
+      // retry on the next poll — resetting to a blank form here would
+      // throw away a perfectly good in-progress job over a one-off
+      // network hiccup. Only a genuinely incompatible record (the
+      // specific case the server already identifies) should reset.
+      if (data.error === 'This job record is from an older, incompatible version — starting fresh.') {
+        _log("advance returned incompatible record, resetting:", data.error);
+        _stopPolling();
+        _saveActiveJobId(null);
+        _activeJobId = null;
+        _renderInputForm(body);
+      } else {
+        _log("advance returned not-ok (transient, will retry next poll):", data.error);
+      }
       return;
     }
     _renderJob(body, data.job);
