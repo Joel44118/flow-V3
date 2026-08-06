@@ -1255,9 +1255,31 @@ const LOCAL_LLM_URL = 'https://huggingface.co/google/gemma-3-4b-it-GGUF/resolve/
 let localLLMEnabled = false;
 let localLLMInstance = null; // holds the loaded node-llama-cpp model once enabled
 
+// REAL, expected size of the actual Gemma 3 4B Q4_K_M GGUF — a genuine
+// complete download lands right around 2.5GB. Used purely as a floor
+// to catch a stale PARTIAL file, not an exact-match requirement.
+const LOCAL_LLM_MIN_BYTES = 2_000_000_000; // 2GB — well below the real ~2.5GB file, well above any realistic partial
+
 ipcMain.handle('local_llm_status', () => {
-  const downloaded = fsSync.existsSync(LOCAL_LLM_PATH);
-  return { downloaded, enabled: localLLMEnabled && downloaded };
+  // REAL BUG FIX, Joel-reported: the UI kept showing "Downloaded" even
+  // though the model wasn't actually usable on his machine. Root
+  // cause: existsSync() alone can't tell a complete file apart from a
+  // PARTIAL one left behind by a failed download attempt from BEFORE
+  // this session's byte-verification fix existed — that fix only
+  // guards FUTURE downloads, it doesn't retroactively clean up an
+  // already-broken file sitting at the same path. Now checks real
+  // file SIZE, not just presence, and deletes a stale partial outright
+  // so the next download attempt starts clean instead of silently
+  // reusing the broken file.
+  if (!fsSync.existsSync(LOCAL_LLM_PATH)) return { downloaded: false, enabled: false };
+  let size = 0;
+  try { size = fsSync.statSync(LOCAL_LLM_PATH).size; } catch (_) { /* treat as absent below */ }
+  if (size < LOCAL_LLM_MIN_BYTES) {
+    console.warn(`[LocalLLM] Found a partial/stale file (${size} bytes, expected ~2.5GB) — deleting so the next download starts clean.`);
+    fsSync.unlink(LOCAL_LLM_PATH, () => {});
+    return { downloaded: false, enabled: false };
+  }
+  return { downloaded: true, enabled: localLLMEnabled };
 });
 
 ipcMain.handle('local_llm_download', async (event) => {
