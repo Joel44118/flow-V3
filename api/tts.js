@@ -26,7 +26,15 @@
 // reaches the browser.
 
 import { EdgeTTS } from "@andresaya/edge-tts";
-import { Client } from "@gradio/client"; // ACE-Step music generation — merged here to stay within Vercel's 12-function limit (see routing note below)
+// REAL FIX, root cause of tonight's total TTS outage: @gradio/client was
+// a top-level import for the music-generation route added last session,
+// but the package was never actually added to package.json. A missing
+// top-level import throws at MODULE LOAD, which crashes this entire
+// file — not just the music-generate action, but the plain Edge TTS
+// speak route and the Deepgram token route too, since Vercel loads the
+// whole file per invocation. Switched to a dynamic import inside the
+// music-generate handler itself, so a problem with that one dependency
+// can only ever break that one action, never the others.
 
 // REAL, HONEST NOTE FOR WHOEVER DEBUGS THIS NEXT: unlike ElevenLabs
 // (a plain HTTPS fetch() call), @andresaya/edge-tts opens a real
@@ -164,6 +172,7 @@ async function handleMusicGenerate(req, res) {
   if (!token) return res.status(500).json({ error: "HF_TOKEN not set in Vercel env vars" });
 
   try {
+    const { Client } = await import("@gradio/client"); // lazy — see note at top of file
     const app = await Client.connect(MUSIC_SPACE_ID, { hf_token: token });
     const fullPrompt = `${prompt}, ${voiceTag || "warm male tenor, clear diction, moderate reverb"}`;
 
