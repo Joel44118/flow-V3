@@ -8,7 +8,18 @@ const canvas = document.getElementById("orb-canvas");
 const ctx    = canvas.getContext("2d");
 const C      = CONFIG.ORB;
 let W, H, cx, cy, state = "idle", rotY = 0;
-const rotX = 0.28;
+let rotX = 0.28;
+const BASE_ROT_X = 0.28;
+
+// REAL, NEW, Joel-requested — cursor-responsive tilt. Genuine parallax:
+// blended smoothly toward the cursor's offset from center rather than
+// snapping, and added ON TOP of the existing auto-rotation (rotY still
+// keeps spinning) rather than replacing it.
+let mouseNX = 0, mouseNY = 0; // normalized -1..1 cursor offset from center
+window.addEventListener("mousemove", (e) => {
+  mouseNX = (e.clientX - window.innerWidth / 2) / (window.innerWidth / 2);
+  mouseNY = (e.clientY - window.innerHeight / 2) / (window.innerHeight / 2);
+});
 
 // ── Globe mode ────────────────────────────────────────────────────────────
 let globeMode   = false;
@@ -118,6 +129,14 @@ function draw(ts) {
 
   // Globe rotation is slower and smoother
   rotY += globeMode ? 0.0018 : 0.0046;
+  // REAL, NEW — cursor parallax, smoothly eased toward the mouse's
+  // offset rather than snapping. Auto-rotation (rotY above) keeps
+  // running underneath this — the cursor tilts the sphere, it doesn't
+  // take over spinning it.
+  const targetRotX = BASE_ROT_X + mouseNY * 0.22;
+  const targetRotYOffset = mouseNX * 0.35;
+  rotX += (targetRotX - rotX) * 0.06;
+  rotY += targetRotYOffset * 0.002; // subtle continuous nudge, not a hard snap
 
   // Animate globeLerp toward globeTarget
   globeLerp += (globeTarget - globeLerp) * 0.025;
@@ -150,7 +169,16 @@ function draw(ts) {
   });
 
   // Edges — in globe mode, only draw edges between land nodes (continent outlines)
-  edges.forEach(([i,j]) => {
+  // REAL, NEW — genuine depth sorting (painter's algorithm). Before
+  // this, edges drew in raw array order regardless of depth, so a
+  // FAR edge could draw on top of a NEAR one — the actual reason flat
+  // array-order rendering never reads as convincingly 3D. Sorting
+  // far-to-near before drawing is what real 3D scenes do.
+  const edgeOrder = edges
+    .map(([i, j]) => [i, j, (proj[i].z + proj[j].z) / 2])
+    .sort((a, b) => a[2] - b[2]);
+
+  edgeOrder.forEach(([i,j]) => {
     const pa = proj[i], pb = proj[j];
     const midZ = (pa.z+pb.z)/2;
     const spiked = nodes[i].spike+nodes[j].spike > 6;
@@ -212,16 +240,12 @@ function draw(ts) {
   halo.addColorStop(1,"transparent");
   ctx.beginPath(); ctx.arc(cx,cy,glowR,0,Math.PI*2); ctx.fillStyle=halo; ctx.fill();
 
-  // Jarvis rings
-  [{r:C.RADIUS+18,spd:0.004,lw:1.2},{r:C.RADIUS+32,spd:-0.003,lw:0.7}].forEach(ring=>{
-    ctx.save(); ctx.translate(cx,cy); ctx.rotate(ts*ring.spd); ctx.scale(1,0.28);
-    ctx.beginPath(); ctx.arc(0,0,ring.r,0,Math.PI*2);
-    ctx.strokeStyle=`rgba(${col.g},${(0.3+env*0.2).toFixed(2)})`; ctx.lineWidth=ring.lw; ctx.stroke();
-    ctx.restore();
-  });
+  // REAL, Joel-requested: the 2 flattened "Jarvis rings" removed entirely.
 
-  // Node dots
-  proj.forEach((p,i)=>{
+  // Node dots — same real depth-sort fix as edges above.
+  const dotOrder = proj.map((p, i) => i).sort((a, b) => proj[a].z - proj[b].z);
+  dotOrder.forEach((i) => {
+    const p = proj[i];
     if(p.z<-0.25) return;
     const spiked = nodes[i].spike>6;
     const alpha  = 0.2+0.8*((p.z+1)/2);
@@ -282,4 +306,10 @@ export const Orb = {
     if (on) state = "globe";
   },
   getState()  { return state; },
+  // REAL, NEW — lets app.js read the exact same live values driving
+  // this canvas (current state + Speech's real audio envelope) so it
+  // can relay them to the overlay window's mini orb. This is what
+  // makes the mini orb genuinely synced rather than a second
+  // approximation guessing independently.
+  getSyncSnapshot() { return { state, env: Speech.getEnvelope() }; },
 };
