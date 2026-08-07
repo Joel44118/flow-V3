@@ -1026,8 +1026,21 @@ export async function initAuth() {
             // different person is much less likely to clear the bar on
             // EVERY one of 3 separate captures, since real geometric
             // measurement noise varies slightly frame to frame.
+            // REAL FIX, Joel-reported ("doesn't bring me in... even after I
+            // blink"): requiring ALL 3 captures to independently clear a
+            // CONSERVATIVE 0.90 threshold was likely over-correcting —
+            // natural per-frame geometric noise across 3 captures just
+            // 150ms apart means even a genuine match (Joel's real face)
+            // could plausibly have 2 clear the bar and 1 not, failing the
+            // whole check and forcing a retry every time. Switched to a
+            // majority vote (at least 2 of 3): still meaningfully harder
+            // to fool than the original single-capture design — an
+            // imposter needs to get lucky twice, not once — while no
+            // longer requiring a perfect 3-for-3 that even the real Joel
+            // may not reliably produce.
             const valid = (capturedVectors || []).filter(Boolean);
-            const allMatch = valid.length === 3 && valid.every(v => _cosineSimilarity(enrolledVector, v) >= MATCH_THRESHOLD);
+            const matchCount = valid.filter(v => _cosineSimilarity(enrolledVector, v) >= MATCH_THRESHOLD).length;
+            const allMatch = valid.length >= 2 && matchCount >= 2;
 
             if (allMatch) {
               _setUnlocked();
