@@ -31,10 +31,38 @@
          core/boot.js.
   ═══════════════════════════════════════════ -->
   <div id="boot-overlay">
-    <div id="boot-orb-ring"></div>
+    <div id="boot-orb-wrap">
+      <div id="boot-orb-ring"></div>
+      <div id="boot-orb-ring2"></div>
+    </div>
     <div id="boot-text-line"></div>
     <div id="boot-subtext">Flow V3 — Joelflowstack</div>
   </div>
+  <script>
+    // REAL, NEW, Joel-reported ("stuck on boot screen forever") — an
+    // absolute last-resort failsafe, deliberately independent of
+    // core/boot.js and app.js entirely (no imports, no module system).
+    // core/boot.js's own internal timeout now protects against a
+    // single hanging STEP, but this protects against the case where
+    // app.js or core/boot.js itself never even finishes loading — the
+    // one scenario the in-module fix genuinely can't cover, since code
+    // that never runs can't rescue itself. If the real boot sequence
+    // hasn't finished after 25s, this forces the overlay away so the
+    // app is never permanently unreachable, and says so honestly
+    // rather than silently pretending everything loaded.
+    setTimeout(function () {
+      var overlay = document.getElementById('boot-overlay');
+      if (overlay && overlay.style.display !== 'none' && !overlay.classList.contains('boot-done')) {
+        var textLine = document.getElementById('boot-text-line');
+        if (textLine) textLine.textContent = 'Taking longer than expected — continuing anyway.';
+        setTimeout(function () {
+          overlay.style.display = 'none';
+          document.getElementById('top-bar')?.classList.remove('boot-collapsed');
+          document.getElementById('app-footer')?.classList.remove('boot-collapsed');
+        }, 1500);
+      }
+    }, 25000);
+  </script>
 
   <canvas id="bg-canvas"></canvas>
   <canvas id="orb-canvas"></canvas>
