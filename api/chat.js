@@ -583,8 +583,22 @@ const FLOW_TOOLS = [
     type: 'function',
     function: {
       name: 'toggle_sentinel',
-      description: "Turn Flow's Sentinel (ambient screen-awareness in the Electron desktop app) on or off. Call THIS tool directly when Joel gives a direct instruction like 'turn sentinel off' — do NOT call get_my_live_state first to check the current status; toggle_sentinel handles that internally and reports the real result. Checking status first before a direct command only adds a pointless extra step and a rambling reply.",
-      parameters: { type: 'object', properties: {}, required: [] },
+      // REAL BUG FIX, Joel-reported: this tool used to take ZERO
+      // parameters — every call blindly flipped whatever the current
+      // state was, with no way to specify which state was actually
+      // wanted. That's the concrete, well-evidenced cause of tonight's
+      // repeated "Sentinel's on" claims that didn't match reality:
+      // each "turn it on" request could just as easily have flipped it
+      // back OFF if it was already on, while the model's phrasing
+      // stayed confidently "it's on" regardless of the real result.
+      description: "Turn Flow's Sentinel (ambient screen-awareness in the Electron desktop app) on or off. ALWAYS pass an explicit `enable` value matching what Joel actually wants — never call this with no clear target state. Call THIS tool directly when Joel gives a direct instruction like 'turn sentinel off' — do NOT call get_my_live_state first to check the current status; toggle_sentinel handles that internally and reports the real result.",
+      parameters: {
+        type: 'object',
+        properties: {
+          enable: { type: 'boolean', description: 'true to turn Sentinel on, false to turn it off — must match what Joel actually asked for.' },
+        },
+        required: ['enable'],
+      },
     },
   },
   {
@@ -815,7 +829,7 @@ async function executeFlowTool(toolName, args) {
     };
   }
   if (toolName === 'toggle_sentinel') {
-    return { handled: false, clientAction: 'toggle_sentinel', result: null };
+    return { handled: false, clientAction: 'toggle_sentinel', clientArgs: { enable: !!args?.enable }, result: null };
   }
   if (toolName === 'toggle_full_voice_mode') {
     return { handled: false, clientAction: 'toggle_full_voice_mode', clientArgs: { enable: !!args?.enable }, result: null };
