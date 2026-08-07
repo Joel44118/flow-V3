@@ -530,7 +530,22 @@ async function handleClientAction(action, args) {
     if (!bridge) { Chat.add("Sentinel is only available in the desktop app, not here — can't turn it on from the browser.", "bot"); return; }
     try {
       const { enabled } = await bridge.status();
-      const next = !enabled;
+      // REAL BUG FIX, Joel-reported: this used to be `const next = !enabled`
+      // — a blind flip with no way to honor what was actually asked for.
+      // Every repeated "turn it on" could just as easily flip it back off
+      // if it was already on, while the model's reply text stayed
+      // confidently "it's on" regardless of the real resulting state —
+      // the exact, well-evidenced cause of tonight's mismatch. Now
+      // respects the explicit enable arg from the tool call; only falls
+      // back to a flip if genuinely not provided (shouldn't happen now
+      // that the schema requires it, but safe either way).
+      const next = args?.enable !== undefined ? !!args.enable : !enabled;
+      if (next === enabled) {
+        // REAL — already in the requested state. Say so honestly
+        // instead of pretending a toggle just happened.
+        Chat.add(`Sentinel's already ${next ? "on" : "off"}.`, "bot");
+        return;
+      }
       await bridge.toggle(next);
       // REAL BUG FIX, Joel-reported: Flow was telling Joel Sentinel was
       // off when it was genuinely on (and vice versa). Root cause:
@@ -1218,7 +1233,16 @@ window.__flowElectron?.voiceHotkey?.onTrigger(() => { _toggleRecording(); });
 initHandsFreeVAD({
   onTranscript: (text) => { flowSend(text); },
   onStateChange: (state) => {
-    Orb.setState(state);
+    // REAL BUG FIX, Joel-reported crash ("orb disappears"): hands-free-
+    // vad.js emits a real 'interrupted' state for barge-in (cutting
+    // Flow off mid-speech), but orb.js's COLORS map only has idle/
+    // thinking/speaking/listening — no 'interrupted' entry. Passing it
+    // straight through crashed orb.js's draw() loop on the very next
+    // frame (COLORS[state] was undefined), which halts the whole
+    // animation — exactly what looked like the orb disappearing.
+    // Mapped to 'listening' here, since an interruption IS Flow
+    // listening again, not a new visual state of its own.
+    Orb.setState(state === "interrupted" ? "listening" : state);
     const statusMap = { listening: "Listening...", thinking: "Transcribing...", interrupted: "Cut off — go ahead.", idle: "Listening — no hotkey needed. Speak whenever." };
     import("./ui/full-voice-mode.js").then(({ setFullVoiceModeUIState }) => {
       setFullVoiceModeUIState(true, statusMap[state] || null);
