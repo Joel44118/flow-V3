@@ -255,7 +255,13 @@ requestAnimationFrame(draw);
 
 export const Orb = {
   setState(s) {
-    state = s;
+    // REAL, permanent safety net — the specific 'interrupted' case
+    // that caused tonight's crash is fixed at its source in app.js,
+    // but this guards against ANY future caller passing a state
+    // COLORS doesn't recognize, so an unknown state can never again
+    // silently kill the whole draw loop. Falls back to 'idle' rather
+    // than crashing.
+    state = COLORS[s] ? s : "idle";
     // If a non-intel state is set, exit globe mode
     if (s !== "globe" && globeMode) {
       globeMode   = false;
