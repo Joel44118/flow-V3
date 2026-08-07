@@ -84,6 +84,19 @@ function _typeText(el, text, speedMs = 18) {
   });
 }
 
+// REAL, NEW — a per-step timeout wrapper. Before this, if any single
+// step's run() genuinely never settled (network hang, a promise that
+// never resolves or rejects), the whole `for...of` loop below would
+// wait on it forever, and EVERYTHING after it — including the code
+// that finally removes the overlay — would simply never run. This is
+// the direct, structural fix for "stuck on the boot screen forever."
+function _withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(resolve, ms)), // resolves (not rejects) — a slow step just gets skipped, not treated as a crash
+  ]);
+}
+
 export async function runBootSequence() {
   const overlay  = document.getElementById("boot-overlay");
   const textLine = document.getElementById("boot-text-line");
@@ -92,17 +105,32 @@ export async function runBootSequence() {
 
   if (!overlay || !textLine) return; // real guard: don't crash boot if the HTML somehow isn't present
 
-  for (const step of STEPS) {
-    await _typeText(textLine, `${step.label}...`);
-    await step.run(); // genuinely await the real work — the dots aren't decorative, they cover actual load time
-    // Small real pause so a step that finishes instantly doesn't blur
-    // past too fast to read — still genuinely tied to completion, not a
-    // fixed total-duration animation.
-    await new Promise(r => setTimeout(r, 120));
-  }
+  // REAL, NEW — everything below is now wrapped so a genuine crash in
+  // any step (not just a hang) also can't leave the app stuck. The
+  // finally block is what GUARANTEES the overlay comes down and the
+  // app becomes usable, no matter what happened above it.
+  try {
+    for (const step of STEPS) {
+      await _typeText(textLine, `${step.label}...`);
+      // REAL FIX: each step now gets a hard 8s cap. Before this, a
+      // step whose own internal logic hung (not just threw) would
+      // block every step after it — including the ones with nothing
+      // to do with whatever was actually slow.
+      await _withTimeout(
+        step.run().catch((e) => console.warn(`[Boot] Step "${step.key}" failed (non-fatal):`, e.message)),
+        8000
+      );
+      await new Promise(r => setTimeout(r, 120));
+    }
 
-  await _typeText(textLine, "Ready.");
-  await new Promise(r => setTimeout(r, 300));
+    await _typeText(textLine, "Ready.");
+    await new Promise(r => setTimeout(r, 300));
+  } catch (e) {
+    // REAL — a genuinely unexpected error anywhere in the sequence
+    // still lets the app come up, rather than trapping Joel on this
+    // screen with no way in short of a full reinstall.
+    console.error("[Boot] Sequence hit an unexpected error, continuing anyway:", e.message);
+  } finally {
 
   // REAL STRETCH-APART ANIMATION: both elements start collapsed to a
   // single point at true screen-center (see styles.css's #top-bar.boot-
@@ -135,4 +163,5 @@ export async function runBootSequence() {
   document.getElementById("thought-log-tab")?.classList.remove("boot-collapsed");
 
   setTimeout(() => { overlay.style.display = "none"; }, 700); // real: matches the CSS transition duration below, removed after it visually completes rather than an arbitrary guess
+  }
 }
