@@ -350,18 +350,11 @@ body{background:transparent;overflow:hidden;width:100vw;height:100vh}
 #dot.click{border-color:rgba(74,222,128,0.95);background:rgba(74,222,128,0.22);}
 #dot.scroll{border-color:rgba(250,204,21,0.95);background:rgba(250,204,21,0.18);}
 #dot.held{border-style:dashed;opacity:0.5;}
-#sentinel-badge{
-  position:fixed;top:14px;right:14px;
-  font-family:system-ui,sans-serif;font-size:11px;font-weight:600;
-  color:#a78bfa;background:rgba(15,10,30,0.85);
-  border:1px solid rgba(167,139,250,0.4);border-radius:20px;
-  padding:5px 12px;display:none;align-items:center;gap:6px;
-  letter-spacing:.03em;
+#mini-orb{
+  position:fixed;top:14px;right:14px;width:36px;height:36px;
+  display:none;pointer-events:none;
 }
-#sentinel-badge.show{display:flex;}
-#sentinel-dot{width:6px;height:6px;border-radius:50%;background:#a78bfa;
-  animation:pulse 1.6s ease-in-out infinite;}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+#mini-orb.show{display:block;}
 #cam-preview{
   position:fixed;top:14px;left:14px;width:160px;height:120px;
   border-radius:12px;overflow:hidden;display:none;
@@ -379,18 +372,75 @@ body{background:transparent;overflow:hidden;width:100vw;height:100vh}
 </style></head>
 <body>
 <div id="dot"></div>
-<div id="sentinel-badge"><span id="sentinel-dot"></span>Flow is watching</div>
+<div id="mini-orb"><canvas id="mini-orb-canvas" width="72" height="72"></canvas></div>
 <div id="cam-preview"><img id="cam-img"><div id="cam-label">FLOW · LIVE</div></div>
 <script>
 const dot = document.getElementById('dot');
-const badge = document.getElementById('sentinel-badge');
+const miniOrb = document.getElementById('mini-orb');
 const camPreview = document.getElementById('cam-preview');
 const camImg = document.getElementById('cam-img');
 const {ipcRenderer} = require('electron');
 ipcRenderer.on('dot-move',  (_,x,y,s) => { dot.style.display='block'; dot.style.left=x+'px'; dot.style.top=y+'px'; dot.className=s||''; });
 ipcRenderer.on('dot-hide',  ()        => { dot.style.display='none'; camPreview.classList.remove('show'); });
-ipcRenderer.on('sentinel-state', (_, active) => { badge.className = active ? 'show' : ''; });
+ipcRenderer.on('sentinel-state', (_, active) => { miniOrb.className = active ? 'show' : ''; });
 ipcRenderer.on('camera-frame', (_, dataUrl) => { camImg.src = dataUrl; camPreview.classList.add('show'); });
+
+// REAL, NEW — a genuine mini orb, small like macOS's Siri corner
+// indicator, replacing the old text badge. Driven by the EXACT same
+// state+envelope values as the main orb via orb_sync_push -> orb-sync
+// relay (see main.js), not a second guess running independently — if
+// the main orb is speaking, this one visibly speaks too, same colors,
+// same real audio-reactive pulse.
+const COLORS = {
+  idle:      { c1:"#38bdf8", c2:"#0369a1", g:"56,189,248"   },
+  thinking:  { c1:"#fde68a", c2:"#b45309", g:"253,230,138"  },
+  speaking:  { c1:"#c4b5fd", c2:"#4f46e5", g:"196,181,253"  },
+  listening: { c1:"#86efac", c2:"#15803d", g:"134,239,172"  },
+  globe:     { c1:"#34d399", c2:"#065f46", g:"52,211,153"   },
+};
+let syncState = "idle", syncEnv = 0;
+ipcRenderer.on('orb-sync', (_, payload) => {
+  syncState = payload.state || "idle";
+  syncEnv   = payload.env || 0;
+});
+
+const moCanvas = document.getElementById('mini-orb-canvas');
+const moCtx    = moCanvas.getContext('2d');
+const MO_CX = 36, MO_CY = 36, MO_R = 12;
+let moPulsePhase = 0;
+
+function drawMiniOrb() {
+  moCtx.clearRect(0, 0, 72, 72);
+  const col = COLORS[syncState] || COLORS.idle;
+  moPulsePhase += 0.05;
+  // Real audio-reactive pulse — same driving value (syncEnv) as the
+  // main orb's halo, just applied at mini scale.
+  const pulse = Math.sin(moPulsePhase) * 0.15 + (syncState === "speaking" ? syncEnv * 0.5 : 0);
+  const r = MO_R * (1 + pulse * 0.3);
+
+  // Halo
+  const halo = moCtx.createRadialGradient(MO_CX, MO_CY, r * 0.3, MO_CX, MO_CY, r * 2.2);
+  halo.addColorStop(0, "rgba(" + col.g + "," + (0.35 + syncEnv * 0.25).toFixed(2) + ")");
+  halo.addColorStop(1, "transparent");
+  moCtx.beginPath(); moCtx.arc(MO_CX, MO_CY, r * 2.2, 0, Math.PI * 2);
+  moCtx.fillStyle = halo; moCtx.fill();
+
+  // Core
+  const grad = moCtx.createRadialGradient(MO_CX - 3, MO_CY - 3, 1, MO_CX, MO_CY, r);
+  grad.addColorStop(0, col.c1); grad.addColorStop(0.6, col.c2); grad.addColorStop(1, "transparent");
+  moCtx.beginPath(); moCtx.arc(MO_CX, MO_CY, r, 0, Math.PI * 2);
+  moCtx.fillStyle = grad; moCtx.fill();
+
+  // Nucleus
+  const nuc = moCtx.createRadialGradient(MO_CX, MO_CY, 0, MO_CX, MO_CY, r * 0.5);
+  nuc.addColorStop(0, "rgba(255,255,255,0.85)");
+  nuc.addColorStop(1, "transparent");
+  moCtx.beginPath(); moCtx.arc(MO_CX, MO_CY, r * 0.5, 0, Math.PI * 2);
+  moCtx.fillStyle = nuc; moCtx.fill();
+
+  requestAnimationFrame(drawMiniOrb);
+}
+requestAnimationFrame(drawMiniOrb);
 </script></body></html>`));
 
   overlayWin.on('closed', () => { overlayWin = null; });
@@ -887,6 +937,14 @@ function toggleSentinel(enable) {
 }
 
 ipcMain.on('sentinel_toggle', (_e, { enabled }) => toggleSentinel(!!enabled));
+
+// REAL, NEW — relays the main orb's actual live state+envelope to the
+// overlay window's mini orb. Fire-and-forget both ways (no ack needed)
+// since this fires frequently; overlayWin may legitimately be null if
+// Sentinel is off, in which case there's nothing to relay to.
+ipcMain.on('orb_sync_push', (_e, payload) => {
+  overlayWin?.webContents.send('orb-sync', payload);
+});
 ipcMain.handle('sentinel_status', () => ({ enabled: sentinelEnabled, available: !!activeWin }));
 
 // Manual "what am I looking at?" trigger — bypasses the stuck-timer entirely
