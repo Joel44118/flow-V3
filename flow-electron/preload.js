@@ -63,6 +63,11 @@ contextBridge.exposeInMainWorld('__flowElectron', {
     toggle:   (enabled) => ipcRenderer.send('sentinel_toggle', { enabled }),
     status:   ()        => ipcRenderer.invoke('sentinel_status'),
     askNow:   ()         => ipcRenderer.invoke('sentinel_ask_now'),
+    // REAL, NEW — pushes the main orb's actual live state+envelope
+    // snapshot so the overlay window's mini orb can render the same
+    // real values instead of guessing independently. One-way, fire-
+    // and-forget (send, not invoke) since this fires frequently.
+    pushOrbSync: (state, env) => ipcRenderer.send('orb_sync_push', { state, env }),
     rawScreenshot: ()    => ipcRenderer.invoke('sentinel_raw_screenshot'),
     describeView:  ()    => ipcRenderer.invoke('sentinel_describe_view'),
     onObservation: (cb) => ipcRenderer.on('sentinel-observation', (_e, desc) => cb(desc)),
