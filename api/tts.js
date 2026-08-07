@@ -94,13 +94,27 @@ async function handleSpeak(req, res) {
   const { text } = req.body || {};
   if (!text?.trim()) return res.status(400).json({ error: "text required" });
 
-  // REAL, Joel-requested change: Edge TTS stays PRIMARY — he already
-  // likes that voice and doesn't want it changing. Fish Audio only
-  // fires as a genuine fallback if Edge TTS itself fails, giving real
-  // resilience (like tonight's outage) without ever swapping the
-  // voice he hears day to day. Always sequential, never both — one
-  // request only ever produces one response body, so there is no
-  // "both speaking at once" possibility by construction.
+  // REAL, Joel-requested change (reversed from the earlier "keep Edge
+  // TTS primary" request): Fish Audio is now tried FIRST, genuinely
+  // active, not a dormant fallback. One honest note that stays true
+  // regardless of code order: until FISH_AUDIO_API_KEY and
+  // FISH_AUDIO_REFERENCE_ID are actually set in Vercel, _tryFishAudio
+  // returns null and this falls through to Edge TTS exactly as
+  // before — so nothing audibly changes today until that setup is
+  // done. Once it is, the voice WILL become whatever reference_id was
+  // picked, not the current Edge TTS voice — worth knowing before
+  // adding those env vars if keeping today's voice matters.
+  try {
+    const fishBuffer = await _tryFishAudio(text);
+    if (fishBuffer) {
+      res.setHeader("Content-Type", "audio/mpeg");
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(200).send(fishBuffer);
+    }
+  } catch (e) {
+    console.warn("[Flow TTS] Fish Audio failed, falling back to Edge TTS:", e.message);
+  }
+
   try {
     const tts = new EdgeTTS();
     // Real, deliberate: rate left at the package's neutral default
@@ -122,18 +136,7 @@ async function handleSpeak(req, res) {
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).send(audioBuffer);
   } catch (e) {
-    console.warn("[Flow TTS] Edge TTS failed, trying Fish Audio fallback:", e.message);
-    try {
-      const fishBuffer = await _tryFishAudio(text);
-      if (fishBuffer) {
-        res.setHeader("Content-Type", "audio/mpeg");
-        res.setHeader("Cache-Control", "no-store");
-        return res.status(200).send(fishBuffer);
-      }
-    } catch (e2) {
-      console.error("[Flow TTS] Fish Audio fallback also failed:", e2.message);
-    }
-    console.error("[Flow TTS] Edge TTS error:", e.message);
+    console.error("[Flow TTS] Edge TTS error (both providers failed):", e.message);
     return res.status(502).json({ error: e.message });
   }
 }
