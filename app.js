@@ -969,6 +969,19 @@ initSettings();
 initLocalLLMUI(); // REAL FIX — this was never actually wired in before; ui/local-llm.js existed as a file but nothing called it
 initSkillsTray(); // REAL, NEW, Joel-requested — one-click list of recorded skills, hover-reveal like the other tabs
 
+// REAL, NEW, Joel-requested — pushes the main orb's actual live
+// state+envelope to the overlay window's mini orb, ~20fps (50ms) —
+// frequent enough to feel synced, throttled well below the main
+// orb's own 60fps draw loop since this crosses an IPC boundary and
+// doesn't need to be pixel-perfect. Only pushes when the bridge
+// exists (desktop app) and Sentinel is genuinely on, so this is a
+// real no-op in the browser / when there's nothing to sync to.
+setInterval(() => {
+  if (!window.__flowElectron?.sentinel?.pushOrbSync) return;
+  const snapshot = Orb.getSyncSnapshot();
+  window.__flowElectron.sentinel.pushOrbSync(snapshot.state, snapshot.env);
+}, 50);
+
 // REAL, NEW — the Skills tray's Run button dispatches this instead of
 // calling run_recorded_skill directly, so it goes through the exact
 // same client-action dispatcher (and therefore the same real
