@@ -351,7 +351,7 @@ body{background:transparent;overflow:hidden;width:100vw;height:100vh}
 #dot.scroll{border-color:rgba(250,204,21,0.95);background:rgba(250,204,21,0.18);}
 #dot.held{border-style:dashed;opacity:0.5;}
 #mini-orb{
-  position:fixed;top:14px;right:14px;width:36px;height:36px;
+  position:fixed;top:16px;right:16px;width:64px;height:64px;
   display:none;pointer-events:none;
 }
 #mini-orb.show{display:block;}
@@ -372,7 +372,7 @@ body{background:transparent;overflow:hidden;width:100vw;height:100vh}
 </style></head>
 <body>
 <div id="dot"></div>
-<div id="mini-orb"><canvas id="mini-orb-canvas" width="72" height="72"></canvas></div>
+<div id="mini-orb"><canvas id="mini-orb-canvas" width="128" height="128"></canvas></div>
 <div id="cam-preview"><img id="cam-img"><div id="cam-label">FLOW · LIVE</div></div>
 <script>
 const dot = document.getElementById('dot');
@@ -406,11 +406,11 @@ ipcRenderer.on('orb-sync', (_, payload) => {
 
 const moCanvas = document.getElementById('mini-orb-canvas');
 const moCtx    = moCanvas.getContext('2d');
-const MO_CX = 36, MO_CY = 36, MO_R = 12;
+const MO_CX = 64, MO_CY = 64, MO_R = 22;
 let moPulsePhase = 0;
 
 function drawMiniOrb() {
-  moCtx.clearRect(0, 0, 72, 72);
+  moCtx.clearRect(0, 0, 128, 128);
   const col = COLORS[syncState] || COLORS.idle;
   moPulsePhase += 0.05;
   // Real audio-reactive pulse — same driving value (syncEnv) as the
@@ -758,10 +758,22 @@ async function captureScreenshotBase64() {
       thumbnailSize: { width: 1280, height: 800 },
     });
     const primary = sources[0];
-    if (!primary) return null;
+    // REAL FIX: this used to let a missing/invalid thumbnail fall
+    // straight into .toJPEG(), which could throw a native Electron
+    // error with no real .message — the direct cause of the useless
+    // "screenshot failed: undefined" Joel kept seeing. Checking
+    // explicitly here gives an honest, specific reason instead.
+    if (!primary || !primary.thumbnail || primary.thumbnail.isEmpty()) {
+      console.warn('[Sentinel] screenshot failed: no valid screen source available (possibly a Windows screen-recording permission issue — check Settings > Privacy > Screen Recording)');
+      return null;
+    }
     return primary.thumbnail.toJPEG(70).toString('base64');
   } catch (e) {
-    console.warn('[Sentinel] screenshot failed:', e.message);
+    // REAL FIX: e.message was printing as literally "undefined" because
+    // whatever Electron/OS threw here wasn't always a standard Error
+    // object. Stringifying the whole thing guarantees a real, useful
+    // message from now on instead of a dead end.
+    console.warn('[Sentinel] screenshot failed:', e?.message || String(e));
     return null;
   }
 }
