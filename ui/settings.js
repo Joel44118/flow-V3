@@ -158,6 +158,14 @@ async function _buildModalContent(body) {
       try {
         const { setHandsFreeVoiceEnabled } = await import("../core/hands-free-vad.js");
         await setHandsFreeVoiceEnabled(val);
+        // REAL BUG FIX, Joel-reported: this used to only start/stop the
+        // actual listening logic without ever updating the visual full-
+        // voice-mode UI — so toggling from Settings genuinely turned
+        // listening on/off, but the UI itself didn't reflect it either
+        // way. Mirrors exactly what the chat-triggered toggle_full_
+        // voice_mode path in app.js already does correctly.
+        const { setFullVoiceModeUIState } = await import("./full-voice-mode.js");
+        setFullVoiceModeUIState(val);
       } catch (e) {
         console.warn("[Settings] Hands-free voice toggle failed:", e.message);
       }
