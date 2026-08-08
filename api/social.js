@@ -3504,6 +3504,19 @@ async function handleLeadJobCreate(req, res) {
     job.status = businesses.length ? 'scraping_emails' : 'failed';
     job.updatedAt = Date.now();
     await _saveLeadJob(jobId, job);
+    // REAL, NEW, Joel-requested — a genuinely separate backup save of
+    // just the found businesses, written the moment they're found and
+    // BEFORE scraping starts. If the main job record later gets lost
+    // or corrupted mid-scrape, this key survives independently — real
+    // extra insurance, not just relying on the one job record staying
+    // intact through the whole scraping phase.
+    if (businesses.length) {
+      await fetch(`${KV_URL}/set/leadjob:${jobId}:businesses-backup`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${KV_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: JSON.stringify({ businesses, niche, location, savedAt: Date.now() }) }),
+      }).catch((e) => console.error(`[LeadJob] Businesses backup save failed for ${jobId} (non-fatal, main job record already saved):`, e.message));
+    }
   } catch (e) {
     job.status = 'failed';
     job.currentStep = `⚠️ Business search failed: ${e.message}`;
