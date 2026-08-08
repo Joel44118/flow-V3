@@ -28,6 +28,12 @@
 let _panelEl = null;
 let _pollTimer = null;
 let _activeJobId = null;
+// REAL, NEW, Joel-requested — the last job data that actually rendered
+// successfully. If scraping later fails, this is what lets Joel still
+// SEE the businesses that were already found, instead of the UI
+// jumping straight to a blank form and looking like everything was
+// lost — even though the businesses themselves were real and found.
+let _lastGoodJob = null;
 
 function _log(...args) { console.log("[Leads]", ...args); }
 
@@ -191,6 +197,12 @@ async function _submitFindInstructions(textarea, btn, body) {
 function _renderJob(body, job) {
   _log("_renderJob called, job status:", job.status);
 
+  // REAL, NEW — track this as recoverable state the moment it has any
+  // real businesses in it, so a LATER failure (scraping hiccup, a
+  // save that didn't land) can still show Joel what was already found
+  // instead of the UI jumping to a blank form.
+  if (job?.businesses?.length) _lastGoodJob = job;
+
   // REAL, DEFENSIVE SAFETY VALVE — confirmed via console logs that a
   // malformed job record (status undefined) caused polling to run
   // forever, hammering the server every 2s indefinitely, since
@@ -317,11 +329,22 @@ async function _pollAndAdvance(body) {
       // network hiccup. Only a genuinely incompatible record (the
       // specific case the server already identifies) should reset.
       if (data.error === 'This job record is from an older, incompatible version — starting fresh.') {
-        _log("advance returned incompatible record, resetting:", data.error);
+        _log("advance returned incompatible record:", data.error);
         _stopPolling();
         _saveActiveJobId(null);
         _activeJobId = null;
-        _renderInputForm(body);
+        // REAL FIX, Joel-requested: this used to jump straight to a
+        // blank _renderInputForm, discarding the businesses list from
+        // view even though those businesses were genuinely found and
+        // real. Now shows what was last successfully found (if any),
+        // with an honest note that scraping couldn't continue —
+        // rather than making it look like everything was lost and
+        // Joel has to start completely over.
+        if (_lastGoodJob?.businesses?.length) {
+          _renderJob(body, { ..._lastGoodJob, status: 'failed', currentStep: `⚠️ Lost track of this job mid-scrape, but here's what was found: ${_lastGoodJob.businesses.length} businesses. You can start a new search to try again.` });
+        } else {
+          _renderInputForm(body);
+        }
       } else {
         _log("advance returned not-ok (transient, will retry next poll):", data.error);
       }
