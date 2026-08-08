@@ -41,6 +41,7 @@ import { initSettings } from "./ui/settings.js";
 import { initLocalLLMUI } from "./ui/local-llm.js";
 import { initDockReveal } from "./ui/dock-reveal.js";
 import { initSkillsTray } from "./ui/skills-tray.js";
+import { initDashboard } from "./ui/dashboard.js";
 import { Camera, ScreenVision, YOLO, initVision } from "./ui/vision.js";
 import { initKnowledge, Knowledge } from "./ui/knowledge.js";
 import { setGlobeBackground } from "./ui/particles.js";
@@ -968,6 +969,7 @@ initChatTray();
 initSettings();
 initLocalLLMUI(); // REAL FIX — this was never actually wired in before; ui/local-llm.js existed as a file but nothing called it
 initSkillsTray(); // REAL, NEW, Joel-requested — one-click list of recorded skills, hover-reveal like the other tabs
+initDashboard(); // REAL, NEW, Joel-requested — unified view of XP, music career, leads, and skills, all real live data
 
 // REAL, NEW, Joel-requested — pushes the main orb's actual live
 // state+envelope to the overlay window's mini orb, ~20fps (50ms) —
@@ -1000,7 +1002,7 @@ window.addEventListener("flow:run-skill", (e) => {
 // added to the same list per Joel's explicit request — same hover-
 // reveal behavior as the others, not a separate always-visible button.
 setTimeout(() => {
-  initDockReveal(["#leads-tray-tab", "#workflow-tray-tab", "#content-lab-tray-tab", "#skills-tray-tab"]);
+  initDockReveal(["#leads-tray-tab", "#workflow-tray-tab", "#content-lab-tray-tab", "#skills-tray-tab", "#dashboard-tray-tab"]);
 }, 500);
 setTrayHandlers(openContentLab, openThoughtLog, openLeadsTray, openChatTray, openWorkflowTray);
 
